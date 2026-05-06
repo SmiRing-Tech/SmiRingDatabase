@@ -2,6 +2,21 @@ import { useState, useRef, useCallback } from 'react';
 import imageCompression from 'browser-image-compression';
 import { supabase } from '../../../lib/supabase';
 import { API_BASE_URL } from '../../../config';
+import { CustomDropdown, type DropdownOption } from '../../../components/ui/CustomDropdown';
+import { 
+  Globe, 
+  Users, 
+  Building, 
+  Lock, 
+  User, 
+  Image as ImageIcon, 
+  Calendar, 
+  Trophy, 
+  GraduationCap, 
+  Utensils, 
+  Sun, 
+  MoreHorizontal 
+} from 'lucide-react';
 
 // ==========================================
 // 型定義
@@ -34,23 +49,23 @@ const COMPRESSION_OPTIONS = {
   useWebWorker: true,
 };
 
-const IMAGE_TYPE_OPTIONS = [
-  { value: 'portrait', label: '人物' },
-  { value: 'landscape', label: '風景' },
-  { value: 'event', label: 'イベント' },
-  { value: 'extracurricular', label: '課外活動' },
-  { value: 'academic', label: '学業' },
-  { value: 'food', label: '食事' },
-  { value: 'daily', label: '日常' },
-  { value: 'other', label: 'その他' },
+const IMAGE_TYPE_OPTIONS: DropdownOption[] = [
+  { value: 'portrait', label: '人物', icon: <User className="w-4 h-4" /> },
+  { value: 'landscape', label: '風景', icon: <ImageIcon className="w-4 h-4" /> },
+  { value: 'event', label: 'イベント', icon: <Calendar className="w-4 h-4" /> },
+  { value: 'extracurricular', label: '課外活動', icon: <Trophy className="w-4 h-4" /> },
+  { value: 'academic', label: '学業', icon: <GraduationCap className="w-4 h-4" /> },
+  { value: 'food', label: '食事', icon: <Utensils className="w-4 h-4" /> },
+  { value: 'daily', label: '日常', icon: <Sun className="w-4 h-4" /> },
+  { value: 'other', label: 'その他', icon: <MoreHorizontal className="w-4 h-4" /> },
 ];
 
-const VISIBILITY_OPTIONS = [
-  { value: 'public', label: '全体公開 (Public)' },
-  { value: 'registered', label: '登録ユーザーのみ (Registered)' },
-  { value: 'organization', label: '社員のみ (Organization)' },
-  { value: 'team', label: 'チームのみ (Team)' },
-  { value: 'individual', label: '自分のみ (Individual)' },
+const VISIBILITY_OPTIONS: DropdownOption[] = [
+  { value: 'public', label: '全体公開 (Public)', icon: <Globe className="w-4 h-4" /> },
+  { value: 'registered', label: '登録ユーザーのみ (Registered)', icon: <Users className="w-4 h-4" /> },
+  { value: 'organization', label: '社員のみ (Organization)', icon: <Building className="w-4 h-4" /> },
+  { value: 'team', label: 'チームのみ (Team)', icon: <Users className="w-4 h-4" /> },
+  { value: 'individual', label: '自分のみ (Individual)', icon: <Lock className="w-4 h-4" /> },
 ];
 
 // ==========================================
@@ -308,26 +323,22 @@ export default function PhotoUploadModal({ isOpen, mode, onClose, onSuccess }: P
 
                   {!isAvatarMode && (
                     <>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">種類（必須）</label>
-                        <select
+                      <div className="z-[30]">
+                        <label className="block text-xs font-semibold text-gray-600 mb-1.5 ml-1">種類（必須）</label>
+                        <CustomDropdown
+                          options={IMAGE_TYPE_OPTIONS}
                           value={bulkSettings.imageType ?? ''}
-                          onChange={e => applyBulk({ imageType: e.target.value || null })}
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
-                        >
-                          <option value="">選択してください</option>
-                          {IMAGE_TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                        </select>
+                          onChange={val => applyBulk({ imageType: (val as string) || null })}
+                          placeholder="選択してください"
+                        />
                       </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">公開設定</label>
-                        <select
+                      <div className="z-[20]">
+                        <label className="block text-xs font-semibold text-gray-600 mb-1.5 ml-1">公開設定</label>
+                        <CustomDropdown
+                          options={VISIBILITY_OPTIONS}
                           value={bulkSettings.visibility}
-                          onChange={e => applyBulk({ visibility: e.target.value })}
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
-                        >
-                          {VISIBILITY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                        </select>
+                          onChange={val => applyBulk({ visibility: val as string })}
+                        />
                       </div>
                     </>
                   )}
@@ -385,21 +396,23 @@ export default function PhotoUploadModal({ isOpen, mode, onClose, onSuccess }: P
 
                       {!isAvatarMode && (
                         <>
-                          <select
-                            value={activeItem.imageType ?? ''}
-                            onChange={e => updateItem(activeItem.id, { imageType: e.target.value || null })}
-                            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
-                          >
-                            <option value="">種類を選択（必須）</option>
-                            {IMAGE_TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                          </select>
-                          <select
-                            value={activeItem.visibility}
-                            onChange={e => updateItem(activeItem.id, { visibility: e.target.value })}
-                            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
-                          >
-                            {VISIBILITY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                          </select>
+                          <div className="z-[30]">
+                            <label className="block text-xs font-semibold text-gray-600 mb-1.5 ml-1">種類（必須）</label>
+                            <CustomDropdown
+                              options={IMAGE_TYPE_OPTIONS}
+                              value={activeItem.imageType ?? ''}
+                              onChange={val => updateItem(activeItem.id, { imageType: (val as string) || null })}
+                              placeholder="選択してください"
+                            />
+                          </div>
+                          <div className="z-[20]">
+                            <label className="block text-xs font-semibold text-gray-600 mb-1.5 ml-1">公開設定</label>
+                            <CustomDropdown
+                              options={VISIBILITY_OPTIONS}
+                              value={activeItem.visibility}
+                              onChange={val => updateItem(activeItem.id, { visibility: val as string })}
+                            />
+                          </div>
                         </>
                       )}
                       <input

@@ -4,6 +4,7 @@ import { CircleDot, CheckSquare, SquareChevronDown, LineDotRightHorizontal, Layo
 import { DragDropContext, Droppable, Draggable, type DropResult } from '@hello-pangea/dnd';
 import RichTextEditor from '../../../../components/ui/RichTextEditor';
 import type { QuestionData } from '../FormEditorPage';
+import { CustomDropdown, type DropdownOption } from '../../../../components/ui/CustomDropdown';
 
 type QuestionBoxProps = {
   question: QuestionData;
@@ -246,24 +247,35 @@ export default function QuestionBox({
 
   // --- UI: スケール ---
   const renderScale = () => {
+    const minOptions: DropdownOption[] = [
+      { value: '0', label: '0' },
+      { value: '1', label: '1' },
+    ];
+    const maxOptions: DropdownOption[] = [2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => ({
+      value: n.toString(),
+      label: n.toString(),
+    }));
+
     return (
       <div className="pt-4 space-y-4">
-        <div className="flex items-center space-x-4">
-          <select 
-            value={question.scale.min} 
-            onChange={e => onChange({ scale: { ...question.scale, min: Number(e.target.value) }})} 
-            className="p-2 border border-gray-300 rounded-md bg-white text-sm"
-          >
-            <option value={0}>0</option><option value={1}>1</option>
-          </select>
-          <span className="text-gray-500">〜</span>
-          <select 
-            value={question.scale.max} 
-            onChange={e => onChange({ scale: { ...question.scale, max: Number(e.target.value) }})} 
-            className="p-2 border border-gray-300 rounded-md bg-white text-sm"
-          >
-            {[2,3,4,5,6,7,8,9,10].map(n => <option key={n} value={n}>{n}</option>)}
-          </select>
+        <div className="flex items-center space-x-3">
+          <div className="w-20">
+            <CustomDropdown
+              options={minOptions}
+              value={question.scale.min.toString()}
+              onChange={(val) => onChange({ scale: { ...question.scale, min: Number(val) } })}
+              className="!py-1.5 !px-3 !text-sm"
+            />
+          </div>
+          <span className="text-gray-400 font-medium">〜</span>
+          <div className="w-20">
+            <CustomDropdown
+              options={maxOptions}
+              value={question.scale.max.toString()}
+              onChange={(val) => onChange({ scale: { ...question.scale, max: Number(val) } })}
+              className="!py-1.5 !px-3 !text-sm"
+            />
+          </div>
         </div>
         <div className="bg-gray-50 p-6 rounded-xl mt-2 border border-gray-100">
           <div className="flex items-center space-x-4">

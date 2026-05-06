@@ -25,8 +25,8 @@ export type GalleryItem = {
 
 export default function GalleryPage() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterType, setFilterType] = useState('all');
-  const [filterPerson, setFilterPerson] = useState('all');
+  const [filterType, setFilterType] = useState<string[]>([]);
+  const [filterPerson, setFilterPerson] = useState<string[]>([]);
 
   const [isLoading, setIsLoading] = useState(true);
   const [photos, setPhotos] = useState<GalleryItem[]>([]);
@@ -86,8 +86,8 @@ type GridProps = {
   isLoading: boolean;
   currentUserId: string | null;
   searchQuery: string;
-  filterType: string;
-  filterPerson: string;
+  filterType: string[];
+  filterPerson: string[];
   fetchPhotos: () => void;
 };
 
@@ -134,8 +134,8 @@ function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType
           const name = (photo.basic_profile_info as any)?.name_english || 'Unknown';
           const desc = photo.description || '';
           
-          const matchType = filterType === 'all' || photo.image_type === filterType;
-          const matchPerson = filterPerson === 'all' || photo.user_id === filterPerson;
+          const matchType = filterType.length === 0 || (photo.image_type && filterType.includes(photo.image_type));
+          const matchPerson = filterPerson.length === 0 || filterPerson.includes(photo.user_id);
           const matchSearch = !searchQuery || name.includes(searchQuery) || desc.includes(searchQuery);
           
           return matchType && matchPerson && matchSearch;

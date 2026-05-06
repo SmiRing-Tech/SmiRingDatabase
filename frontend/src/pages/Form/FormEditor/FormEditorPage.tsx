@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom'; 
+import { useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom';
 import QuestionBox from './components/QuestionBox';
 import { FileText, Eye, Send, Globe, AlertTriangle } from 'lucide-react';
 import SendSettings from './components/SendSettings';
@@ -23,11 +23,11 @@ export type QuestionData = {
   description: string;
   type: string;
   isRequired?: boolean;
-  options: { id: number; text: string; lucideIcon?: string }[];
+  options: { id: number; text: string; lucideIcon?: string; isLabel?: boolean }[];
   allowCustomAnswer?: boolean;
   scale: { min: number; max: number; minLabel: string; maxLabel: string };
-  gridRows: { id: number; text: string; lucideIcon?: string }[];
-  gridCols: { id: number; text: string; lucideIcon?: string }[];
+  gridRows: { id: number; text: string; lucideIcon?: string; isLabel?: boolean }[];
+  gridCols: { id: number; text: string; lucideIcon?: string; isLabel?: boolean }[];
   gridInputType: 'radio' | 'checkbox';
   shortTextValidation: {
     enabled: boolean;
@@ -88,6 +88,7 @@ export default function FormEditorPage() {
   const [currentAssignedUsers, setCurrentAssignedUsers] = useState<string[]>([]);
   const [currentAllowMultiple, setCurrentAllowMultiple] = useState(false);
   const [currentAllowEdit, setCurrentAllowEdit] = useState(true);
+  const [currentTimezone, setCurrentTimezone] = useState<string | undefined>(undefined);
   const [initialDefaultQuestion] = useState(() => createDefaultQuestion());
   const [questions, setQuestions] = useState<QuestionData[]>([initialDefaultQuestion]);
   const [activeQuestionId, setActiveQuestionId] = useState<string | null>(initialDefaultQuestion.id);
@@ -137,7 +138,7 @@ export default function FormEditorPage() {
     const container = editorScrollRef.current;
     if (!container) return;
     const containerCenter = container.getBoundingClientRect().top + container.clientHeight / 2;
-    
+
     let closestId = null;
     let minDistance = Infinity;
 
@@ -171,7 +172,7 @@ export default function FormEditorPage() {
     const loadForm = async () => {
       if (!urlId) {
         setIsInitialLoading(false);
-        return; 
+        return;
       }
 
       try {
@@ -185,6 +186,7 @@ export default function FormEditorPage() {
           setCurrentAssignedUsers(form.publish_settings?.assigned_user_ids || []);
           setCurrentAllowMultiple(form.allow_multiple_responses || false);
           setCurrentAllowEdit(form.allow_edit_responses !== false); // default to true if undefined
+          setCurrentTimezone(form.timezone || form.publish_settings?.timezone);
 
           const { data: qLinks } = await supabase
             .from('form_questions')
@@ -202,7 +204,7 @@ export default function FormEditorPage() {
                 description: q.description || '',
                 type: q.question_type || 'radio',
                 isRequired: link.is_required || false,
-                options: Array.isArray(q.options?.choices) 
+                options: Array.isArray(q.options?.choices)
                   ? q.options.choices.map((c: any) => typeof c === 'string' ? { id: crypto.randomUUID(), text: c } : c)
                   : [{ id: crypto.randomUUID(), text: '' }, { id: crypto.randomUUID(), text: '' }],
                 allowCustomAnswer: q.options?.allowCustomAnswer || false,
@@ -257,7 +259,7 @@ export default function FormEditorPage() {
 
         const { data: { session } } = await supabase.auth.getSession();
         const userId = session?.user?.id;
-        
+
         // 保存用にデータを整形（options, gridRows, gridCols を文字列配列に変換）
         const strippedQuestions = questions.map(q => ({
           ...q,
@@ -273,7 +275,7 @@ export default function FormEditorPage() {
         });
 
         if (!response.ok) throw new Error('保存に失敗しました');
-        
+
         setLastSavedTime(new Date());
       } catch (err) {
         console.error("保存エラー:", err);
@@ -308,7 +310,7 @@ export default function FormEditorPage() {
   };
 
   const handleQuestionChange = (questionId: string, updates: Partial<QuestionData>) => {
-    setQuestions(questions.map(q => 
+    setQuestions(questions.map(q =>
       q.id === questionId ? { ...q, ...updates } : q
     ));
     setHasUnsavedChanges(true);
@@ -318,7 +320,7 @@ export default function FormEditorPage() {
   const handleDragEnd = (result: DropResult) => {
     setIsSortingQuestions(false);
     if (!result.destination) return;
-    
+
     const { source, destination, draggableId } = result;
 
     // 移動の有無に関わらず、ドラッグしていた質問に瞬時にフォーカスを合わせる関数
@@ -344,7 +346,7 @@ export default function FormEditorPage() {
     newQuestions.splice(destination.index, 0, moved);
     setQuestions(newQuestions);
     setHasUnsavedChanges(true);
-    
+
     jumpToItem();
   };
 
@@ -355,18 +357,18 @@ export default function FormEditorPage() {
 
     // 縮小アニメーションが始まる前のボックスの位置を記憶する
     const originalRectTop = el?.getBoundingClientRect().top ?? 0;
-    
+
     setIsSortingQuestions(true);
 
     if (scrollContainer && el) {
       const startTime = performance.now();
-      
+
       // アニメーション中、ボックスが『元の位置』からずれた分だけスクロールで打ち消す
       const updateScroll = (time: number) => {
         const rect = el.getBoundingClientRect();
         // ボックスが元の位置からどれだけずれたか（上にずれた場合 diff < 0）
         const diff = rect.top - originalRectTop;
-        
+
         if (Math.abs(diff) > 0.5) {
           // 上にずれた分だけスクロール上を減らして元の位置に戻す
           scrollContainer.scrollTop += diff;
@@ -383,7 +385,7 @@ export default function FormEditorPage() {
   const handleEditorScroll = () => {
     if (scrollingPane.current === 'preview') return;
     handleScrollSelection();
-    
+
     const editor = editorScrollRef.current;
     const preview = previewScrollRef.current;
     if (!editor || !preview) return;
@@ -394,7 +396,7 @@ export default function FormEditorPage() {
 
   const handlePreviewScroll = () => {
     if (scrollingPane.current !== 'preview') return;
-    
+
     const editor = editorScrollRef.current;
     const preview = previewScrollRef.current;
     if (!editor || !preview) return;
@@ -408,11 +410,11 @@ export default function FormEditorPage() {
   // 送信設定ハンドラ
   // ==========================================
 
-  const handlePublish = async (settings: { 
-    assignedUsers: string[], 
-    dueDate: string, 
-    dueTime: string, 
-    isAnonymous: boolean, 
+  const handlePublish = async (settings: {
+    assignedUsers: string[],
+    dueDate: string,
+    dueTime: string,
+    isAnonymous: boolean,
     timezone: string,
     allowMultipleResponses: boolean,
     allowEditResponses: boolean
@@ -436,11 +438,11 @@ export default function FormEditorPage() {
           finalDeadline = isoWithOffset;
         } catch (e) {
           console.warn("Timezone offset calculation failed, falling back to local string", e);
-          finalDeadline = localDateTime; 
+          finalDeadline = localDateTime;
         }
       }
       const newStatus = settings.assignedUsers.length === 0 ? 'draft' : 'published';
-  
+
       const response = await fetch(`${API_BASE_URL}/api/forms/${formId}/publish`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -456,20 +458,21 @@ export default function FormEditorPage() {
       });
 
       if (!response.ok) throw new Error('更新に失敗しました');
-      
+
       setFormStatus(newStatus);
-      setCurrentDueDate(settings.dueDate);
-      setCurrentIsAnonymous(settings.isAnonymous);
       setCurrentAssignedUsers(settings.assignedUsers);
+      setCurrentDueDate(finalDeadline || '');
+      setCurrentIsAnonymous(settings.isAnonymous);
       setCurrentAllowMultiple(settings.allowMultipleResponses);
       setCurrentAllowEdit(settings.allowEditResponses);
+      setCurrentTimezone(settings.timezone);
 
-      const message = newStatus === 'draft' 
-        ? '全員を削除したため、下書きに戻しました。' 
+      const message = newStatus === 'draft'
+        ? '全員を削除したため、下書きに戻しました。'
         : (formStatus === 'published' ? '設定を更新しました！' : '🚀 フォームを公開しました！');
-      
+
       alert(message);
-      setViewMode('edit'); 
+      setViewMode('edit');
     } catch (err) {
       console.error('Publish error:', err);
       alert('エラーが発生しました');
@@ -550,17 +553,18 @@ export default function FormEditorPage() {
             onClearAnswers={clearAnswers}
           />
         </div>
-        
+
         {/* 右側：送信設定パネル */}
         <div className="flex-1 h-full">
-          <SendSettings 
-            onBackToEdit={() => setViewMode('edit')} 
+          <SendSettings
+            onBackToEdit={() => setViewMode('edit')}
             isPublished={formStatus === 'published'}
             initialAssignedUsers={currentAssignedUsers}
             initialDueDate={currentDueDate}
             initialIsAnonymous={currentIsAnonymous}
             initialAllowMultipleResponses={currentAllowMultiple}
             initialAllowEditResponses={currentAllowEdit}
+            initialTimezone={currentTimezone}
             onSend={handlePublish}
           />
         </div>
@@ -574,12 +578,12 @@ export default function FormEditorPage() {
 
   const toolbar = (
     <div className="bg-white border-b border-gray-200 px-4 md:px-6 py-0 flex items-stretch justify-between sticky top-0 z-50 shadow-sm flex-shrink-0 h-14">
-      
+
       {/* 左側: 戻るボタン ＆ フォーム名 */}
       <div className="flex items-center gap-3 min-w-0 flex-1 pr-5">
-        <button 
+        <button
           onClick={() => navigate('/form-list')}
-          className="flex flex-col items-center px-2 py-1 text-gray-500 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0" 
+          className="flex flex-col items-center px-2 py-1 text-gray-500 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
           title="フォーム一覧へ戻る"
         >
           <FileText className="w-5 h-5" />
@@ -619,9 +623,8 @@ export default function FormEditorPage() {
         >
           回答
           {responseCount !== null && responseCount > 0 && (
-            <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded-full min-w-[18px] text-center leading-none ${
-              isResponsesMode ? 'bg-purple-200 text-purple-800' : 'bg-gray-200 text-gray-600'
-            }`}>
+            <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded-full min-w-[18px] text-center leading-none ${isResponsesMode ? 'bg-purple-200 text-purple-800' : 'bg-gray-200 text-gray-600'
+              }`}>
               {responseCount}
             </span>
           )}
@@ -636,7 +639,7 @@ export default function FormEditorPage() {
               {isSaving ? (
                 <span className="flex items-center gap-1 text-gray-500 justify-end"><span className="animate-spin text-blue-500">⏳</span> 保存中...</span>
               ) : saveBlocked ? (
-                <button 
+                <button
                   onClick={handleShowErrors}
                   className="flex items-center gap-1 text-orange-500 font-bold hover:text-orange-600 transition-colors"
                 >
@@ -653,14 +656,14 @@ export default function FormEditorPage() {
 
             {/* アクションボタン群 */}
             <div className="flex items-center gap-1 md:gap-2">
-              <button 
-                onClick={() => setViewMode(viewMode === 'preview' ? 'edit' : 'preview')} 
+              <button
+                onClick={() => setViewMode(viewMode === 'preview' ? 'edit' : 'preview')}
                 className={`flex p-2 rounded-full transition-colors ${viewMode === 'preview' ? 'bg-blue-100 text-blue-700' : 'text-gray-500 hover:bg-gray-100'}`}
                 title="プレビュー"
               >
                 <Eye className="w-5 h-5" />
               </button>
-              
+
               <button
                 onClick={() => {
                   const hasErrors = handleShowErrors();
@@ -715,123 +718,123 @@ export default function FormEditorPage() {
 
   return (
     <div className="h-full w-full bg-blue-50 flex flex-col overflow-hidden">
-      
-      <DragDropContext 
+
+      <DragDropContext
         onDragEnd={handleDragEnd}
       >
         {toolbar}
 
-      {/* --- メインエリア (分割対応) --- */}
-      <div className="flex-1 flex overflow-hidden relative">
-        
-        {/* 左側のペイン：編集画面 */}
-        <div 
-          ref={editorScrollRef}
-          onScroll={handleEditorScroll}
-          onMouseEnter={() => scrollingPane.current = 'editor'}
-          className={`
+        {/* --- メインエリア (分割対応) --- */}
+        <div className="flex-1 flex overflow-hidden relative">
+
+          {/* 左側のペイン：編集画面 */}
+          <div
+            ref={editorScrollRef}
+            onScroll={handleEditorScroll}
+            onMouseEnter={() => scrollingPane.current = 'editor'}
+            className={`
             flex-1 overflow-y-auto transition-all duration-500
             ${viewMode === 'preview' ? 'hidden md:block md:flex-[1.2]' : 'block'}
           `}
-        >
-          <div className="py-10 flex flex-col items-center pb-48">
-            <div className={`w-full px-4 ${viewMode === 'preview' ? 'md:max-w-[80%]' : 'md:max-w-[80%] lg:max-w-3xl'}`}>
-              
-              <TitleBox 
-                title={title}
-                description={description}
-                onTitleChange={handleTitleChange}
-                onDescriptionChange={handleDescriptionChange}
-              />
+          >
+            <div className="py-10 flex flex-col items-center pb-48">
+              <div className={`w-full px-4 ${viewMode === 'preview' ? 'md:max-w-[80%]' : 'md:max-w-[80%] lg:max-w-3xl'}`}>
 
-              <Droppable droppableId="questions-list" type="questions">
-                {(provided) => (
-                  <div 
-                    ref={provided.innerRef} 
-                    {...provided.droppableProps}
-                    className="space-y-0"
-                  >
-                    {questions.map((question, index) => (
-                      <Draggable key={question.id} draggableId={question.id} index={index}>
-                        {(dragProvided, snapshot) => (
-                          <div 
-                            ref={dragProvided.innerRef}
-                            {...dragProvided.draggableProps}
-                            className={`w-full relative ${snapshot.isDragging ? 'z-50' : ''}`}
-                          >
-                            {/* 並べ替え中はインサート用の仕切りを隠す */}
-                            {!isSortingQuestions && (
-                              <InsertDivider onInsert={() => insertQuestionAt(index)} />
-                            )}
-                            <div 
-                              id={`box-${question.id}`}
-                              onClick={() => setActiveQuestionId(question.id)}
-                              className="w-full relative"
+                <TitleBox
+                  title={title}
+                  description={description}
+                  onTitleChange={handleTitleChange}
+                  onDescriptionChange={handleDescriptionChange}
+                />
+
+                <Droppable droppableId="questions-list" type="questions">
+                  {(provided) => (
+                    <div
+                      ref={provided.innerRef}
+                      {...provided.droppableProps}
+                      className="space-y-0"
+                    >
+                      {questions.map((question, index) => (
+                        <Draggable key={question.id} draggableId={question.id} index={index}>
+                          {(dragProvided, snapshot) => (
+                            <div
+                              ref={dragProvided.innerRef}
+                              {...dragProvided.draggableProps}
+                              className={`w-full relative ${snapshot.isDragging ? 'z-50' : ''}`}
                             >
-                              <QuestionBox
-                                question={question}
-                                isActive={activeQuestionId === question.id}
-                                isSortingGlobal={isSortingQuestions}
-                                isDragging={snapshot.isDragging}
-                                dragHandleProps={dragProvided.dragHandleProps}
-                                onStartSorting={() => handleStartSorting(question.id)}
-                                onCancelSorting={() => setIsSortingQuestions(false)}
-                                onChange={(updates) => handleQuestionChange(question.id, updates)}
-                                onDelete={() => deleteQuestion(question.id)} 
-                              />
+                              {/* 並べ替え中はインサート用の仕切りを隠す */}
+                              {!isSortingQuestions && (
+                                <InsertDivider onInsert={() => insertQuestionAt(index)} />
+                              )}
+                              <div
+                                id={`box-${question.id}`}
+                                onClick={() => setActiveQuestionId(question.id)}
+                                className="w-full relative"
+                              >
+                                <QuestionBox
+                                  question={question}
+                                  isActive={activeQuestionId === question.id}
+                                  isSortingGlobal={isSortingQuestions}
+                                  isDragging={snapshot.isDragging}
+                                  dragHandleProps={dragProvided.dragHandleProps}
+                                  onStartSorting={() => handleStartSorting(question.id)}
+                                  onCancelSorting={() => setIsSortingQuestions(false)}
+                                  onChange={(updates) => handleQuestionChange(question.id, updates)}
+                                  onDelete={() => deleteQuestion(question.id)}
+                                />
+                              </div>
                             </div>
-                          </div>
-                        )}
-                      </Draggable>
-                    ))}
-                    {provided.placeholder}
+                          )}
+                        </Draggable>
+                      ))}
+                      {provided.placeholder}
+                    </div>
+                  )}
+                </Droppable>
+
+                {!isSortingQuestions && (
+                  <div className="flex justify-center mt-8">
+                    <button
+                      onClick={() => insertQuestionAt(questions.length)}
+                      className="w-14 h-14 bg-white rounded-full shadow-md flex items-center justify-center text-blue-600 hover:bg-blue-600 hover:text-white transition-all transform hover:scale-110 border border-gray-100"
+                      title="一番下に質問を追加"
+                    >
+                      <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                    </button>
                   </div>
                 )}
-              </Droppable>
-
-              {!isSortingQuestions && (
-                <div className="flex justify-center mt-8">
-                  <button 
-                    onClick={() => insertQuestionAt(questions.length)}
-                    className="w-14 h-14 bg-white rounded-full shadow-md flex items-center justify-center text-blue-600 hover:bg-blue-600 hover:text-white transition-all transform hover:scale-110 border border-gray-100"
-                    title="一番下に質問を追加"
-                  >
-                    <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                    </svg>
-                  </button>
-                </div>
-              )}
+              </div>
             </div>
           </div>
+          {/* --- 左側ペインここまで --- */}
+
+          {/* 右側のペイン：プレビューの時だけ表示 */}
+          {viewMode === 'preview' && (
+            <div
+              ref={previewScrollRef}
+              onScroll={handlePreviewScroll}
+              onMouseEnter={() => scrollingPane.current = 'preview'}
+              className="w-full lg:w-[45%] h-full relative animate-in lg:slide-in-from-right duration-300 bg-blue-50 overflow-y-auto lg:border-l border-gray-200 shadow-inner"
+            >
+              <FormAnswerUI
+                title={title}
+                description={description}
+                questions={questions}
+                answers={testAnswers}
+                onAnswerChange={(qid, val) => setTestAnswers(prev => ({ ...prev, [qid]: val }))}
+                onSubmit={(token) => {
+                  alert("プレビュー送信テスト:\n" + JSON.stringify(testAnswers, null, 2) + "\n\nTurnstile Token: " + token);
+                }}
+                mode="preview"
+                onOpenFullScreen={openFullPreview}
+                onClearAnswers={clearAnswers}
+              />
+            </div>
+          )}
+
         </div>
-        {/* --- 左側ペインここまで --- */}
-
-        {/* 右側のペイン：プレビューの時だけ表示 */}
-        {viewMode === 'preview' && (
-          <div 
-            ref={previewScrollRef}
-            onScroll={handlePreviewScroll}
-            onMouseEnter={() => scrollingPane.current = 'preview'}
-            className="w-full lg:w-[45%] h-full relative animate-in lg:slide-in-from-right duration-300 bg-blue-50 overflow-y-auto lg:border-l border-gray-200 shadow-inner"
-          >
-            <FormAnswerUI 
-              title={title}
-              description={description}
-              questions={questions}
-              answers={testAnswers}
-              onAnswerChange={(qid, val) => setTestAnswers(prev => ({ ...prev, [qid]: val }))}
-              onSubmit={(token) => {
-                alert("プレビュー送信テスト:\n" + JSON.stringify(testAnswers, null, 2) + "\n\nTurnstile Token: " + token);
-              }}
-              mode="preview"
-              onOpenFullScreen={openFullPreview}
-              onClearAnswers={clearAnswers}
-            />
-          </div>
-        )}
-
-      </div>
       </DragDropContext>
     </div>
   );

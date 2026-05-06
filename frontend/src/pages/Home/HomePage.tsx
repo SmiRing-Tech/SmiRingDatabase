@@ -669,7 +669,7 @@ function AssignedFormsTimeline() {
                   ) : form.due_date ? (
                     <span className={`flex items-center gap-1.5 ${isOverdue ? 'text-red-600' : isSoon ? 'text-orange-600' : 'text-gray-500'}`}>
                       <Clock className="w-3 h-3" />
-                      期限: {new Date(form.due_date).toLocaleDateString()} {isOverdue && '(期限切れ)'}
+                      期限: {new Date(form.due_date).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} {isOverdue && '(期限切れ)'}
                     </span>
                   ) : (
                     <span className="text-gray-400 flex items-center gap-1.5">

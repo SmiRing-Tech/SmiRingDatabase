@@ -128,7 +128,8 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
   return (
     // 背景クリックは何もしない
     <div
-      className={`fixed inset-0 z-[100] flex items-center justify-center bg-white/95 backdrop-blur-sm transition-opacity duration-300 ${
+      onClick={handleCloseButton}
+      className={`fixed inset-0 z-[100] flex items-center justify-center bg-white/95 backdrop-blur-sm transition-opacity duration-300 cursor-pointer ${
         isVisible ? 'opacity-100' : 'opacity-0'
       }`}
     >
@@ -145,7 +146,8 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
 
       {/* 画像コンテナ */}
       <div
-        className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center overflow-y-auto animate-in zoom-in-95 duration-300 group pb-4"
+        onClick={(e) => e.stopPropagation()}
+        className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center overflow-y-auto animate-in zoom-in-95 duration-300 group pb-4 cursor-default"
       >
         <div className="relative flex-shrink-0">
           <img
@@ -220,8 +222,17 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
 
       {/* 削除確認モーダル */}
       {isDeleteConfirmOpen && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col p-6 text-center">
+        <div 
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsDeleteConfirmOpen(false);
+          }}
+          className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200 cursor-pointer"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col p-6 text-center cursor-default"
+          >
             <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-100 mb-4">
               <svg className="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />

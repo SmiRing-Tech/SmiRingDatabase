@@ -2,6 +2,7 @@ import React from 'react';
 import type { QuestionData } from '../../FormEditor/FormEditorPage';
 import RichTextEditor, { richTextStyles } from '../../../../components/ui/RichTextEditor';
 import * as Icons from 'lucide-react';
+import { CustomDropdown, type DropdownOption } from '../../../../components/ui/CustomDropdown';
 
 const LucideIcon = ({ name, className }: { name: string, className?: string }) => {
   const Icon = (Icons as any)[name];
@@ -417,20 +418,28 @@ export default function AnswerBox({ question, answer, onChange, error }: Props) 
     </div>
   );
 
-  const renderDropdown = () => (
-    <div className="pt-2">
-      <select
-        value={answer || ''}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full md:w-2/3 p-3 bg-white border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
-      >
-        <option value="" disabled>選択してください</option>
-        {question.options.map(opt => (
-          <option key={opt.id} value={opt.text}>{opt.text}</option>
-        ))}
-      </select>
-    </div>
-  );
+  const renderDropdown = () => {
+    const dropdownOptions: DropdownOption[] = question.options.map(opt => ({
+      value: opt.text,
+      label: opt.text,
+      isLabel: opt.isLabel,
+      icon: opt.lucideIcon ? <LucideIcon name={opt.lucideIcon} className="w-4 h-4" /> : undefined
+    }));
+
+    return (
+      <div className="pt-2">
+        <div className="w-full md:w-2/3">
+          <CustomDropdown
+            options={dropdownOptions}
+            value={answer || ''}
+            onChange={(val) => onChange(val as string)}
+            placeholder="選択してください"
+            searchable={question.options.length > 10} // 10項目以上あれば検索可能にする
+          />
+        </div>
+      </div>
+    );
+  };
 
   const renderScale = () => (
     <div className="pt-4">

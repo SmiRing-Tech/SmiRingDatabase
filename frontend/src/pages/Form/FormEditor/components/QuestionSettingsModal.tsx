@@ -2,6 +2,7 @@ import React from 'react';
 import { X, Settings } from 'lucide-react';
 import type { QuestionData } from '../FormEditorPage';
 import { getQuestionSettingsErrors } from '../formValidation';
+import { CustomDropdown} from '../../../../components/ui/CustomDropdown';
 
 type Props = {
   question: QuestionData;
@@ -242,69 +243,73 @@ export default function QuestionSettingsModal({ question, onChange, onClose }: P
                       {/* タイプ選択 */}
                       <div>
                         <label className="text-xs font-bold text-gray-500 block mb-1">検証タイプ</label>
-                        <select
+                        <CustomDropdown
+                          options={[
+                            { value: 'number', label: '数値' },
+                            { value: 'text', label: 'テキスト' },
+                            { value: 'date', label: '日付' },
+                            { value: 'regex', label: '正規表現' },
+                          ]}
                           value={question.shortTextValidation.type}
-                          onChange={e => onChange({
+                          onChange={(val) => onChange({
                             shortTextValidation: {
                               ...question.shortTextValidation,
-                              type: e.target.value,
-                              condition: e.target.value === 'number' ? 'between'
-                                : e.target.value === 'text' ? 'contains'
-                                : e.target.value === 'regex' ? 'match' : '',
+                              type: val as string,
+                              condition: val === 'number' ? 'between'
+                                : val === 'text' ? 'contains'
+                                : val === 'regex' ? 'match' : '',
                               value1: '',
                               value2: '',
                             }
                           })}
-                          className="w-full p-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-                        >
-                          <option value="number">数値</option>
-                          <option value="text">テキスト</option>
-                          <option value="date">日付</option>
-                          <option value="regex">正規表現</option>
-                        </select>
+                          className="!py-2 !text-sm"
+                        />
                       </div>
 
                       {/* 条件選択 */}
                       {question.shortTextValidation.type === 'number' && (
                         <div>
                           <label className="text-xs font-bold text-gray-500 block mb-1">条件</label>
-                          <select
+                          <CustomDropdown
+                            options={[
+                              { value: 'between', label: '次の間にある' },
+                              { value: 'greater', label: '次の値より大きい' },
+                              { value: 'less', label: '次の値より小さい' },
+                            ]}
                             value={question.shortTextValidation.condition}
-                            onChange={e => onChange({ shortTextValidation: { ...question.shortTextValidation, condition: e.target.value, value1: '', value2: '' } })}
-                            className="w-full p-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-                          >
-                            <option value="between">次の間にある</option>
-                            <option value="greater">次の値より大きい</option>
-                            <option value="less">次の値より小さい</option>
-                          </select>
+                            onChange={(val) => onChange({ shortTextValidation: { ...question.shortTextValidation, condition: val as string, value1: '', value2: '' } })}
+                            className="!py-2 !text-sm"
+                          />
                         </div>
                       )}
                       {question.shortTextValidation.type === 'text' && (
                         <div>
                           <label className="text-xs font-bold text-gray-500 block mb-1">条件</label>
-                          <select
+                          <CustomDropdown
+                            options={[
+                              { value: 'contains', label: '次を含む' },
+                              { value: 'not_contains', label: '次を含まない' },
+                              { value: 'email', label: 'メールアドレス' },
+                              { value: 'url', label: 'URL' },
+                            ]}
                             value={question.shortTextValidation.condition}
-                            onChange={e => onChange({ shortTextValidation: { ...question.shortTextValidation, condition: e.target.value } })}
-                            className="w-full p-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-                          >
-                            <option value="contains">次を含む</option>
-                            <option value="not_contains">次を含まない</option>
-                            <option value="email">メールアドレス</option>
-                            <option value="url">URL</option>
-                          </select>
+                            onChange={(val) => onChange({ shortTextValidation: { ...question.shortTextValidation, condition: val as string } })}
+                            className="!py-2 !text-sm"
+                          />
                         </div>
                       )}
                       {question.shortTextValidation.type === 'regex' && (
                         <div>
                           <label className="text-xs font-bold text-gray-500 block mb-1">条件</label>
-                          <select
+                          <CustomDropdown
+                            options={[
+                              { value: 'match', label: '一致する' },
+                              { value: 'not_match', label: '一致しない' },
+                            ]}
                             value={question.shortTextValidation.condition}
-                            onChange={e => onChange({ shortTextValidation: { ...question.shortTextValidation, condition: e.target.value } })}
-                            className="w-full p-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-                          >
-                            <option value="match">一致する</option>
-                            <option value="not_match">一致しない</option>
-                          </select>
+                            onChange={(val) => onChange({ shortTextValidation: { ...question.shortTextValidation, condition: val as string } })}
+                            className="!py-2 !text-sm"
+                          />
                         </div>
                       )}
 

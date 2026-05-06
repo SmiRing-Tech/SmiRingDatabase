@@ -1,10 +1,23 @@
+import { CustomDropdown, type DropdownOption } from '../../../components/ui/CustomDropdown';
+import { 
+  UserCircle, 
+  User, 
+  Image as ImageIcon, 
+  Calendar, 
+  Trophy, 
+  GraduationCap, 
+  Utensils, 
+  Sun, 
+  MoreHorizontal,
+} from 'lucide-react';
+
 type Props = {
   searchQuery: string;
   setSearchQuery: (val: string) => void;
-  filterType: string;
-  setFilterType: (val: string) => void;
-  filterPerson: string;
-  setFilterPerson: (val: string) => void;
+  filterType: string[];
+  setFilterType: (val: string[]) => void;
+  filterPerson: string[];
+  setFilterPerson: (val: string[]) => void;
   photos: any[];
 };
 
@@ -17,6 +30,29 @@ export default function GallerySidebar({
   setFilterPerson,
   photos,
 }: Props) {
+  // 種類フィルターのオプション定義（'all'を削除し、空配列を「すべて」として扱う）
+  const typeOptions: DropdownOption[] = [
+    { value: "avatar", label: "アバター", icon: <UserCircle className="w-4 h-4" /> },
+    { value: "portrait", label: "人物", icon: <User className="w-4 h-4" /> },
+    { value: "landscape", label: "風景", icon: <ImageIcon className="w-4 h-4" /> },
+    { value: "event", label: "イベント", icon: <Calendar className="w-4 h-4" /> },
+    { value: "extracurricular", label: "課外活動", icon: <Trophy className="w-4 h-4" /> },
+    { value: "academic", label: "学業", icon: <GraduationCap className="w-4 h-4" /> },
+    { value: "food", label: "食事", icon: <Utensils className="w-4 h-4" /> },
+    { value: "daily", label: "日常", icon: <Sun className="w-4 h-4" /> },
+    { value: "other", label: "その他", icon: <MoreHorizontal className="w-4 h-4" /> },
+  ];
+
+  // 人フィルターの動的オプション生成
+  const personOptions: DropdownOption[] = Array.from(new Set(photos.map(p => p.user_id))).map(id => {
+    const p = photos.find(ph => ph.user_id === id);
+    const name = (p?.basic_profile_info as any)?.name_english || 'Unknown';
+    return { 
+      value: id, 
+      label: name,
+      icon: <User className="w-4 h-4" />
+    };
+  });
   return (
     // md:flex でPC画面の時は表示し、w-80 (320px) くらいで固定します（全体の1/3ほどのイメージ）
     <aside className="hidden md:flex flex-col w-80 flex-shrink-0 bg-gray-50 border-r border-gray-200 p-6 h-full overflow-y-auto">
@@ -48,39 +84,27 @@ export default function GallerySidebar({
             Filters
           </h3>
           <div className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1">種類</label>
-              <select
+            <div className="z-[30]">
+              <label className="block text-xs font-semibold text-gray-600 mb-1.5 ml-1">種類</label>
+              <CustomDropdown
+                options={typeOptions}
                 value={filterType}
-                onChange={(e) => setFilterType(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-              >
-                <option value="all">すべての種類</option>
-                <option value="avatar">アバター</option>
-                <option value="portrait">人物</option>
-                <option value="landscape">風景</option>
-                <option value="event">イベント</option>
-                <option value="extracurricular">課外活動</option>
-                <option value="academic">学業</option>
-                <option value="food">食事</option>
-                <option value="daily">日常</option>
-                <option value="other">その他</option>
-              </select>
+                onChange={(val) => setFilterType(val as string[])}
+                multiple={true}
+                searchable={false}
+                placeholder="すべての種類"
+              />
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1">人</label>
-              <select
+            <div className="z-[20]">
+              <label className="block text-xs font-semibold text-gray-600 mb-1.5 ml-1">人</label>
+              <CustomDropdown
+                options={personOptions}
                 value={filterPerson}
-                onChange={(e) => setFilterPerson(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-              >
-                <option value="all">すべての人</option>
-                {Array.from(new Set(photos.map(p => p.user_id))).map(id => {
-                  const p = photos.find(ph => ph.user_id === id);
-                  const name = (p?.basic_profile_info as any)?.name_english || 'Unknown';
-                  return <option key={id} value={id}>{name}</option>;
-                })}
-              </select>
+                onChange={(val) => setFilterPerson(val as string[])}
+                multiple={true}
+                searchable={true}
+                placeholder="すべての人"
+              />
             </div>
           </div>
         </div>

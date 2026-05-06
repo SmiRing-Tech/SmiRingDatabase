@@ -1,6 +1,43 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { API_BASE_URL } from '../../config';
+import { CustomDropdown, type DropdownOption } from './CustomDropdown';
+import { 
+  Globe, 
+  Users, 
+  Building, 
+  Lock, 
+  User, 
+  UserCircle,
+  Image as ImageIcon, 
+  Calendar, 
+  Trophy, 
+  GraduationCap, 
+  Utensils, 
+  Sun, 
+  MoreHorizontal,
+  UserCheck
+} from 'lucide-react';
+
+const IMAGE_TYPE_OPTIONS: DropdownOption[] = [
+  { value: 'avatar', label: 'アバター', icon: <UserCircle className="w-4 h-4" /> },
+  { value: 'portrait', label: '人物', icon: <User className="w-4 h-4" /> },
+  { value: 'landscape', label: '風景', icon: <ImageIcon className="w-4 h-4" /> },
+  { value: 'event', label: 'イベント', icon: <Calendar className="w-4 h-4" /> },
+  { value: 'extracurricular', label: '課外活動', icon: <Trophy className="w-4 h-4" /> },
+  { value: 'academic', label: '学業', icon: <GraduationCap className="w-4 h-4" /> },
+  { value: 'food', label: '食事', icon: <Utensils className="w-4 h-4" /> },
+  { value: 'daily', label: '日常', icon: <Sun className="w-4 h-4" /> },
+  { value: 'other', label: 'その他', icon: <MoreHorizontal className="w-4 h-4" /> },
+];
+
+const VISIBILITY_OPTIONS: DropdownOption[] = [
+  { value: 'public', label: '全体公開 (Public)', icon: <Globe className="w-4 h-4" /> },
+  { value: 'registered', label: '登録ユーザーのみ (Registered)', icon: <UserCheck className="w-4 h-4" /> },
+  { value: 'organization', label: '社員のみ (Organization)', icon: <Building className="w-4 h-4" /> },
+  { value: 'team', label: 'チームのみ (Team)', icon: <Users className="w-4 h-4" /> },
+  { value: 'individual', label: '自分のみ (Individual)', icon: <Lock className="w-4 h-4" /> },
+];
 
 type PhotoEditModalProps = {
   isOpen: boolean;
@@ -71,8 +108,17 @@ export default function PhotoEditModal({ isOpen, onClose, photo, onSuccess }: Ph
   if (!isOpen || !photo) return null;
 
   return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+    <div 
+      onClick={(e) => {
+        e.stopPropagation();
+        onClose();
+      }}
+      className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm cursor-pointer"
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh] cursor-default"
+      >
         {/* Header */}
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
           <h2 className="text-xl font-bold text-gray-800">写真情報の編集</h2>
@@ -100,37 +146,25 @@ export default function PhotoEditModal({ isOpen, onClose, photo, onSuccess }: Ph
             <img src={photo.view_url} alt="Preview" className="h-40 rounded-lg object-contain bg-gray-100" />
           </div>
 
-          <div className="space-y-3">
-            <select
-              value={imageType}
-              onChange={(e) => setImageType(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
-              disabled={isSubmitting}
-            >
-              <option value="">種類を選択（必須）</option>
-              <option value="avatar">アバター</option>
-              <option value="portrait">人物</option>
-              <option value="landscape">風景</option>
-              <option value="event">イベント</option>
-              <option value="extracurricular">課外活動</option>
-              <option value="academic">学業</option>
-              <option value="food">食事</option>
-              <option value="daily">日常</option>
-              <option value="other">その他</option>
-            </select>
+          <div className="space-y-4">
+            <div className="z-[30]">
+              <label className="block text-xs font-semibold text-gray-600 mb-1.5 ml-1">種類（必須）</label>
+              <CustomDropdown
+                options={IMAGE_TYPE_OPTIONS}
+                value={imageType}
+                onChange={(val) => setImageType(val as string)}
+                placeholder="選択してください"
+              />
+            </div>
 
-            <select
-              value={visibility}
-              onChange={(e) => setVisibility(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
-              disabled={isSubmitting}
-            >
-              <option value="public">全体公開 (Public)</option>
-              <option value="registered">登録ユーザーのみ (Registered)</option>
-              <option value="organization">社員のみ (Organization)</option>
-              <option value="team">チームのみ (Team)</option>
-              <option value="individual">自分のみ (Individual)</option>
-            </select>
+            <div className="z-[20]">
+              <label className="block text-xs font-semibold text-gray-600 mb-1.5 ml-1">公開設定</label>
+              <CustomDropdown
+                options={VISIBILITY_OPTIONS}
+                value={visibility}
+                onChange={(val) => setVisibility(val as string)}
+              />
+            </div>
 
             <textarea
               value={description}

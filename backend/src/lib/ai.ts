@@ -21,7 +21,7 @@ export async function getLocalEmbedding(text: string): Promise<number[]> {
 }
 
 // ==========================================
-// 3. Geminiでのベクトル化 (256次元に圧縮！)
+// 3. Geminiでのベクトル化 (768次元に圧縮！)
 // ==========================================
 export async function getGeminiEmbedding(text: string): Promise<number[]> {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -32,7 +32,7 @@ export async function getGeminiEmbedding(text: string): Promise<number[]> {
   const result = await model.embedContent({
     content: { role: "user", parts: [{ text }] }, 
     taskType: TaskType.RETRIEVAL_DOCUMENT,
-    outputDimensionality: 256,
+    outputDimensionality: 768,
   } as any );
   
   return result.embedding.values;

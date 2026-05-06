@@ -2,6 +2,7 @@ import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom'
 import { useEffect, useState } from 'react';
 import { supabase } from './lib/supabase';
 import type { Session } from '@supabase/supabase-js';
+import { API_BASE_URL } from './config';
 
 // ページのインポート
 import SignInPage from './pages/SignIn/SignInPage';
@@ -39,6 +40,44 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 
     return () => subscription.unsubscribe();
   }, []);
+
+  // タイムゾーン同期ロジック
+  useEffect(() => {
+    if (session) {
+      const syncTimezone = async () => {
+        try {
+          const browserTZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          
+          // 現在のプロフィールを取得
+          const response = await fetch(`${API_BASE_URL}/api/basic_profile_info/me`, {
+            headers: { 'Authorization': `Bearer ${session.access_token}` }
+          });
+          
+          if (response.ok) {
+            const profile = await response.json();
+            // 不一致の場合のみバックグラウンドで更新
+            if (profile.timezone !== browserTZ) {
+              await fetch(`${API_BASE_URL}/api/basic_profile_info/me`, {
+                method: 'PATCH',
+                headers: { 
+                  'Authorization': `Bearer ${session.access_token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ timezone: browserTZ })
+              });
+              console.log(`[Timezone Sync] Updated to ${browserTZ}`);
+            }
+          }
+        } catch (error) {
+          console.warn('[Timezone Sync] Failed:', error);
+        }
+      };
+      
+      // ユーザーの邪魔をしないよう少し遅らせて実行
+      const timer = setTimeout(syncTimezone, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [session]);
 
   // ロード中は何も出さない（またはスプラッシュ画面）
   if (session === undefined) return null; 

@@ -227,6 +227,7 @@ router.post('/api/forms/:id/publish', async (req: Request, res: Response) => {
         allow_multiple_responses: allow_multiple_responses ?? false,
         allow_edit_responses: allow_edit_responses ?? true,
         publish_settings: publish_settings,
+        timezone: timezone,
         updated_at: new Date().toISOString()
       })
       .eq('id', formId);
