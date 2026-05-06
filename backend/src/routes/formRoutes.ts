@@ -49,6 +49,8 @@ router.get('/api/forms/:id', async (req: Request, res: Response) => {
         gridCols: q.options?.gridCols || [],
         gridInputType: q.options?.gridInputType || 'radio',
         shortTextValidation: q.options?.validation || { enabled: false },
+        dateTimeSettings: q.options?.dateTimeSettings || null,
+        dropdownSettings: q.options?.dropdownSettings || null,
         isDeleted: link.is_deleted || false
       };
     }) || [];
@@ -106,7 +108,9 @@ router.post('/api/forms/:id/save', async (req: Request, res: Response) => {
           gridInputType: q.gridInputType,
           validation: q.shortTextValidation,
           checkboxValidation: q.checkboxValidation,
-          shortTextMultiple: q.shortTextMultiple
+          shortTextMultiple: q.shortTextMultiple,
+          dateTimeSettings: q.dateTimeSettings,
+          dropdownSettings: q.dropdownSettings
         }
       });
       if (qError) throw qError;

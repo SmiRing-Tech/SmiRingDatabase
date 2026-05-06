@@ -87,15 +87,29 @@ export const CustomDropdown = <T extends boolean = false>({
   const filteredOptions = useMemo(() => {
     if (!searchQuery) return options;
 
+    const query = searchQuery.toLowerCase();
     const result: DropdownOption[] = [];
+    
+    let isCurrentGroupMatching = false;
     let pendingLabel: DropdownOption | null = null;
 
     options.forEach(opt => {
       if (opt.isLabel) {
         pendingLabel = opt;
+        // ラベル（グループ名）自体が検索クエリにヒットするかチェック
+        isCurrentGroupMatching = opt.label.toLowerCase().includes(query);
+        
+        if (isCurrentGroupMatching) {
+          result.push(opt);
+          pendingLabel = null; // 既に追加したので保留解除
+        }
       } else {
-        if (opt.label.toLowerCase().includes(searchQuery.toLowerCase())) {
+        const itemMatches = opt.label.toLowerCase().includes(query);
+        
+        // グループ名がヒットしている、またはアイテム自体がヒットしている場合に表示
+        if (isCurrentGroupMatching || itemMatches) {
           if (pendingLabel) {
+            // グループ名はヒットしていないがアイテムがヒットした際、親ラベルを1度だけ表示
             result.push(pendingLabel);
             pendingLabel = null;
           }

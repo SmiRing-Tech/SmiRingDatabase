@@ -47,6 +47,22 @@ export type QuestionData = {
     enabled: boolean;
     style: 'none' | 'bullet' | 'number' | 'arrow';
   };
+  dateTimeSettings: {
+    format: {
+      year: boolean;
+      month: boolean;
+      date: boolean;
+      hour: boolean;
+      minute: boolean;
+      second: boolean;
+      timezone: boolean;
+    };
+    is24h: boolean;
+  };
+  dropdownSettings: {
+    searchable: boolean;
+    multiple: boolean;
+  };
 };
 
 const createDefaultQuestion = (): QuestionData => ({
@@ -63,7 +79,19 @@ const createDefaultQuestion = (): QuestionData => ({
   gridInputType: 'radio',
   shortTextValidation: { enabled: false, type: 'number', condition: 'between', value1: '', value2: '', errorMsg: '' },
   checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
-  shortTextMultiple: { enabled: false, style: 'bullet' }
+  shortTextMultiple: { enabled: false, style: 'bullet' },
+  dateTimeSettings: {
+    format: {
+      year: true, month: true, date: true,
+      hour: true, minute: true, second: false,
+      timezone: false
+    },
+    is24h: true
+  },
+  dropdownSettings: {
+    searchable: false,
+    multiple: false
+  }
 });
 
 export default function FormEditorPage() {
@@ -97,6 +125,7 @@ export default function FormEditorPage() {
   const [saveBlocked, setSaveBlocked] = useState(false);
   // 質問自体の並べ替え中かどうか
   const [isSortingQuestions, setIsSortingQuestions] = useState(false);
+  const [sortingQuestionId, setSortingQuestionId] = useState<string | null>(null);
 
   // 回答数をバックグラウンドで取得
   useEffect(() => {
@@ -205,20 +234,31 @@ export default function FormEditorPage() {
                 type: q.question_type || 'radio',
                 isRequired: link.is_required || false,
                 options: Array.isArray(q.options?.choices)
-                  ? q.options.choices.map((c: any) => typeof c === 'string' ? { id: crypto.randomUUID(), text: c } : c)
-                  : [{ id: crypto.randomUUID(), text: '' }, { id: crypto.randomUUID(), text: '' }],
+                  ? q.options.choices.map((c: any, idx: number) => 
+                      typeof c === 'string' ? { id: Date.now() + idx, text: c } : c
+                    )
+                  : [{ id: Date.now(), text: '' }, { id: Date.now() + 1, text: '' }],
                 allowCustomAnswer: q.options?.allowCustomAnswer || false,
                 scale: q.options?.scale || { min: 1, max: 5, minLabel: '', maxLabel: '' },
                 gridRows: Array.isArray(q.options?.gridRows)
-                  ? q.options.gridRows.map((r: any) => typeof r === 'string' ? { id: crypto.randomUUID(), text: r } : r)
-                  : [{ id: crypto.randomUUID(), text: '' }],
+                  ? q.options.gridRows.map((r: any, idx: number) => 
+                      typeof r === 'string' ? { id: Date.now() + idx, text: r } : r
+                    )
+                  : [{ id: Date.now(), text: '' }],
                 gridCols: Array.isArray(q.options?.gridCols)
-                  ? q.options.gridCols.map((c: any) => typeof c === 'string' ? { id: crypto.randomUUID(), text: c } : c)
-                  : [{ id: crypto.randomUUID(), text: '' }],
+                  ? q.options.gridCols.map((c: any, idx: number) => 
+                      typeof c === 'string' ? { id: Date.now() + idx, text: c } : c
+                    )
+                  : [{ id: Date.now(), text: '' }],
                 gridInputType: q.options?.gridInputType || 'radio',
                 shortTextValidation: q.options?.validation || { enabled: false, type: 'number', condition: 'between', value1: '', value2: '', errorMsg: '' },
                 checkboxValidation: q.options?.checkboxValidation || { enabled: false, min: '', max: '', errorMsg: '' },
-                shortTextMultiple: q.options?.shortTextMultiple || { enabled: false, style: 'bullet' }
+                shortTextMultiple: q.options?.shortTextMultiple || { enabled: false, style: 'bullet' },
+                dateTimeSettings: q.options?.dateTimeSettings || {
+                  format: { year: true, month: true, date: true, hour: true, minute: true, second: false, timezone: false },
+                  is24h: true
+                },
+                dropdownSettings: q.options?.dropdownSettings || { searchable: false, multiple: false }
               };
             });
             setQuestions(loadedQuestions);
@@ -263,9 +303,9 @@ export default function FormEditorPage() {
         // 保存用にデータを整形（options, gridRows, gridCols を文字列配列に変換）
         const strippedQuestions = questions.map(q => ({
           ...q,
-          options: q.options.map(o => o.text),
-          gridRows: q.gridRows.map(r => r.text),
-          gridCols: q.gridCols.map(c => c.text),
+          options: q.options,
+          gridRows: q.gridRows,
+          gridCols: q.gridCols,
         }));
 
         const response = await fetch(`${API_BASE_URL}/api/forms/${formId}/save`, {
@@ -276,6 +316,7 @@ export default function FormEditorPage() {
 
         if (!response.ok) throw new Error('保存に失敗しました');
 
+        console.log(`[Auto Save] 保存完了: ${new Date().toLocaleTimeString()}`);
         setLastSavedTime(new Date());
       } catch (err) {
         console.error("保存エラー:", err);
@@ -319,6 +360,7 @@ export default function FormEditorPage() {
   // --- 質問の並べ替えハンドラ ---
   const handleDragEnd = (result: DropResult) => {
     setIsSortingQuestions(false);
+    setSortingQuestionId(null);
     if (!result.destination) return;
 
     const { source, destination, draggableId } = result;
@@ -359,6 +401,7 @@ export default function FormEditorPage() {
     const originalRectTop = el?.getBoundingClientRect().top ?? 0;
 
     setIsSortingQuestions(true);
+    setSortingQuestionId(questionId);
 
     if (scrollContainer && el) {
       const startTime = performance.now();
@@ -502,7 +545,7 @@ export default function FormEditorPage() {
 
   // 1. タブを閉じようとしたり、リロードしようとした時のブロック（ブラウザ標準の警告）
   useEffect(() => {
-    if (!saveBlocked) return;
+    if (!saveBlocked && !hasUnsavedChanges) return;
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = ''; // これを設定するとブラウザ標準の確認ダイアログが出ます
@@ -514,7 +557,7 @@ export default function FormEditorPage() {
   // 2. サイト内での別ページへの遷移（React Routerの機能）をブロック
   const blocker = useBlocker(
     ({ currentLocation, nextLocation }) =>
-      saveBlocked && currentLocation.pathname !== nextLocation.pathname
+      (saveBlocked || hasUnsavedChanges) && currentLocation.pathname !== nextLocation.pathname
   );
 
   useEffect(() => {
@@ -551,6 +594,7 @@ export default function FormEditorPage() {
             onSubmit={() => alert("これはプレビューです。設定を完了して送信してください。")}
             mode="preview"
             onClearAnswers={clearAnswers}
+            timezone={currentTimezone}
           />
         </div>
 
@@ -775,12 +819,13 @@ export default function FormEditorPage() {
                                   question={question}
                                   isActive={activeQuestionId === question.id}
                                   isSortingGlobal={isSortingQuestions}
-                                  isDragging={snapshot.isDragging}
+                                  isDragging={snapshot.isDragging || sortingQuestionId === question.id}
                                   dragHandleProps={dragProvided.dragHandleProps}
                                   onStartSorting={() => handleStartSorting(question.id)}
-                                  onCancelSorting={() => setIsSortingQuestions(false)}
+                                  onCancelSorting={() => { setIsSortingQuestions(false); setSortingQuestionId(null); }}
                                   onChange={(updates) => handleQuestionChange(question.id, updates)}
                                   onDelete={() => deleteQuestion(question.id)}
+                                  formTimezone={currentTimezone}
                                 />
                               </div>
                             </div>
@@ -830,6 +875,7 @@ export default function FormEditorPage() {
                 mode="preview"
                 onOpenFullScreen={openFullPreview}
                 onClearAnswers={clearAnswers}
+                timezone={currentTimezone}
               />
             </div>
           )}

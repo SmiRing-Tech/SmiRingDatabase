@@ -1,5 +1,26 @@
 import type { QuestionData } from '../Form/FormEditor/FormEditorPage';
 
+const defaultDateTimeSettings = {
+  format: { 
+    year: true, month: true, date: true, 
+    hour: true, minute: true, second: false, 
+    timezone: false 
+  },
+  is24h: true
+};
+
+// 生年月日などは時間不要
+const birthdayDateTimeSettings = {
+  format: { 
+    year: true, month: true, date: true, 
+    hour: false, minute: false, second: false, 
+    timezone: false 
+  },
+  is24h: true
+};
+
+const defaultDropdownSettings = { searchable: false, multiple: false };
+
 export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   name_english: {
     id: 'name_english',
@@ -7,6 +28,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     description: '',
     type: 'short_text',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
@@ -14,6 +36,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   name_kanji: {
     id: 'name_kanji',
@@ -21,6 +45,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     description: '',
     type: 'short_text',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
@@ -28,20 +53,25 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   birthday: {
     id: 'birthday',
     title: 'Birthday',
     description: '',
-    type: 'short_text',
+    type: 'date_time',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
     gridInputType: 'radio',
-    shortTextValidation: { enabled: true, type: 'date', condition: '', value1: '', value2: '', errorMsg: '' },
+    shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: birthdayDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   hometown: {
     id: 'hometown',
@@ -108,6 +138,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
       { id: 57, text: "海外" },
       { id: 58, text: "その他/無回答" }
     ],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
@@ -115,6 +146,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   english_school: {
     id: 'english_school',
@@ -122,6 +155,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     description: '',
     type: 'short_text',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
@@ -129,6 +163,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   study_abroad_type: {
     id: 'study_abroad_type',
@@ -148,6 +184,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   study_abroad_country: {
     id: 'study_abroad_country',
@@ -155,6 +193,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     description: '',
     type: 'short_text',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
@@ -162,6 +201,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   study_abroad_city: {
     id: 'study_abroad_city',
@@ -169,6 +210,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     description: '',
     type: 'short_text',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
@@ -176,6 +218,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   grade_level: {
     id: 'grade_level',
@@ -203,6 +247,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   study_abroad_history: {
     id: 'study_abroad_history',
@@ -210,6 +256,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     description: '',
     type: 'short_text',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
@@ -217,6 +264,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: true, style: 'arrow' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   current_school: {
     id: 'current_school',
@@ -224,6 +273,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     description: '',
     type: 'short_text',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
@@ -231,6 +281,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   school_history: {
     id: 'school_history',
@@ -238,6 +290,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     description: '',
     type: 'short_text',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
@@ -245,6 +298,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: true, style: 'arrow' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   majors: {
     id: 'majors',
@@ -252,6 +307,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     description: '',
     type: 'short_text',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
@@ -259,6 +315,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: true, style: 'bullet' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   minors: {
     id: 'minors',
@@ -266,6 +324,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     description: '',
     type: 'short_text',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
@@ -273,6 +332,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: true, style: 'bullet' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   major_history: {
     id: 'major_history',
@@ -280,6 +341,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     description: '',
     type: 'short_text',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
@@ -287,6 +349,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: true, style: 'arrow' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   personality: {
     id: 'personality',
@@ -318,6 +382,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   important_values: {
     id: 'important_values',
@@ -354,6 +420,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   future_image: {
     id: 'future_image',
@@ -391,6 +459,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   smiring_department: {
     id: 'smiring_department',
@@ -423,19 +493,24 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   },
   smiring_join_date: {
     id: 'smiring_join_date',
     title: 'Join Date',
     description: '',
-    type: 'short_text',
+    type: 'date_time',
     options: [],
+    allowCustomAnswer: false,
     scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
     gridRows: [],
     gridCols: [],
     gridInputType: 'radio',
-    shortTextValidation: { enabled: true, type: 'date', condition: '', value1: '', value2: '', errorMsg: '' },
+    shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: birthdayDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings
   }
 };

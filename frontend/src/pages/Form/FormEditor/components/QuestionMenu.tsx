@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { 
   CircleDot, CheckSquare, SquareChevronDown, LineDotRightHorizontal, 
-  LayoutGrid, ArrowLeft, PenLine, NotebookPen, Image as ImageIcon, Trash2, Settings 
+  LayoutGrid, ArrowLeft, PenLine, NotebookPen, Image as ImageIcon, Trash2, Settings, Calendar 
 } from 'lucide-react';
 import type { QuestionData } from '../FormEditorPage';
 import QuestionSettingsModal from './QuestionSettingsModal';
@@ -29,6 +29,7 @@ export default function QuestionMenu({ currentType, isActive, onChangeType, onDe
     { value: 'grid_radio',   label: 'グリッド',            icon: LayoutGrid },
     { value: 'short_text',   label: '短文入力',            icon: PenLine },
     { value: 'long_text_md', label: '長文入力',            icon: NotebookPen },
+    { value: 'date_time',    label: '日時選択',            icon: Calendar },
   ];
 
   // 有効な設定があるかどうかを判定（その形式で使える設定のみをチェック）

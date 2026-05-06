@@ -36,6 +36,34 @@ function ValueDisplay({ value, fieldKey }: { value: any, fieldKey?: string }) {
         </span>
       );
     }
+    // ISO形式の日付文字列を検出してフォーマット
+    if (typeof v === 'string' && v.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)) {
+      try {
+        const d = new Date(v);
+        const fieldDef = fieldKey ? BASIC_INFO_FIELDS[fieldKey] : null;
+        const fmt = fieldDef?.dateTimeSettings?.format;
+        
+        if (fmt) {
+          const parts = [];
+          if (fmt.year) parts.push(`${d.getFullYear()}年`);
+          if (fmt.month) parts.push(`${d.getMonth() + 1}月`);
+          if (fmt.date) parts.push(`${d.getDate()}日`);
+          
+          if (fmt.hour || fmt.minute || fmt.second) {
+            const timeParts = [];
+            if (fmt.hour) timeParts.push(`${String(d.getHours()).padStart(2, '0')}時`);
+            if (fmt.minute) timeParts.push(`${String(d.getMinutes()).padStart(2, '0')}分`);
+            if (fmt.second) timeParts.push(`${String(d.getSeconds()).padStart(2, '0')}秒`);
+            parts.push(timeParts.join(''));
+          }
+          return parts.join(' ');
+        }
+        
+        return d.toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' });
+      } catch (e) {
+        return v;
+      }
+    }
     return String(v);
   };
 

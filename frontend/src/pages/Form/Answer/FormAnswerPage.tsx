@@ -26,6 +26,7 @@ export default function FormAnswerPage() {
   const [isSaving, setIsSaving] = useState(false);             // 自動保存中か
   const [lastSavedTime, setLastSavedTime] = useState<Date | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [timezone, setTimezone] = useState<string>('Asia/Tokyo');
 
   // 🌟 複数回答・編集のための追加ステート
   const [responseId, setResponseId] = useState<string | null>(null);
@@ -106,6 +107,7 @@ export default function FormAnswerPage() {
         // 1. まずフォームの基本情報をセット
         setTitle(formData.title || '');
         setDescription(formData.description || '');
+        setTimezone(formData.timezone || 'Asia/Tokyo');
         // 削除済みでない質問のみを表示し、UI用のIDを付与する
         const filteredQuestions = (formData.questions || []).filter((q: any) => !q.isDeleted);
         const mappedQuestions = filteredQuestions.map((q: any) => ({
@@ -383,6 +385,7 @@ export default function FormAnswerPage() {
         }}
         isSaving={isSaving}           // 🌟 追加
         lastSavedTime={lastSavedTime} // 🌟 追加
+        timezone={timezone}
       />
     </div>
   );

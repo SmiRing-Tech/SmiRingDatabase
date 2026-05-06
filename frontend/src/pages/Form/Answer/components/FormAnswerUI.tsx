@@ -25,6 +25,7 @@ type Props = {
   isSaving?: boolean;
   lastSavedTime?: Date | null;
   readonlyInfo?: ReadonlyInfo;
+  timezone?: string;
 };
 
 export default function FormAnswerUI({ 
@@ -32,7 +33,7 @@ export default function FormAnswerUI({
   onAnswerChange, onSubmit, mode, isLoading = false,
   onOpenFullScreen, onClearAnswers,
   isSaving = false, lastSavedTime = null,
-  readonlyInfo,
+  readonlyInfo, timezone,
 }: Props) {
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -161,6 +162,7 @@ export default function FormAnswerUI({
                   if (errors[q.id]) setErrors(prev => { const n = {...prev}; delete n[q.id]; return n; });
                 }}
                 error={errors[q.id]}
+                timezone={timezone}
               />
             </div>
           ))}

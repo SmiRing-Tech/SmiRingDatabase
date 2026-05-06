@@ -225,7 +225,19 @@ export default function SendSettings({
             <input
               type="checkbox"
               checked={hasDeadline}
-              onChange={(e) => setHasDeadline(e.target.checked)}
+              // 💡 ここを修正！単に bool を変えるだけでなく、日付の計算を挟む
+              onChange={(e) => {
+                const isChecked = e.target.checked;
+                setHasDeadline(isChecked);
+                
+                // もし「オン」にして、かつ「元々の期限が設定されていなかった」場合
+                if (isChecked && !initialValues.hasDeadline) {
+                  const nextWeek = new Date();
+                  nextWeek.setDate(nextWeek.getDate() + 7); // 7日後にする
+                  nextWeek.setHours(23, 59, 0, 0);          // 23:59にセット
+                  setDeadlineDate(nextWeek);
+                }
+              }}
               className="w-5 h-5 accent-blue-600 mt-0.5 flex-shrink-0"
             />
             <div className="flex-1">
@@ -241,8 +253,9 @@ export default function SendSettings({
                 onChange={setDeadlineDate}
                 timezone={selectedTimezone}
                 onTimezoneChange={setSelectedTimezone}
-                format={{ year: true, month: true, date: true, hour: true, min: true, timezone: true }}
+                format={{ year: true, month: true, date: true, hour: true, minute: true, timezone: true }}
                 is24h={true}
+                defaultFocus="date"
               />
             </div>
           )}

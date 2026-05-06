@@ -3,6 +3,7 @@ import type { QuestionData } from '../../FormEditor/FormEditorPage';
 import RichTextEditor, { richTextStyles } from '../../../../components/ui/RichTextEditor';
 import * as Icons from 'lucide-react';
 import { CustomDropdown, type DropdownOption } from '../../../../components/ui/CustomDropdown';
+import { SmartDateTimePicker } from '../../../../components/ui/SmartDateTimePicker';
 
 const LucideIcon = ({ name, className }: { name: string, className?: string }) => {
   const Icon = (Icons as any)[name];
@@ -15,9 +16,10 @@ type Props = {
   answer: any;
   onChange: (newAnswer: any) => void;
   error?: string;
+  timezone?: string;
 };
 
-export default function AnswerBox({ question, answer, onChange, error }: Props) {
+export default function AnswerBox({ question, answer, onChange, error, timezone }: Props) {
 
   // --- 各質問タイプの入力UI ---
 
@@ -254,8 +256,6 @@ export default function AnswerBox({ question, answer, onChange, error }: Props) 
       }
     }
 
-    const isDate = validation?.enabled && validation.type === 'date';
-
     const handleArrayChange = (index: number, newValue: string) => {
       const newArray = [...valArray];
       newArray[index] = newValue;
@@ -291,10 +291,10 @@ export default function AnswerBox({ question, answer, onChange, error }: Props) 
             <div className="flex items-center group/input">
               {renderPrefix(index)}
               <input
-                type={isDate ? "date" : "text"}
+                type="text"
                 value={val}
                 onChange={(e) => isMultiple ? handleArrayChange(index, e.target.value) : onChange(e.target.value)}
-                placeholder={isDate ? "" : "回答を入力"}
+                placeholder="回答を入力"
                 className={`flex-1 md:w-2/3 border-b-2 py-2 outline-none transition-colors bg-transparent
                 ${errorMsg ? 'border-red-500 focus:border-red-600' : 'border-gray-200 focus:border-blue-600'}
               `}
@@ -419,6 +419,7 @@ export default function AnswerBox({ question, answer, onChange, error }: Props) 
   );
 
   const renderDropdown = () => {
+    const isMultiple = question.dropdownSettings?.multiple || false;
     const dropdownOptions: DropdownOption[] = question.options.map(opt => ({
       value: opt.text,
       label: opt.text,
@@ -426,15 +427,48 @@ export default function AnswerBox({ question, answer, onChange, error }: Props) 
       icon: opt.lucideIcon ? <LucideIcon name={opt.lucideIcon} className="w-4 h-4" /> : undefined
     }));
 
+    // 複数選択の場合は配列、単一選択の場合は文字列として値を扱う
+    const displayValue = isMultiple 
+      ? (Array.isArray(answer) ? answer : (answer ? [answer] : []))
+      : (answer || '');
+
     return (
       <div className="pt-2">
         <div className="w-full md:w-2/3">
           <CustomDropdown
             options={dropdownOptions}
-            value={answer || ''}
-            onChange={(val) => onChange(val as string)}
+            multiple={isMultiple}
+            value={displayValue as any}
+            onChange={(val) => onChange(val)}
             placeholder="選択してください"
-            searchable={question.options.length > 10} // 10項目以上あれば検索可能にする
+            searchable={question.dropdownSettings?.searchable ?? (question.options.length > 10)}
+          />
+        </div>
+      </div>
+    );
+  };
+
+  const renderDateTime = () => {
+    // answer は ISO形式の文字列または Dateオブジェクトを想定
+    const dateValue = answer ? new Date(answer) : null;
+
+    return (
+      <div className="pt-2">
+        <div className="max-w-sm">
+          <SmartDateTimePicker
+            value={dateValue}
+            onChange={(date) => onChange(date ? date.toISOString() : null)}
+            format={{
+              year: question.dateTimeSettings.format.year,
+              month: question.dateTimeSettings.format.month,
+              date: question.dateTimeSettings.format.date,
+              hour: question.dateTimeSettings.format.hour,
+              minute: question.dateTimeSettings.format.minute,
+              second: question.dateTimeSettings.format.second,
+              timezone: question.dateTimeSettings.format.timezone,
+            }}
+            timezone={timezone}
+            is24h={question.dateTimeSettings.is24h}
           />
         </div>
       </div>
@@ -511,6 +545,7 @@ export default function AnswerBox({ question, answer, onChange, error }: Props) 
         {question.type === 'dropdown' && renderDropdown()}
         {question.type === 'scale' && renderScale()}
         {question.type === 'grid_radio' && renderGrid()}
+        {question.type === 'date_time' && renderDateTime()}
       </div>
     </div>
   );

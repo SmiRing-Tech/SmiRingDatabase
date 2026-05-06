@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import QuestionMenu from './QuestionMenu';
-import { CircleDot, CheckSquare, SquareChevronDown, LineDotRightHorizontal, LayoutGrid, PenLine, NotebookPen, GripVertical, GripHorizontal } from 'lucide-react';
+import { CircleDot, CheckSquare, SquareChevronDown, LineDotRightHorizontal, LayoutGrid, PenLine, NotebookPen, GripVertical, GripHorizontal, Calendar } from 'lucide-react';
 import { DragDropContext, Droppable, Draggable, type DropResult } from '@hello-pangea/dnd';
 import RichTextEditor from '../../../../components/ui/RichTextEditor';
 import type { QuestionData } from '../FormEditorPage';
 import { CustomDropdown, type DropdownOption } from '../../../../components/ui/CustomDropdown';
+import { SmartDateTimePicker } from '../../../../components/ui/SmartDateTimePicker';
 
 type QuestionBoxProps = {
   question: QuestionData;
@@ -16,6 +17,7 @@ type QuestionBoxProps = {
   onCancelSorting?: () => void;
   onChange: (updates: Partial<QuestionData>) => void;
   onDelete: () => void;
+  formTimezone?: string;
 };
 
 export default function QuestionBox({ 
@@ -27,7 +29,8 @@ export default function QuestionBox({
   onStartSorting,
   onCancelSorting,
   onChange, 
-  onDelete 
+  onDelete,
+  formTimezone
 }: QuestionBoxProps) {
   
   const questionTypeIcons: Record<string, React.ElementType> = {
@@ -38,6 +41,7 @@ export default function QuestionBox({
     grid_radio: LayoutGrid, 
     short_text: PenLine, 
     long_text_md: NotebookPen,
+    date_time: Calendar,
   };
 
   // --- 共通の操作ロジック（親の onChange を呼ぶ） ---
@@ -182,7 +186,9 @@ export default function QuestionBox({
       <div className="pt-4">
         <div className="w-full md:w-2/3 border border-gray-300 rounded-md bg-white shadow-sm overflow-hidden">
           <div className="flex items-center justify-between p-3 bg-gray-50 border-b border-gray-200">
-            <span className="text-sm text-gray-500">回答者はここから1つ選びます</span>
+            <span className="text-sm text-gray-500">
+              {question.dropdownSettings?.multiple ? '回答者はここから複数を選びます' : '回答者はここから1つ選びます'}
+            </span>
             <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
           </div>
           <Droppable droppableId={`dropdown-${question.id}`} type="options">
@@ -192,46 +198,66 @@ export default function QuestionBox({
                 ref={provided.innerRef}
                 {...provided.droppableProps}
               >
-                {question.options.map((opt, index) => {
-                  const isDuplicate = question.options.some(other => other.id !== opt.id && other.text.trim() !== '' && other.text.trim() === opt.text.trim());
-                  return (
-                    <Draggable key={opt.id.toString()} draggableId={opt.id.toString()} index={index}>
-                      {(provided, snapshot) => (
-                        <div 
-                          ref={provided.innerRef}
-                          {...provided.draggableProps}
-                          style={provided.draggableProps.style}
-                          className={`space-y-1 ${snapshot.isDragging ? 'opacity-80 bg-white rounded-lg shadow-md z-50' : ''}`}
-                        >
-                          <div className={`flex items-center space-x-3 group/option p-2 hover:bg-gray-50 rounded-md transition-colors ${snapshot.isDragging ? 'bg-gray-50' : ''}`}>
-                            <div 
-                              {...provided.dragHandleProps} 
-                              className="text-gray-300 hover:text-gray-500 cursor-grab active:cursor-grabbing transition-colors"
-                            >
-                              <GripVertical className="w-4 h-4" />
+                {(() => {
+                  let itemCount = 0;
+                  return question.options.map((opt, index) => {
+                    if (!opt.isLabel) itemCount++;
+                    const displayIndex = itemCount;
+                    const isDuplicate = question.options.some(other => !other.isLabel && other.id !== opt.id && other.text.trim() !== '' && other.text.trim() === opt.text.trim());
+                    
+                    return (
+                      <Draggable key={opt.id.toString()} draggableId={opt.id.toString()} index={index}>
+                        {(provided, snapshot) => (
+                          <div 
+                            ref={provided.innerRef}
+                            {...provided.draggableProps}
+                            style={provided.draggableProps.style}
+                            className={`space-y-1 ${snapshot.isDragging ? 'opacity-80 bg-white rounded-lg shadow-md z-50' : ''}`}
+                          >
+                            <div className={`flex items-center space-x-3 group/option p-2 hover:bg-gray-50 rounded-md transition-colors ${snapshot.isDragging ? 'bg-gray-50' : ''}`}>
+                              <div 
+                                {...provided.dragHandleProps} 
+                                className="text-gray-300 hover:text-gray-500 cursor-grab active:cursor-grabbing transition-colors"
+                              >
+                                <GripVertical className="w-4 h-4" />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const newOptions = question.options.map(o => o.id === opt.id ? { ...o, isLabel: !o.isLabel } : o);
+                                  onChange({ options: newOptions });
+                                }}
+                                className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-all ${opt.isLabel ? 'bg-purple-600 text-white shadow-sm' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}
+                                title={opt.isLabel ? "通常アイテムに戻す" : "セクションラベルにする"}
+                              >
+                                {opt.isLabel ? 'LABEL' : 'ITEM'}
+                              </button>
+                              <span className={`font-bold w-5 text-right flex-shrink-0 ${opt.isLabel ? 'opacity-0' : (isDuplicate ? 'text-red-300' : 'text-gray-400')}`}>
+                                {!opt.isLabel && `${displayIndex}.`}
+                              </span>
+                              <input 
+                                type="text" value={opt.text} placeholder={opt.isLabel ? "セクションの見出しを入力..." : `選択肢 ${displayIndex}`}
+                                onChange={(e) => handleUpdateOption(opt.id, e.target.value)}
+                                className={`flex-1 text-sm bg-transparent border-b transition-colors focus:outline-none py-1 ${
+                                  opt.isLabel ? 'font-bold text-purple-700 border-purple-200 focus:border-purple-500' :
+                                  isDuplicate 
+                                    ? 'border-red-500 text-red-600 focus:border-red-600' 
+                                    : 'border-transparent focus:border-blue-500'
+                                }`} 
+                              />
+                              <button onClick={() => handleRemoveOption(opt.id)} className="text-gray-300 hover:text-red-500 transition-colors flex-shrink-0">✕</button>
                             </div>
-                            <span className={`font-bold w-5 text-right flex-shrink-0 ${isDuplicate ? 'text-red-300' : 'text-gray-400'}`}>{index + 1}.</span>
-                            <input 
-                              type="text" value={opt.text} placeholder={`選択肢 ${index + 1}`}
-                              onChange={(e) => handleUpdateOption(opt.id, e.target.value)}
-                              className={`flex-1 text-sm bg-transparent border-b transition-colors focus:outline-none py-1 ${
-                                isDuplicate 
-                                  ? 'border-red-500 text-red-600 focus:border-red-600' 
-                                  : 'border-transparent focus:border-blue-500'
-                              }`} 
-                            />
-                            <button onClick={() => handleRemoveOption(opt.id)} className="text-gray-300 hover:text-red-500 transition-colors flex-shrink-0">✕</button>
+                            {isDuplicate && !opt.isLabel && (
+                              <p className="text-[10px] text-red-500 font-bold pl-16 animate-in fade-in slide-in-from-top-1">
+                                「{opt.text}」はすでに存在します
+                              </p>
+                            )}
                           </div>
-                          {isDuplicate && (
-                            <p className="text-[10px] text-red-500 font-bold pl-16 animate-in fade-in slide-in-from-top-1">
-                              「{opt.text}」はすでに存在します
-                            </p>
-                          )}
-                        </div>
-                      )}
-                    </Draggable>
-                  );
-                })}
+                        )}
+                      </Draggable>
+                    );
+                  });
+                })()}
                 {provided.placeholder}
                 <div className="flex items-center space-x-2 pt-2 cursor-pointer text-blue-500 hover:text-blue-700 p-2 pl-9" onClick={handleAddOption}>
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
@@ -507,6 +533,33 @@ export default function QuestionBox({
     );
   };
 
+  // --- UI: 日時選択 ---
+  const renderDateTime = () => {
+    return (
+      <div className="pt-4 max-w-sm">
+        <SmartDateTimePicker
+          value={null}
+          onChange={() => {}}
+          format={{
+            year: question.dateTimeSettings.format.year,
+            month: question.dateTimeSettings.format.month,
+            date: question.dateTimeSettings.format.date,
+            hour: question.dateTimeSettings.format.hour,
+            minute: question.dateTimeSettings.format.minute,
+            second: question.dateTimeSettings.format.second,
+            timezone: question.dateTimeSettings.format.timezone,
+          }}
+          timezone={formTimezone}
+          is24h={question.dateTimeSettings.is24h}
+          placeholder="回答者はここをクリックして選択します"
+        />
+        <p className="mt-2 text-[10px] text-gray-400 font-medium ml-1">
+          ※ エディタ上ではプレビューのみ可能です
+        </p>
+      </div>
+    );
+  };
+
   return (
     <DragDropContext onDragEnd={handleDragEnd}>
       <div className={`relative w-full transition-all duration-150 ease-in-out 
@@ -593,8 +646,9 @@ export default function QuestionBox({
         {question.type === 'grid_radio' && renderGrid()}
         {question.type === 'short_text' && renderShortText()}
         {question.type === 'long_text_md' && renderMarkdown()}
+        {question.type === 'date_time' && renderDateTime()}
         
-        {!['radio', 'checkbox', 'dropdown', 'scale', 'long_text_md', 'short_text', 'grid_radio'].includes(question.type) && (
+        {!['radio', 'checkbox', 'dropdown', 'scale', 'long_text_md', 'short_text', 'grid_radio', 'date_time'].includes(question.type) && (
           <div className="pt-4 p-4 bg-red-50 text-red-600 rounded-md flex items-center justify-center">
             <span className="font-bold">Invalid Question Type (未実装の形式です)</span>
           </div>
