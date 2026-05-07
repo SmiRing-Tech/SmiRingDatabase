@@ -13,3 +13,14 @@
 .tiptap:focus {
   outline: none;
 }
+
+/* スクロールバー非表示ユーティリティ */
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}

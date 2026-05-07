@@ -63,6 +63,11 @@ export type QuestionData = {
     searchable: boolean;
     multiple: boolean;
   };
+  fileUploadSettings: {
+    maxFiles: number;
+    maxSizeMB: number;
+    allowedTypes: string[];
+  };
 };
 
 const createDefaultQuestion = (): QuestionData => ({
@@ -91,6 +96,11 @@ const createDefaultQuestion = (): QuestionData => ({
   dropdownSettings: {
     searchable: false,
     multiple: false
+  },
+  fileUploadSettings: {
+    maxFiles: 1,
+    maxSizeMB: 10,
+    allowedTypes: ['image', 'pdf']
   }
 });
 
@@ -258,7 +268,12 @@ export default function FormEditorPage() {
                   format: { year: true, month: true, date: true, hour: true, minute: true, second: false, timezone: false },
                   is24h: true
                 },
-                dropdownSettings: q.options?.dropdownSettings || { searchable: false, multiple: false }
+                dropdownSettings: q.options?.dropdownSettings || { searchable: false, multiple: false },
+                fileUploadSettings: q.options?.fileUploadSettings || {
+                  maxFiles: 1,
+                  maxSizeMB: 10,
+                  allowedTypes: ['image', 'pdf']
+                }
               };
             });
             setQuestions(loadedQuestions);
@@ -595,6 +610,7 @@ export default function FormEditorPage() {
             mode="preview"
             onClearAnswers={clearAnswers}
             timezone={currentTimezone}
+            formId={formId}
           />
         </div>
 

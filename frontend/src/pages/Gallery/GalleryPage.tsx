@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import GallerySidebar from './components/GallerySidebar';
 import PhotoViewModal from '../../components/ui/PhotoViewModal';
-import PhotoUploadModal from '../Profile/components/PhotoUploadModal';
+import PhotoUploadModal from '../../components/ui/PhotoUploadModal';
 import { supabase } from '../../lib/supabase';
 import { API_BASE_URL } from '../../config';
 import { Plus, User } from 'lucide-react';
@@ -21,6 +21,7 @@ export type GalleryItem = {
     name_english: string | null;
   };
   view_url: string;
+  thumbnail_url: string;
 };
 
 export default function GalleryPage() {
@@ -31,6 +32,7 @@ export default function GalleryPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [photos, setPhotos] = useState<GalleryItem[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false); // スマホ用サイドバー開閉
 
   const fetchPhotos = useCallback(async () => {
     try {
@@ -53,6 +55,12 @@ export default function GalleryPage() {
     }
   }, []);
 
+  const handleClearFilters = () => {
+    setSearchQuery('');
+    setFilterType([]);
+    setFilterPerson([]);
+  };
+
   useEffect(() => {
     fetchPhotos();
   }, [fetchPhotos]);
@@ -65,7 +73,18 @@ export default function GalleryPage() {
         filterType={filterType} setFilterType={setFilterType}
         filterPerson={filterPerson} setFilterPerson={setFilterPerson}
         photos={photos}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        onClear={handleClearFilters}
       />
+
+      {/* スマホ用サイドバー背景オーバーレイ */}
+      {isSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/20 z-30 md:hidden animate-in fade-in duration-200"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
       
       {/* 右側のグリッド */}
       <GalleryGrid
@@ -76,6 +95,8 @@ export default function GalleryPage() {
         filterType={filterType}
         filterPerson={filterPerson}
         fetchPhotos={fetchPhotos}
+        setIsSidebarOpen={setIsSidebarOpen}
+        onClearFilters={handleClearFilters}
       />
     </div>
   );
@@ -89,9 +110,11 @@ type GridProps = {
   filterType: string[];
   filterPerson: string[];
   fetchPhotos: () => void;
+  setIsSidebarOpen: (val: boolean) => void;
+  onClearFilters: () => void;
 };
 
-function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType, filterPerson, fetchPhotos }: GridProps) {
+function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType, filterPerson, fetchPhotos, setIsSidebarOpen, onClearFilters }: GridProps) {
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState<{ url: string; description: string | null; isOwner: boolean; photo: GalleryItem } | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -114,7 +137,10 @@ function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType
               <span className="hidden sm:inline">Add Photo</span>
             </button>
             {/* スマホ表示の時にだけ出る「フィルターを開く」ボタン */}
-            <button className="md:hidden p-2 text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg">
+            <button 
+              onClick={() => setIsSidebarOpen(true)}
+              className="md:hidden p-2 text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+            >
               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
               </svg>
@@ -136,7 +162,7 @@ function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType
           
           const matchType = filterType.length === 0 || (photo.image_type && filterType.includes(photo.image_type));
           const matchPerson = filterPerson.length === 0 || filterPerson.includes(photo.user_id);
-          const matchSearch = !searchQuery || name.includes(searchQuery) || desc.includes(searchQuery);
+          const matchSearch = !searchQuery || name.toLowerCase().includes(searchQuery.toLowerCase()) || desc.toLowerCase().includes(searchQuery.toLowerCase());
           
           return matchType && matchPerson && matchSearch;
         });
@@ -157,7 +183,12 @@ function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType
                   setViewModalOpen(true);
                 }}
               >
-                <img src={photo.view_url} alt={photo.image_type || '写真'} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                <img 
+                  src={photo.thumbnail_url || photo.view_url} 
+                  alt={photo.image_type || '写真'} 
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" 
+                  loading="lazy"
+                />
                 {photo.image_type === 'avatar' && (
                   <div className="absolute top-2 right-2 bg-white/90 p-1.5 rounded-md shadow-sm backdrop-blur-sm z-10" title="アバター写真">
                     <User className="w-4 h-4 text-gray-500" />
@@ -174,8 +205,14 @@ function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType
             ))}
           </div>
         ) : (
-          <div className="w-full py-16 text-center text-gray-400 border-2 border-dashed border-gray-200 rounded-xl">
-            条件に一致する写真がありません
+          <div className="w-full py-16 text-center text-gray-400 border-2 border-dashed border-gray-200 rounded-xl flex flex-col items-center justify-center gap-4">
+            <p>条件に一致する写真がありません</p>
+            <button 
+              onClick={onClearFilters}
+              className="text-blue-600 font-bold hover:underline text-sm"
+            >
+              フィルターをクリアする
+            </button>
           </div>
         );
       })()}

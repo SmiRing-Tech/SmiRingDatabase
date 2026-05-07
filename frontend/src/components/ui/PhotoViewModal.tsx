@@ -156,9 +156,9 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
             className="max-w-full max-h-[65vh] object-contain rounded-lg shadow-2xl"
           />
 
-          {/* 自分の写真の場合のみ、ホバー時に編集・削除ボタンを表示 */}
+          {/* 自分の写真の場合のみ、編集・削除ボタンを表示（スマホは常時、PCはホバー時） */}
           {isOwner && (
-            <div className="absolute top-4 right-4 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+            <div className="absolute top-4 right-4 flex items-center gap-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-200">
               {/* 編集ボタン */}
               <button
                 onClick={() => setIsEditModalOpen(true)}

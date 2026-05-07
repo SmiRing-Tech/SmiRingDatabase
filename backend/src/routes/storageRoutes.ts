@@ -3,6 +3,7 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } fro
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { supabase } from '../lib/supabase';
 import multer from 'multer';
+import sharp from 'sharp';
 
 const router = Router();
 
@@ -27,7 +28,13 @@ const BUCKET_NAME = process.env.R2_BUCKET_NAME!;
 // バックエンド側での最終防衛線として 5MB 以上のファイルは弾く（フロントエンドで事前に圧縮される前提）
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit for gallery
+});
+
+// フォーム添付ファイル用の multer（Zip等も考慮して上限を高めに設定）
+const attachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit for attachments
 });
 
 // ==========================================
@@ -52,23 +59,42 @@ router.post('/api/gallery/upload', upload.single('file'), async (req: Request, r
     const file = req.file;
 
     // ファイル名を一意にする
+    const timestamp = Date.now();
     const ext = file.originalname.split('.').pop();
-    const key = `users/${user.id}/${Date.now()}.${ext}`;
+    const largeKey = `gallery/large/${user.id}/${timestamp}.${ext}`;
+    const thumbKey = `gallery/thumbnails/${user.id}/${timestamp}.webp`;
 
-    // Step 1: R2へアップロード（サーバー→R2 なのでCORS不要）
+    // Step 1: サムネイル生成 (sharp)
+    // 縦横どちらか長い方を 400px に制限し、WebP 形式で圧縮
+    const thumbBuffer = await sharp(file.buffer)
+      .resize(400, 400, { fit: 'inside' })
+      .webp({ quality: 80 })
+      .toBuffer();
+
+    // Step 2: R2へアップロード（オリジナル & サムネイル）
+    // オリジナル (Large)
     await r2.send(new PutObjectCommand({
       Bucket: BUCKET_NAME,
-      Key: key,
+      Key: largeKey,
       Body: file.buffer,
       ContentType: file.mimetype,
     }));
 
-    // Step 2: galleryテーブルへ登録
+    // サムネイル
+    await r2.send(new PutObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: thumbKey,
+      Body: thumbBuffer,
+      ContentType: 'image/webp',
+    }));
+
+    // Step 3: galleryテーブルへ登録
     const { data: gallery, error: insertError } = await supabase
       .from('gallery')
       .insert({
         user_id: user.id,
-        storage_path: key,
+        storage_path: largeKey,
+        thumbnail_path: thumbKey,
         image_type: image_type || null,
         tags: [],
         visibility: visibility || 'organization',
@@ -152,12 +178,25 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
       }
 
       let viewUrl = '';
+      let thumbnailUrl = '';
+      
       try {
+        // メイン画像 (Large)
         const command = new GetObjectCommand({
           Bucket: BUCKET_NAME,
           Key: g.storage_path,
         });
         viewUrl = await getSignedUrl(r2, command, { expiresIn: 3600 });
+
+        // サムネイル画像
+        // もし thumbnail_path がない場合は、フォールバックとしてオリジナルを表示する
+        const thumbKey = g.thumbnail_path || g.storage_path;
+        const thumbCommand = new GetObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: thumbKey,
+        });
+        thumbnailUrl = await getSignedUrl(r2, thumbCommand, { expiresIn: 3600 });
+
       } catch (err) {
         console.error('署名付きURL生成エラー:', err);
       }
@@ -166,6 +205,7 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
         ...g,
         basic_profile_info: profile ? { ...profile, avatar_url: avatarUrl } : null,
         view_url: viewUrl,
+        thumbnail_url: thumbnailUrl,
       };
     }));
 
@@ -215,7 +255,16 @@ router.get('/api/gallery/user/:userId', async (req: Request, res: Response) => {
           Key: item.storage_path,
         });
         const viewUrl = await getSignedUrl(r2, command, { expiresIn: 3600 });
-        return { ...item, view_url: viewUrl };
+
+        // サムネイル
+        const thumbKey = item.thumbnail_path || item.storage_path;
+        const thumbCommand = new GetObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: thumbKey,
+        });
+        const thumbnailUrl = await getSignedUrl(r2, thumbCommand, { expiresIn: 3600 });
+
+        return { ...item, view_url: viewUrl, thumbnail_url: thumbnailUrl };
       })
     );
 
@@ -366,6 +415,65 @@ router.delete('/api/gallery/:id', async (req: Request, res: Response) => {
 
   } catch (error: any) {
     console.error('ギャラリー削除エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// 📎 フォーム添付ファイルアップロード API
+// ==========================================
+router.post('/api/forms/attachments/upload', attachmentUpload.single('file'), async (req: Request, res: Response) => {
+  try {
+    // 🔐 JWT検証
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !user) return res.status(401).json({ error: '認証に失敗しました' });
+
+    if (!req.file) return res.status(400).json({ error: 'ファイルがありません' });
+
+    const { form_id } = req.body;
+    if (!form_id) return res.status(400).json({ error: 'form_id が指定されていません' });
+
+    const file = req.file;
+    const timestamp = Date.now();
+    const safeFileName = file.originalname.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
+    const storagePath = `form_attachments/${form_id}/${user.id}/${timestamp}_${safeFileName}`;
+
+    let uploadBuffer = file.buffer;
+    let contentType = file.mimetype;
+
+    // 画像の場合は圧縮を試みる (Sharpが対応している形式のみ)
+    if (file.mimetype.startsWith('image/')) {
+      try {
+        uploadBuffer = await sharp(file.buffer)
+          .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 80, progressive: true })
+          .toBuffer();
+        contentType = 'image/jpeg';
+      } catch (sharpError) {
+        console.warn('画像圧縮に失敗したため、オリジナルをアップロードします:', sharpError);
+      }
+    }
+
+    // R2へアップロード
+    await r2.send(new PutObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: storagePath,
+      Body: uploadBuffer,
+      ContentType: contentType,
+    }));
+
+    res.json({
+      message: 'ファイルをアップロードしました',
+      path: storagePath,
+      filename: file.originalname,
+      mimetype: contentType,
+      size: uploadBuffer.length
+    });
+
+  } catch (error: any) {
+    console.error('添付ファイルアップロードエラー:', error);
     res.status(500).json({ error: error.message });
   }
 });

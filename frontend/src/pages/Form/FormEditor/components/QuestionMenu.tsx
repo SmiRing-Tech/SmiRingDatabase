@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { 
   CircleDot, CheckSquare, SquareChevronDown, LineDotRightHorizontal, 
-  LayoutGrid, ArrowLeft, PenLine, NotebookPen, Image as ImageIcon, Trash2, Settings, Calendar 
+  LayoutGrid, ArrowLeft, PenLine, NotebookPen, Image as ImageIcon, Trash2, Settings, Calendar, UploadCloud 
 } from 'lucide-react';
 import type { QuestionData } from '../FormEditorPage';
 import QuestionSettingsModal from './QuestionSettingsModal';
@@ -30,20 +30,22 @@ export default function QuestionMenu({ currentType, isActive, onChangeType, onDe
     { value: 'short_text',   label: '短文入力',            icon: PenLine },
     { value: 'long_text_md', label: '長文入力',            icon: NotebookPen },
     { value: 'date_time',    label: '日時選択',            icon: Calendar },
+    { value: 'file_upload',  label: 'ファイルアップロード',   icon: UploadCloud },
   ];
 
   // 有効な設定があるかどうかを判定（その形式で使える設定のみをチェック）
   const hasActiveSettings = 
     (['radio', 'checkbox', 'dropdown'].includes(question.type) && question.allowCustomAnswer) ||
     (question.type === 'checkbox' && question.checkboxValidation?.enabled) ||
-    (question.type === 'short_text' && (question.shortTextValidation?.enabled || question.shortTextMultiple?.enabled));
+    (question.type === 'short_text' && (question.shortTextValidation?.enabled || question.shortTextMultiple?.enabled)) ||
+    (question.type === 'file_upload'); // ファイルアップロードは常に設定項目があるためON扱い
 
   // 🌟 PC用（右側に浮かぶ）とスマホ用（下部に固定）の共通・個別クラス
   const visibilityClass = isActive 
     ? "opacity-100 pointer-events-auto" 
     : "opacity-0 pointer-events-none";
   const desktopClass = "hidden md:flex absolute -right-52 top-0 flex-col w-48 bg-white shadow-lg border border-gray-100 rounded-xl p-2 space-y-1";
-  const mobileClass = "flex md:hidden fixed bottom-0 left-0 right-0 w-full bg-white shadow-[0_-10px_20px_rgba(0,0,0,0.1)] border-t border-gray-200 p-2 pb-safe z-[50]";
+  const mobileClass = "flex md:hidden fixed bottom-0 left-0 right-0 w-full bg-white shadow-[0_-15px_30px_rgba(0,0,0,0.08)] border-t border-gray-100 p-4 pb-8 z-[50] animate-in slide-in-from-bottom duration-300";
 
   // --- 状態1: 質問形式の選択メニュー ---
   if (isTypeMenuOpen) {
@@ -66,16 +68,19 @@ export default function QuestionMenu({ currentType, isActive, onChangeType, onDe
         </div>
 
         {/* スマホ表示 (横スクロール) */}
-        <div className={`${mobileClass} ${visibilityClass} flex-row overflow-x-auto gap-2 px-4 items-center`}>
-          <button onClick={() => setIsTypeMenuOpen(false)} className="p-2 shrink-0 bg-gray-100 rounded-full text-gray-600 active:bg-gray-200">
-            <ArrowLeft className="w-5 h-5" />
+        <div className={`${mobileClass} ${visibilityClass} flex-row overflow-x-auto gap-3 px-6 items-center no-scrollbar`}>
+          <button 
+            onClick={() => setIsTypeMenuOpen(false)} 
+            className="w-12 h-12 flex items-center justify-center shrink-0 bg-gray-100 rounded-2xl text-gray-600 active:bg-gray-200 active:scale-95 transition-all"
+          >
+            <ArrowLeft className="w-6 h-6" />
           </button>
-          <div className="w-px h-6 bg-gray-200 shrink-0 mx-1" />
+          <div className="w-px h-10 bg-gray-200 shrink-0 mx-1" />
           {questionTypes.map(({ value, label, icon: Icon }) => (
             <button key={value} onClick={() => { onChangeType(value); setIsTypeMenuOpen(false); }}
-              className={`flex items-center gap-1.5 shrink-0 px-4 py-2.5 text-sm rounded-full font-bold transition-colors ${currentType === value ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-700'}`}
+              className={`flex flex-col items-center justify-center gap-1.5 shrink-0 px-6 py-4 min-w-[100px] rounded-2xl font-black text-[11px] transition-all active:scale-95 ${currentType === value ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' : 'bg-gray-50 text-gray-500'}`}
             >
-              <Icon className="w-4 h-4" />
+              <Icon className={`w-6 h-6 ${currentType === value ? 'text-white' : 'text-gray-400'}`} strokeWidth={2.5} />
               {label}
             </button>
           ))}
@@ -129,30 +134,36 @@ export default function QuestionMenu({ currentType, isActive, onChangeType, onDe
       </div>
 
       {/* スマホ表示 (等間隔のボトムツールバー) */}
-      <div className={`${mobileClass} ${visibilityClass} flex-row justify-around items-center`}>
-        <button onClick={() => setIsTypeMenuOpen(true)} className="flex flex-col items-center justify-center p-2 text-gray-600 active:text-blue-600 w-20">
-          <svg className="w-6 h-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" /></svg>
-          <span className="text-[10px] font-bold">形式</span>
+      <div className={`${mobileClass} ${visibilityClass} flex-row justify-around items-center px-4`}>
+        <button onClick={() => setIsTypeMenuOpen(true)} className="flex flex-col items-center justify-center py-2 text-gray-500 active:text-blue-600 active:scale-90 transition-all w-16">
+          <div className="bg-gray-50 p-3 rounded-2xl mb-1.5 group-active:bg-blue-50">
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" /></svg>
+          </div>
+          <span className="text-[10px] font-black uppercase tracking-tighter">形式</span>
         </button>
-        <button className="flex flex-col items-center justify-center p-2 text-gray-600 active:text-blue-600 w-20">
-          <ImageIcon className="w-6 h-6 mb-1" />
-          <span className="text-[10px] font-bold">画像</span>
+        <button className="flex flex-col items-center justify-center py-2 text-gray-500 active:text-blue-600 active:scale-90 transition-all w-16">
+          <div className="bg-gray-50 p-3 rounded-2xl mb-1.5">
+            <ImageIcon className="w-6 h-6" />
+          </div>
+          <span className="text-[10px] font-black uppercase tracking-tighter">画像</span>
         </button>
         <button 
           onClick={() => setIsSettingsOpen(true)}
-          className="flex flex-col items-center justify-center p-2 text-gray-600 active:text-blue-600 w-20 relative"
+          className="flex flex-col items-center justify-center py-2 text-gray-500 active:text-blue-600 active:scale-90 transition-all w-16"
         >
-          <div className="relative">
-            <Settings className="w-6 h-6 mb-1" />
+          <div className="bg-gray-50 p-3 rounded-2xl mb-1.5 relative">
+            <Settings className="w-6 h-6" />
             {hasActiveSettings && (
-              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-blue-500 rounded-full border-2 border-white" />
+              <span className="absolute top-2 right-2 w-3 h-3 bg-blue-500 rounded-full border-2 border-white shadow-sm" />
             )}
           </div>
-          <span className="text-[10px] font-bold">設定</span>
+          <span className="text-[10px] font-black uppercase tracking-tighter">設定</span>
         </button>
-        <button onClick={onDelete} className="flex flex-col items-center justify-center p-2 text-red-500 active:text-red-600 w-20">
-          <Trash2 className="w-6 h-6 mb-1" />
-          <span className="text-[10px] font-bold">削除</span>
+        <button onClick={onDelete} className="flex flex-col items-center justify-center py-2 text-red-400 active:text-red-600 active:scale-90 transition-all w-16">
+          <div className="bg-red-50 p-3 rounded-2xl mb-1.5">
+            <Trash2 className="w-6 h-6" />
+          </div>
+          <span className="text-[10px] font-black uppercase tracking-tighter">削除</span>
         </button>
       </div>
     </>

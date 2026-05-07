@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import QuestionMenu from './QuestionMenu';
-import { CircleDot, CheckSquare, SquareChevronDown, LineDotRightHorizontal, LayoutGrid, PenLine, NotebookPen, GripVertical, GripHorizontal, Calendar } from 'lucide-react';
+import { CircleDot, CheckSquare, SquareChevronDown, LineDotRightHorizontal, LayoutGrid, PenLine, NotebookPen, GripVertical, GripHorizontal, Calendar, UploadCloud } from 'lucide-react';
 import { DragDropContext, Droppable, Draggable, type DropResult } from '@hello-pangea/dnd';
 import RichTextEditor from '../../../../components/ui/RichTextEditor';
 import type { QuestionData } from '../FormEditorPage';
@@ -42,6 +42,7 @@ export default function QuestionBox({
     short_text: PenLine, 
     long_text_md: NotebookPen,
     date_time: Calendar,
+    file_upload: UploadCloud,
   };
 
   // --- 共通の操作ロジック（親の onChange を呼ぶ） ---
@@ -560,6 +561,27 @@ export default function QuestionBox({
     );
   };
 
+  // --- UI: ファイルアップロード ---
+  const renderFileUpload = () => {
+    return (
+      <div className="pt-4 p-6 bg-gray-50 border-2 border-dashed border-gray-200 rounded-xl flex flex-col items-center justify-center gap-2">
+        <UploadCloud className="w-10 h-10 text-gray-300" />
+        <p className="text-sm font-bold text-gray-400">回答者はここにファイルをアップロードします</p>
+        <div className="flex flex-wrap gap-2 justify-center mt-2">
+          <span className="text-[10px] bg-white px-2 py-1 rounded border border-gray-100 text-gray-500 font-bold uppercase tracking-wider">
+            最大 {question.fileUploadSettings?.maxFiles || 1} 個
+          </span>
+          <span className="text-[10px] bg-white px-2 py-1 rounded border border-gray-100 text-gray-500 font-bold uppercase tracking-wider">
+            1ファイル最大 {question.fileUploadSettings?.maxSizeMB || 10} MB
+          </span>
+          <span className="text-[10px] bg-white px-2 py-1 rounded border border-gray-100 text-gray-500 font-bold uppercase tracking-wider">
+            許可: {question.fileUploadSettings?.allowedTypes?.join(', ') || 'image, pdf'}
+          </span>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <DragDropContext onDragEnd={handleDragEnd}>
       <div className={`relative w-full transition-all duration-150 ease-in-out 
@@ -647,8 +669,9 @@ export default function QuestionBox({
         {question.type === 'short_text' && renderShortText()}
         {question.type === 'long_text_md' && renderMarkdown()}
         {question.type === 'date_time' && renderDateTime()}
+        {question.type === 'file_upload' && renderFileUpload()}
         
-        {!['radio', 'checkbox', 'dropdown', 'scale', 'long_text_md', 'short_text', 'grid_radio', 'date_time'].includes(question.type) && (
+        {!['radio', 'checkbox', 'dropdown', 'scale', 'long_text_md', 'short_text', 'grid_radio', 'date_time', 'file_upload'].includes(question.type) && (
           <div className="pt-4 p-4 bg-red-50 text-red-600 rounded-md flex items-center justify-center">
             <span className="font-bold">Invalid Question Type (未実装の形式です)</span>
           </div>

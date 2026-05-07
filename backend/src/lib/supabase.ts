@@ -10,4 +10,10 @@ if (!supabaseUrl || !supabaseSecretKey) {
   process.exit(1);
 }
 
-export const supabase = createClient(supabaseUrl, supabaseSecretKey);
+export const supabase = createClient(supabaseUrl, supabaseSecretKey, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+  },
+});

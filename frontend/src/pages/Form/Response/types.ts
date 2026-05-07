@@ -69,6 +69,11 @@ export function formatAnswerValue(question: QuestionData, answer: any): string {
       const rowCount = Object.keys(answer).length;
       return `${rowCount}行 回答済み`;
     }
+    case 'file_upload': {
+      if (!Array.isArray(answer)) return String(answer);
+      if (answer.length === 0) return '—';
+      return `${answer.length}件のファイル`;
+    }
     default:
       return String(answer);
   }

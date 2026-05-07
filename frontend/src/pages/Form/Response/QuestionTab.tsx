@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 import {
@@ -9,6 +9,19 @@ import type { TabProps, ResponseSummary } from './types';
 import { getDisplayName, CHART_COLORS } from './types';
 import type { QuestionData } from '../FormEditor/FormEditorPage';
 import NavSelector from './NavSelector';
+import { richTextStyles } from '../../../components/ui/RichTextEditor';
+import { ResponseCopyButton } from './components/ResponseCopyButton';
+import { supabase } from '../../../lib/supabase';
+import { 
+  Download, ExternalLink, File as FileIcon, FileImage, 
+  FileText, FileArchive, FileVideo, Music 
+} from 'lucide-react';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
+
+if (typeof window !== 'undefined' && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+}
 
 // ─── ResponsiveContainer 代替: ResizeObserver でコンテナ幅を計測 ─
 function useContainerWidth(ref: React.RefObject<HTMLDivElement | null>) {
@@ -138,17 +151,22 @@ export default function QuestionTab({ questions, responses, indexMap, isAnonymou
           </div>
 
           {/* チャート */}
-          {(selectedQuestion.type === 'radio' || selectedQuestion.type === 'dropdown') && (
+          {(selectedQuestion.type === 'radio' || (selectedQuestion.type === 'dropdown' && !selectedQuestion.dropdownSettings?.multiple)) && (
             <PieChartView question={selectedQuestion} responses={responses} onBarClick={openModal} />
           )}
-          {(selectedQuestion.type === 'checkbox' || selectedQuestion.type === 'scale') && (
+          {(selectedQuestion.type === 'checkbox' || selectedQuestion.type === 'scale' || (selectedQuestion.type === 'dropdown' && selectedQuestion.dropdownSettings?.multiple)) && (
             <BarChartView question={selectedQuestion} responses={responses} onBarClick={openModal} />
           )}
           {selectedQuestion.type === 'grid_radio' && (
             <GridBarView question={selectedQuestion} responses={responses} onBarClick={openModal} />
           )}
-          {(selectedQuestion.type === 'short_text' || selectedQuestion.type === 'long_text_md') && (
+          {(selectedQuestion.type === 'short_text' || 
+             selectedQuestion.type === 'long_text_md' || 
+             selectedQuestion.type === 'date_time') && (
             <TextBubbleView question={selectedQuestion} responses={responses} indexMap={indexMap} isAnonymous={isAnonymous} />
+          )}
+          {selectedQuestion.type === 'file_upload' && (
+            <FileResponseView question={selectedQuestion} responses={responses} indexMap={indexMap} isAnonymous={isAnonymous} />
           )}
         </div>
       </div>
@@ -208,6 +226,7 @@ function PieChartView({ question, responses, onBarClick }: {
             <Pie data={data} cx={cx} cy={cy}
               innerRadius={65} outerRadius={110}
               dataKey="value" labelLine={false} label={renderLabel}
+              isAnimationActive={false}
               onClick={(d: any) => onBarClick(d.name as string, d.userIds as string[])} cursor="pointer"
             >
               {data.map((d, i) => <Cell key={i} fill={d.fill} />)}
@@ -237,7 +256,7 @@ function PieChartView({ question, responses, onBarClick }: {
   );
 }
 
-// ─── 📊 棒グラフ ──────────────────────────────────────
+// ─── 📊 棒グラフ (Rechartsの美しさを保ちつつグループ化に対応) ────────────────────────
 function BarChartView({ question, responses, onBarClick }: {
   question: QuestionData; responses: ResponseSummary[];
   onBarClick: (label: string, userIds: string[]) => void;
@@ -246,10 +265,15 @@ function BarChartView({ question, responses, onBarClick }: {
   const width = useContainerWidth(containerRef);
 
   const countMap = new Map<string | number, string[]>();
+  const totalRespondents = responses.filter(r => {
+    const val = r.content?.[question.id];
+    return val !== null && val !== undefined && (Array.isArray(val) ? val.length > 0 : val !== '');
+  }).length;
+
   responses.forEach(r => {
     const val = r.content?.[question.id];
     if (val === null || val === undefined) return;
-    if (question.type === 'checkbox' && Array.isArray(val)) {
+    if (Array.isArray(val)) {
       val.forEach((text: any) => {
         const textStr = String(text);
         if (!countMap.has(textStr)) countMap.set(textStr, []);
@@ -262,62 +286,175 @@ function BarChartView({ question, responses, onBarClick }: {
     }
   });
 
+  // 平均値の計算 (スケール用)
+  const scaleStats = useMemo(() => {
+    if (question.type !== 'scale') return null;
+    let sum = 0;
+    let validCount = 0;
+    responses.forEach(r => {
+      const val = Number(r.content?.[question.id]);
+      if (r.content?.[question.id] !== null && r.content?.[question.id] !== undefined && !isNaN(val)) {
+        sum += val;
+        validCount++;
+      }
+    });
+    return {
+      avg: validCount > 0 ? (sum / validCount).toFixed(1) : '0.0',
+      total: validCount
+    };
+  }, [question, responses]);
+
   if (countMap.size === 0) return <EmptyChart />;
 
-  let data: { name: string; value: number; userIds: string[] }[];
-  if (question.type === 'checkbox') {
-    // 現在の選択肢をベースに作成
-    data = question.options.map(opt => ({
-      name: opt.text, 
-      value: countMap.get(opt.text)?.length ?? 0, 
-      userIds: countMap.get(opt.text) ?? [],
-    }));
-    
-    // 現在の選択肢にない回答（旧選択肢）を追加
-    const currentOptionsSet = new Set(question.options.map(o => o.text));
-    countMap.forEach((userIds, text) => {
-      if (!currentOptionsSet.has(String(text))) {
-        data.push({
-          name: `${text} (旧選択肢)`,
-          value: userIds.length,
-          userIds: userIds,
-        });
-      }
-    });
-  } else {
-    data = [];
-    for (let v = question.scale.min; v <= question.scale.max; v++) {
-      data.push({ name: String(v), value: countMap.get(v)?.length ?? 0, userIds: countMap.get(v) ?? [] });
+  // 最大値を見つける (全グラフでスケールを統一するため)
+  let overallMaxCount = 0;
+  countMap.forEach(ids => { if (ids.length > overallMaxCount) overallMaxCount = ids.length; });
+  // スケールに余裕を持たせる
+  const xDomainMax = Math.max(5, Math.ceil(overallMaxCount * 1.1));
+
+  // データをラベルごとにグループ化
+  type Group = { label: string | null; items: any[] };
+  const groups: Group[] = [];
+  const processedKeys = new Set<string>();
+
+  if (question.type === 'scale') {
+    // 🌟 スケール専用のグループ生成
+    const scaleItems = [];
+    const min = question.scale?.min ?? 1;
+    const max = question.scale?.max ?? 5;
+    for (let v = min; v <= max; v++) {
+      const vStr = String(v);
+      const userIds = countMap.get(vStr) ?? [];
+      let name = vStr;
+      if (v === min && question.scale?.minLabel) name += ` (${question.scale.minLabel})`;
+      if (v === max && question.scale?.maxLabel) name += ` (${question.scale.maxLabel})`;
+      
+      scaleItems.push({ name, value: userIds.length, userIds });
+      processedKeys.add(vStr);
     }
-    // スケール外の回答があれば追加（基本的にはないはずだが念の為）
-    countMap.forEach((userIds, val) => {
-      const num = Number(val);
-      if (isNaN(num) || num < question.scale.min || num > question.scale.max) {
-        data.push({
-          name: `${val} (範囲外/旧設定)`,
-          value: userIds.length,
-          userIds: userIds,
+    groups.push({ label: null, items: scaleItems });
+  } else {
+    // 🌟 通常のオプションベースのグループ生成
+    let currentGroup: Group = { label: null, items: [] };
+    question.options.forEach(opt => {
+      if (opt.isLabel) {
+        if (currentGroup.items.length > 0 || currentGroup.label) {
+          groups.push(currentGroup);
+        }
+        currentGroup = { label: opt.text, items: [] };
+      } else {
+        const count = countMap.get(opt.text)?.length ?? 0;
+        currentGroup.items.push({
+          name: opt.text,
+          value: count,
+          userIds: countMap.get(opt.text) ?? [],
         });
+        processedKeys.add(opt.text);
       }
     });
+    if (currentGroup.items.length > 0 || currentGroup.label) {
+      groups.push(currentGroup);
+    }
   }
 
-  const barH = 48;
-  const h = Math.max(200, data.length * barH);
+  // 旧選択肢のグループ
+  const oldItems = Array.from(countMap.entries())
+    .filter(([key]) => !processedKeys.has(String(key)))
+    .map(([key, userIds]) => ({
+      name: String(key),
+      value: userIds.length,
+      userIds: userIds,
+    }));
+  
+  if (oldItems.length > 0) {
+    groups.push({ label: 'その他の過去の回答', items: oldItems });
+  }
+
+  const barH = 44;
 
   return (
-    <div ref={containerRef} className="w-full">
-      {width > 0 && (
-        <BarChart width={width} height={h} data={data} layout="vertical" margin={{ left: 8, right: 48, top: 4, bottom: 4 }}>
-          <XAxis type="number" allowDecimals={false} tick={{ fontSize: 12 }} />
-          <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 12 }} />
-          <Tooltip formatter={(v: unknown) => [`${Number(v ?? 0)}件`, '回答数']} />
-          <Bar dataKey="value" radius={[0, 6, 6, 0]} cursor="pointer"
-            onClick={(d: any) => Number(d.value) > 0 && onBarClick(d.payload.name as string, d.payload.userIds as string[])}>
-            {data.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-          </Bar>
-        </BarChart>
+    <div ref={containerRef} className="w-full space-y-8">
+      {/* スケール用サマリー */}
+      {scaleStats && (
+        <div className="flex items-center gap-6 p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100/50 animate-in fade-in slide-in-from-top-2">
+          <div>
+            <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest mb-1">平均スコア</p>
+            <div className="flex items-baseline gap-1">
+              <span className="text-3xl font-black text-indigo-600">{scaleStats.avg}</span>
+              <span className="text-xs font-bold text-indigo-400">/ {question.scale?.max}</span>
+            </div>
+          </div>
+          <div className="h-10 w-px bg-indigo-100" />
+          <div>
+            <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest mb-1">有効回答数</p>
+            <p className="text-lg font-bold text-indigo-600">{scaleStats.total} <span className="text-xs font-medium">件</span></p>
+          </div>
+        </div>
       )}
+
+      {width > 0 && groups.map((group, gIdx) => {
+        if (group.items.length === 0) return null;
+        const chartHeight = group.items.length * barH + 40; // 軸の余白分
+        const isLastGroup = gIdx === groups.length - 1;
+
+        return (
+          <div key={gIdx} className="animate-in fade-in duration-500">
+            {group.label && (
+              <div className="mb-2 flex items-center gap-2">
+                <div className="h-4 w-1 bg-blue-500 rounded-full" />
+                <span className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">
+                  {group.label}
+                </span>
+              </div>
+            )}
+            <BarChart
+              width={width}
+              height={chartHeight}
+              data={group.items}
+              layout="vertical"
+              margin={{ left: 0, right: 40, top: 10, bottom: 0 }}
+            >
+              <XAxis 
+                type="number" 
+                hide={!isLastGroup} 
+                domain={[0, xDomainMax]} 
+                tick={{ fontSize: 10, fill: '#94a3b8' }}
+                axisLine={{ stroke: '#e2e8f0' }}
+              />
+              <YAxis 
+                type="category" 
+                dataKey="name" 
+                width={120} 
+                tick={{ fontSize: 11, fill: '#475569' }}
+                axisLine={{ stroke: '#e2e8f0' }}
+              />
+              <Tooltip 
+                cursor={{ fill: '#f8fafc' }}
+                formatter={(v: unknown) => {
+                  const count = Number(v ?? 0);
+                  const p = totalRespondents > 0 ? Math.round((count / totalRespondents) * 100) : 0;
+                  return [`${count}件 (${p}%)`, '回答数'];
+                }}
+              />
+              <Bar 
+                dataKey="value" 
+                isAnimationActive={false}
+                radius={[0, 4, 4, 0]}
+                onClick={(d: any) => d.value > 0 && onBarClick(d.name, d.userIds)}
+                cursor="pointer"
+              >
+                {group.items.map((_, i) => (
+                  <Cell 
+                    key={i} 
+                    fill={question.type === 'scale' ? '#6366f1' : CHART_COLORS[i % CHART_COLORS.length]} 
+                    fillOpacity={0.8} 
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -385,7 +522,7 @@ function GridBarView({ question, responses, onBarClick }: {
                 <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
                 <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 11 }} />
                 <Tooltip formatter={(v: unknown) => [`${Number(v ?? 0)}件`, '回答数']} />
-                <Bar dataKey="value" radius={[0, 6, 6, 0]} cursor="pointer"
+                <Bar dataKey="value" radius={[0, 6, 6, 0]} cursor="pointer" isAnimationActive={false}
                   onClick={(d: any) => Number(d.value) > 0 && onBarClick(d.payload.label as string, d.payload.userIds as string[])}>
                   {data.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                 </Bar>
@@ -398,7 +535,52 @@ function GridBarView({ question, responses, onBarClick }: {
   );
 }
 
+
+
 // ─── 💬 テキスト吹き出し ─────────────────────────────
+const formatValue = (value: any, question: QuestionData) => {
+  if (!value) return '';
+  const valStr = String(value);
+
+  try {
+    if (question.type === 'date_time' && question.dateTimeSettings) {
+      const d = new Date(valStr);
+      if (isNaN(d.getTime())) return valStr;
+
+      const fmt = question.dateTimeSettings.format;
+      const hasDate = fmt.year || fmt.month || fmt.date;
+      const hasTime = fmt.hour || fmt.minute;
+
+      if (hasDate && hasTime) {
+        return d.toLocaleString('ja-JP', { 
+          year: fmt.year ? 'numeric' : undefined,
+          month: fmt.month ? 'long' : undefined,
+          day: fmt.date ? 'numeric' : undefined,
+          weekday: hasDate ? 'short' : undefined,
+          hour: fmt.hour ? '2-digit' : undefined,
+          minute: fmt.minute ? '2-digit' : undefined,
+        });
+      } else if (hasDate) {
+        return d.toLocaleDateString('ja-JP', { 
+          year: fmt.year ? 'numeric' : undefined,
+          month: fmt.month ? 'long' : undefined,
+          day: fmt.date ? 'numeric' : undefined,
+          weekday: 'short'
+        });
+      } else if (hasTime) {
+        return d.toLocaleTimeString('ja-JP', { 
+          hour: fmt.hour ? '2-digit' : undefined,
+          minute: fmt.minute ? '2-digit' : undefined,
+        });
+      }
+    }
+  } catch (e) {
+    console.error('Format error:', e);
+  }
+
+  return valStr;
+};
+
 function TextBubbleView({ question, responses, indexMap, isAnonymous }: {
   question: QuestionData; responses: ResponseSummary[]; indexMap: Map<string, number>; isAnonymous: boolean;
 }) {
@@ -411,8 +593,11 @@ function TextBubbleView({ question, responses, indexMap, isAnonymous }: {
   return (
     <div className="space-y-3">
       {answered.map(r => {
-        const text = String(r.content?.[question.id] ?? '').replace(/<[^>]*>/g, '');
+        const rawValue = r.content?.[question.id];
+        const isLongText = question.type === 'long_text_md';
+        const formattedText = isLongText ? String(rawValue ?? '') : formatValue(rawValue, question);
         const date = new Date(r.submitted_at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' });
+
         return (
           <div key={r.response_id} className="flex gap-3 items-start">
             <div className="w-8 h-8 rounded-full bg-purple-100 flex-shrink-0 flex items-center justify-center text-sm font-bold text-purple-700 overflow-hidden">
@@ -420,12 +605,175 @@ function TextBubbleView({ question, responses, indexMap, isAnonymous }: {
                 ? <img src={r.avatar_link} className="w-full h-full object-cover" alt="" />
                 : getDisplayName(r, indexMap, isAnonymous).charAt(0)}
             </div>
-            <div className="flex-1 bg-white rounded-2xl rounded-tl-none px-4 py-3 border border-gray-100">
-              <div className="flex items-center justify-between mb-1">
+            <div className="flex-1 bg-white rounded-2xl rounded-tl-none px-4 py-3 border border-gray-100 shadow-sm">
+              <div className="flex items-center justify-between mb-2 pb-2 border-b border-gray-50">
                 <span className="text-xs font-bold text-gray-500">{getDisplayName(r, indexMap, isAnonymous)}</span>
                 <span className="text-[10px] text-gray-300">{date}</span>
               </div>
-              <p className="text-sm text-gray-700 whitespace-pre-wrap break-words">{text}</p>
+              {isLongText ? (
+                <div className="relative">
+                  <div 
+                    className={`text-sm text-gray-700 break-words ${richTextStyles} pb-4`}
+                    dangerouslySetInnerHTML={{ __html: formattedText }}
+                  />
+                  <div className="flex justify-end pt-2 mt-2 border-t border-gray-50">
+                    <ResponseCopyButton html={formattedText} />
+                  </div>
+                </div>
+              ) : (
+                <div className="relative">
+                  <p className="text-sm text-gray-700 whitespace-pre-wrap break-words">{formattedText}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── 📂 ファイル回答表示 ─────────────────────────────
+const formatSize = (bytes: number) => {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+};
+
+const FileIconComponent = ({ type }: { type: string }) => {
+  if (type.startsWith('image/')) return <FileImage className="w-5 h-5 text-blue-500" />;
+  if (type.startsWith('video/')) return <FileVideo className="w-5 h-5 text-purple-500" />;
+  if (type.startsWith('audio/')) return <Music className="w-5 h-5 text-pink-500" />;
+  if (type.includes('pdf')) return <FileText className="w-5 h-5 text-red-500" />;
+  if (type.includes('zip') || type.includes('archive')) return <FileArchive className="w-5 h-5 text-orange-500" />;
+  return <FileIcon className="w-5 h-5 text-gray-500" />;
+};
+
+const PdfPreview = ({ url }: { url: string }) => {
+  const [thumbnail, setThumbnail] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    const generate = async () => {
+      try {
+        const loadingTask = pdfjsLib.getDocument(url);
+        const pdf = await loadingTask.promise;
+        const page = await pdf.getPage(1);
+        const viewport = page.getViewport({ scale: 0.4 });
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        if (!context) return;
+
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        await (page as any).render({ canvasContext: context, viewport }).promise;
+        
+        if (isMounted) setThumbnail(canvas.toDataURL());
+      } catch (err) {
+        console.error('PDF preview failed:', err);
+        if (isMounted) setError(true);
+      }
+    };
+    generate();
+    return () => { isMounted = false; };
+  }, [url]);
+
+  if (thumbnail) return <img src={thumbnail} className="w-full h-full object-cover" alt="" />;
+  return (
+    <div className="flex flex-col items-center justify-center gap-2">
+      <FileText className={`w-6 h-6 ${error ? 'text-red-300' : 'text-red-500 animate-pulse'}`} />
+      {!error && <span className="text-[8px] text-gray-400 font-bold uppercase">Loading PDF...</span>}
+    </div>
+  );
+};
+
+function FileResponseView({ question, responses, indexMap, isAnonymous }: {
+  question: QuestionData; responses: ResponseSummary[]; indexMap: Map<string, number>; isAnonymous: boolean;
+}) {
+  const answered = responses.filter(r => {
+    const v = r.content?.[question.id];
+    return Array.isArray(v) && v.length > 0;
+  });
+
+  if (answered.length === 0) return <EmptyChart />;
+
+  return (
+    <div className="space-y-6">
+      {answered.map(r => {
+        const files = (r.content?.[question.id] || []) as any[];
+        return (
+          <div key={r.response_id} className="flex gap-4 items-start">
+            <div className="w-10 h-10 rounded-full bg-purple-100 flex-shrink-0 flex items-center justify-center text-sm font-bold text-purple-700 overflow-hidden shadow-sm">
+              {!(r.is_anonymous || isAnonymous) && r.avatar_link
+                ? <img src={r.avatar_link} className="w-full h-full object-cover" alt="" />
+                : getDisplayName(r, indexMap, isAnonymous).charAt(0)}
+            </div>
+            <div className="flex-1 space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-gray-700">{getDisplayName(r, indexMap, isAnonymous)}</span>
+                <span className="text-[10px] text-gray-400 font-medium">
+                  {new Date(r.submitted_at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' })}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {files.map((file, fIdx) => {
+                  const isImage = file.type?.startsWith('image/');
+                  const isPdf = file.type?.includes('pdf');
+                  const fileUrl = file.url || '';
+
+                  return (
+                    <div key={fIdx} className="group bg-white border border-gray-100 rounded-xl overflow-hidden shadow-sm hover:shadow-md hover:border-blue-100 transition-all">
+                      {(isImage || isPdf) ? (
+                        <div className="aspect-video bg-gray-50 relative overflow-hidden flex items-center justify-center">
+                          {isImage ? (
+                            <img src={fileUrl} className="w-full h-full object-cover" alt={file.name} />
+                          ) : (
+                            <PdfPreview url={fileUrl} />
+                          )}
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                             <a href={fileUrl} target="_blank" rel="noreferrer" className="p-2 bg-white rounded-full shadow-lg hover:scale-110 transition-transform">
+                               <ExternalLink className="w-4 h-4 text-gray-700" />
+                             </a>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="aspect-video bg-gray-50 flex items-center justify-center border-b border-gray-50">
+                          <FileIconComponent type={file.type} />
+                        </div>
+                      )}
+                      <div className="p-3">
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-bold text-gray-800 truncate" title={file.name}>{file.name}</p>
+                            <p className="text-[10px] text-gray-400 font-medium">{formatSize(file.size || 0)}</p>
+                          </div>
+                          <a 
+                            href={fileUrl} 
+                            download={file.name}
+                            className="p-1.5 bg-gray-50 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors flex-shrink-0"
+                            title="ダウンロード"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </a>
+                        </div>
+                        {!isImage && (
+                          <a 
+                            href={fileUrl} 
+                            target="_blank" 
+                            rel="noreferrer"
+                            className="w-full py-1.5 flex items-center justify-center gap-1.5 text-[10px] font-bold text-gray-500 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors"
+                          >
+                            <ExternalLink className="w-3 h-3" /> ブラウザで開く
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         );

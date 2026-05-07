@@ -17,18 +17,38 @@ export const r2 = new S3Client({
 export const BUCKET_NAME = process.env.R2_BUCKET_NAME!;
 
 // avatar_id から 1時間有効な署名付き表示URLを生成するヘルパー
+// サムネイルがある場合はサムネイルを優先する（一覧表示用のため）
 export async function resolveAvatarUrl(avatarId: string | null): Promise<string | null> {
   if (!avatarId) return null;
   try {
     const { data: galleryItem } = await supabase
       .from('gallery')
-      .select('storage_path')
+      .select('storage_path, thumbnail_path')
       .eq('id', avatarId)
       .single();
-    if (!galleryItem?.storage_path) return null;
+    
+    if (!galleryItem) return null;
+
+    // サムネイルがあればそれを使い、なければオリジナルを使う
+    const key = galleryItem.thumbnail_path || galleryItem.storage_path;
+    if (!key) return null;
+
     const command = new GetObjectCommand({
       Bucket: BUCKET_NAME,
-      Key: galleryItem.storage_path,
+      Key: key,
+    });
+    return await getSignedUrl(r2, command, { expiresIn: 3600 });
+  } catch {
+    return null;
+  }
+}
+// 任意のキーから署名付きURLを生成するヘルパー（1時間有効）
+export async function getSignedFileUrl(key: string | null): Promise<string | null> {
+  if (!key) return null;
+  try {
+    const command = new GetObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: key,
     });
     return await getSignedUrl(r2, command, { expiresIn: 3600 });
   } catch {

@@ -13,7 +13,8 @@ const port = process.env.PORT || 3000;
 
 // ミドルウェアの設定
 app.use(cors()); // Reactからの通信を許可
-app.use(express.json()); // JSON形式のデータを扱えるようにする
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ==========================================
 // 疎通確認用のルート

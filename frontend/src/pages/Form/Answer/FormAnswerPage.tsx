@@ -136,16 +136,17 @@ export default function FormAnswerPage() {
         const hasSubmitted = pResponses.some((r: any) => r.status === 'submitted');
         const latestDraft = pResponses.find((r: any) => r.status === 'draft');
 
-        if (hasSubmitted) {
+        if (latestDraft) {
+          // 🌟 最優先：書きかけの下書きがある場合は即座に読み込む
+          setResponseId(latestDraft.id);
+          loadAnswersWithCleanup(latestDraft.content, mappedQuestions);
+        } else if (hasSubmitted) {
+          // 下書きがなく、送信済みがある場合のみ選択画面かブロックを表示
           if (allowMult || allowEd) {
             setGuardState('choice');
           } else {
             setGuardState('blocked');
           }
-        } else if (latestDraft) {
-          // 未送信だが下書きがある場合 -> 下書きを読み込む
-          setResponseId(latestDraft.id);
-          loadAnswersWithCleanup(latestDraft.content, mappedQuestions);
         }
 
 
@@ -207,9 +208,10 @@ export default function FormAnswerPage() {
 
 
   // 3. 送信ボタンを押した時のメイン処理
-  const handleSubmit = async (turnstileToken: string) => {
+  const handleSubmit = async (turnstileToken: string, finalAnswers?: Record<string, any>) => {
+    const answersToSubmit = finalAnswers || answers;
     if (isPreviewMode) {
-      alert('👀 プレビューモードのため送信されません。\n\n【回答データ】\n' + JSON.stringify(answers, null, 2));
+      alert('👀 プレビューモードのため送信されません。\n\n【回答データ】\n' + JSON.stringify(answersToSubmit, null, 2));
       return;
     }
 
@@ -225,7 +227,7 @@ export default function FormAnswerPage() {
         },
         body: JSON.stringify({
           response_id: responseId,
-          answers,
+          answers: answersToSubmit,
           turnstileToken,
         })
       });
@@ -386,6 +388,7 @@ export default function FormAnswerPage() {
         isSaving={isSaving}           // 🌟 追加
         lastSavedTime={lastSavedTime} // 🌟 追加
         timezone={timezone}
+        formId={id}
       />
     </div>
   );

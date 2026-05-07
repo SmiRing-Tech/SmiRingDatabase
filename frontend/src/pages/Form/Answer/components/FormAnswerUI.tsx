@@ -2,8 +2,11 @@ import { useState } from 'react';
 import type { QuestionData } from '../../FormEditor/FormEditorPage';
 import { richTextStyles } from '../../../../components/ui/RichTextEditor';
 import AnswerBox from './AnswerBox';
-import { Send, ExternalLink, User } from 'lucide-react';
+import { Send, ExternalLink, User, Loader2 } from 'lucide-react';
 import { Turnstile } from '@marsidev/react-turnstile';
+import type { FileItem } from './FileUploadField';
+import { supabase } from '../../../../lib/supabase';
+import { API_BASE_URL } from '../../../../config';
 
 type ReadonlyInfo = {
   displayName: string;
@@ -17,7 +20,7 @@ type Props = {
   questions: QuestionData[];
   answers: Record<string, any>;
   onAnswerChange: (questionId: string, value: any) => void;
-  onSubmit?: (turnstileToken: string) => void;
+  onSubmit?: (turnstileToken: string, finalAnswers?: Record<string, any>) => void;
   mode: 'preview' | 'live' | 'readonly';
   isLoading?: boolean;
   onOpenFullScreen?: () => void;
@@ -26,6 +29,7 @@ type Props = {
   lastSavedTime?: Date | null;
   readonlyInfo?: ReadonlyInfo;
   timezone?: string;
+  formId?: string;
 };
 
 export default function FormAnswerUI({ 
@@ -33,14 +37,15 @@ export default function FormAnswerUI({
   onAnswerChange, onSubmit, mode, isLoading = false,
   onOpenFullScreen, onClearAnswers,
   isSaving = false, lastSavedTime = null,
-  readonlyInfo, timezone,
+  readonlyInfo, timezone, formId,
 }: Props) {
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [turnstileError, setTurnstileError] = useState(false);
+  const [isUploadingFiles, setIsUploadingFiles] = useState(false);
 
-  const handleValidateAndSubmit = () => {
+  const handleValidateAndSubmit = async () => {
     const newErrors: Record<string, string> = {};
     questions.forEach((q) => {
       const ans = answers[q.id];
@@ -67,6 +72,21 @@ export default function FormAnswerUI({
           } catch (e) {}
         }
       }
+
+      // --- ファイルアップロードのバリデーション ---
+      if (!isEmpty && q.type === 'file_upload') {
+        const files = (ans || []) as any[];
+        const settings = q.fileUploadSettings || { maxFiles: 1, maxSizeMB: 10, allowedTypes: ['image', 'pdf'] };
+        
+        if (files.length > settings.maxFiles) {
+          newErrors[q.id] = `最大 ${settings.maxFiles} 個までです（現在 ${files.length} 個選択中）`;
+        } else if (files.some(f => f.error)) {
+          newErrors[q.id] = '一部のファイルにエラーがあります';
+        } else if (files.some(f => !f.path && !f.file && !f.error)) {
+          // path も file も error もないという、本当に異常なケースのみブロック
+          newErrors[q.id] = 'ファイルの情報が正しくありません';
+        }
+      }
     });
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
@@ -82,7 +102,72 @@ export default function FormAnswerUI({
       return;
     }
     setErrors({}); setTurnstileError(false);
-    onSubmit?.(turnstileToken);
+
+    // 🌟 アップロードが必要なファイルを処理
+    setIsUploadingFiles(true);
+    try {
+      const finalAnswers = { ...answers };
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('認証が必要です');
+
+      for (const q of questions) {
+        if (q.type === 'file_upload' && Array.isArray(finalAnswers[q.id])) {
+          const items = finalAnswers[q.id] as FileItem[];
+          const uploadedItems: any[] = [];
+
+          for (const item of items) {
+            // すでに path がある、またはエラーがある場合はスキップ/そのまま
+            if (item.path || item.error) {
+              uploadedItems.push({
+                path: item.path,
+                name: item.name,
+                type: item.type,
+                size: item.size
+              });
+              continue;
+            }
+
+            // file オブジェクトがある場合はアップロード実行
+            if (item.file) {
+              const formData = new FormData();
+              formData.append('file', item.file);
+              formData.append('form_id', formId || '');
+
+              const res = await fetch(`${API_BASE_URL}/api/forms/attachments/upload`, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${session.access_token}`
+                },
+                body: formData
+              });
+
+              if (!res.ok) {
+                const errData = await res.json();
+                throw new Error(`${item.name} のアップロードに失敗しました: ${errData.error}`);
+              }
+
+              const data = await res.json();
+              uploadedItems.push({
+                path: data.path,
+                name: data.filename,
+                type: data.mimetype,
+                size: data.size
+              });
+            }
+          }
+          finalAnswers[q.id] = uploadedItems;
+        }
+      }
+
+      // 最終的な回答データで onSubmit を呼ぶ
+      // onSubmit は FormAnswerPage.tsx の handleSubmit
+      // そこでも isLoading がセットされるが、ここではアップロード分を先に終わらせる
+      await onSubmit?.(turnstileToken, finalAnswers);
+    } catch (err: any) {
+      alert(err.message || 'エラーが発生しました');
+    } finally {
+      setIsUploadingFiles(false);
+    }
   };
   
   if (isLoading) {
@@ -151,7 +236,7 @@ export default function FormAnswerUI({
         </div>
 
         {/* 質問一覧 */}
-        <div className={mode === 'readonly' ? 'pointer-events-none' : ''}>
+        <div className="">
           {questions.map((q) => (
             <div key={q.id} className="mb-6">
               <AnswerBox
@@ -163,6 +248,8 @@ export default function FormAnswerUI({
                 }}
                 error={errors[q.id]}
                 timezone={timezone}
+                formId={formId}
+                readOnly={!!readonlyInfo}
               />
             </div>
           ))}
@@ -187,10 +274,20 @@ export default function FormAnswerUI({
               </button>
               <button
                 onClick={handleValidateAndSubmit}
-                className="w-full md:w-auto bg-blue-600 text-white px-10 py-3.5 rounded-xl font-bold shadow-lg hover:bg-blue-700 transition-all transform active:scale-95 flex items-center justify-center gap-2"
+                disabled={isUploadingFiles}
+                className="w-full md:w-auto bg-blue-600 text-white px-10 py-3.5 rounded-xl font-bold shadow-lg hover:bg-blue-700 transition-all transform active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <Send className="w-5 h-5" />
-                {mode === 'preview' ? '送信テスト' : '回答を送信'}
+                {isUploadingFiles ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    送信中...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-5 h-5" />
+                    {mode === 'preview' ? '送信テスト' : '回答を送信'}
+                  </>
+                )}
               </button>
             </div>
           </>

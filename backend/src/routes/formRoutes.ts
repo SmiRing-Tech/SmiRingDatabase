@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase';
-import { resolveAvatarUrl } from '../lib/r2';
+import { resolveAvatarUrl, getSignedFileUrl } from '../lib/r2';
 
 const router = Router();
 
@@ -51,6 +51,7 @@ router.get('/api/forms/:id', async (req: Request, res: Response) => {
         shortTextValidation: q.options?.validation || { enabled: false },
         dateTimeSettings: q.options?.dateTimeSettings || null,
         dropdownSettings: q.options?.dropdownSettings || null,
+        fileUploadSettings: q.options?.fileUploadSettings || null,
         isDeleted: link.is_deleted || false
       };
     }) || [];
@@ -89,6 +90,7 @@ router.post('/api/forms/:id/save', async (req: Request, res: Response) => {
       created_by,
       allow_multiple_responses: allow_multiple_responses !== undefined ? allow_multiple_responses : false,
       allow_edit_responses: allow_edit_responses !== undefined ? allow_edit_responses : true,
+      allow_anonymous: req.body.allow_anonymous !== undefined ? req.body.allow_anonymous : false,
       updated_at: new Date().toISOString(),
     });
     if (formError) throw formError;
@@ -110,7 +112,8 @@ router.post('/api/forms/:id/save', async (req: Request, res: Response) => {
           checkboxValidation: q.checkboxValidation,
           shortTextMultiple: q.shortTextMultiple,
           dateTimeSettings: q.dateTimeSettings,
-          dropdownSettings: q.dropdownSettings
+          dropdownSettings: q.dropdownSettings,
+          fileUploadSettings: q.fileUploadSettings
         }
       });
       if (qError) throw qError;
@@ -231,7 +234,6 @@ router.post('/api/forms/:id/publish', async (req: Request, res: Response) => {
         allow_multiple_responses: allow_multiple_responses ?? false,
         allow_edit_responses: allow_edit_responses ?? true,
         publish_settings: publish_settings,
-        timezone: timezone,
         updated_at: new Date().toISOString()
       })
       .eq('id', formId);
@@ -518,23 +520,39 @@ router.get('/api/forms/:id/responses', async (req: Request, res: Response) => {
       profileMap.set(p.id, { ...p, avatar_link: avatarUrl });
     }
 
-    const result = responses.map(r => {
+    // 質問一覧を取得して file_upload タイプを特定
+    const { data: qData } = await supabase.from('form_questions').select('questions(id, question_type)').eq('form_id', formId);
+    const fileQuestionIds = (qData || [])
+      .filter((q: any) => q.questions?.question_type === 'file_upload')
+      .map((q: any) => q.questions.id);
+
+    const result = await Promise.all(responses.map(async r => {
       const isAnon = r.is_anonymous;
-      // 匿名の場合はプロフィール情報を完全に遮断し、user_idもダミーにする
       const profile = isAnon ? null : profileMap.get(r.user_id);
       
+      const content = { ...(r.content || {}) };
+      // ファイルパスを署名付きURLに変換
+      for (const qId of fileQuestionIds) {
+        if (Array.isArray(content[qId])) {
+          content[qId] = await Promise.all(content[qId].map(async (file: any) => ({
+            ...file,
+            url: await getSignedFileUrl(file.path)
+          })));
+        }
+      }
+
       return {
         response_id: r.id,
-        user_id: isAnon ? `anon_${r.id}` : r.user_id, // ID推測防止
+        user_id: isAnon ? `anon_${r.id}` : r.user_id,
         is_anonymous: isAnon,
         submitted_at: r.submitted_at,
         updated_at: r.updated_at,
         name_english: isAnon ? '匿名ユーザー' : (profile?.name_english || '不明なユーザー'),
         name_kanji: isAnon ? '' : (profile?.name_kanji || ''),
         avatar_link: isAnon ? null : (profile?.avatar_link || null),
-        content: r.content || {},
+        content: content,
       };
-    });
+    }));
 
     res.json(result);
   } catch (error: any) {
@@ -562,30 +580,17 @@ router.get('/api/forms/:id/responses/:userId', async (req: Request, res: Respons
       return res.status(404).json({ error: '回答が見つかりません' });
     }
 
-    const { data: qLinks, error: qError } = await supabase
-      .from('form_questions')
-      .select('order_index, is_required, questions(id, title, description, question_type, options)')
-      .eq('form_id', formId)
-      .order('order_index', { ascending: true });
-
-    if (qError) throw qError;
-
-    const questions = (qLinks || []).map(link => {
-      const q = link.questions as any;
-      return {
-        id: q.id,
-        title: q.title || '',
-        description: q.description || '',
-        type: q.question_type || 'radio',
-        is_required: link.is_required,
-        options: q.options?.choices || [],
-        scale: q.options?.scale || null,
-        gridRows: q.options?.gridRows || [],
-        gridCols: q.options?.gridCols || [],
-        gridInputType: q.options?.gridInputType || 'radio',
-        answer: response.content?.[q.id] ?? null,
-      };
-    });
+    // 回答詳細のファイルパスも解決
+    const resolvedContent = { ...(response.content || {}) };
+    for (const q of (qLinks || [])) {
+      const question = q.questions as any;
+      if (question.question_type === 'file_upload' && Array.isArray(resolvedContent[question.id])) {
+        resolvedContent[question.id] = await Promise.all(resolvedContent[question.id].map(async (file: any) => ({
+          ...file,
+          url: await getSignedFileUrl(file.path)
+        })));
+      }
+    }
 
     const { data: profile } = await supabase
       .from('basic_profile_info')
@@ -604,7 +609,25 @@ router.get('/api/forms/:id/responses/:userId', async (req: Request, res: Respons
         name_kanji: profile?.name_kanji || '',
         avatar_link: avatarUrl,
       },
-      questions,
+      questions: (qLinks || []).map(link => {
+        const q = link.questions as any;
+        return {
+          id: q.id,
+          title: q.title || '',
+          description: q.description || '',
+          type: q.question_type || 'radio',
+          is_required: link.is_required,
+          options: q.options?.choices || [],
+          scale: q.options?.scale || null,
+          gridRows: q.options?.gridRows || [],
+          gridCols: q.options?.gridCols || [],
+          gridInputType: q.options?.gridInputType || 'radio',
+          dateTimeSettings: q.options?.dateTimeSettings || null,
+          dropdownSettings: q.options?.dropdownSettings || null,
+          fileUploadSettings: q.options?.fileUploadSettings || null,
+          answer: resolvedContent[q.id] ?? null,
+        };
+      }),
     });
   } catch (error: any) {
     console.error('回答詳細取得エラー:', error);

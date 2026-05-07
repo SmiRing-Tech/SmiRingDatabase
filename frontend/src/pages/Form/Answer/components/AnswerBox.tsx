@@ -2,8 +2,10 @@ import React from 'react';
 import type { QuestionData } from '../../FormEditor/FormEditorPage';
 import RichTextEditor, { richTextStyles } from '../../../../components/ui/RichTextEditor';
 import * as Icons from 'lucide-react';
+import { ResponseCopyButton } from '../../Response/components/ResponseCopyButton';
 import { CustomDropdown, type DropdownOption } from '../../../../components/ui/CustomDropdown';
 import { SmartDateTimePicker } from '../../../../components/ui/SmartDateTimePicker';
+import FileUploadField from './FileUploadField';
 
 const LucideIcon = ({ name, className }: { name: string, className?: string }) => {
   const Icon = (Icons as any)[name];
@@ -17,9 +19,11 @@ type Props = {
   onChange: (newAnswer: any) => void;
   error?: string;
   timezone?: string;
+  formId?: string;
+  readOnly?: boolean;
 };
 
-export default function AnswerBox({ question, answer, onChange, error, timezone }: Props) {
+export default function AnswerBox({ question, answer, onChange, error, timezone, formId, readOnly }: Props) {
 
   // --- 各質問タイプの入力UI ---
 
@@ -409,12 +413,18 @@ export default function AnswerBox({ question, answer, onChange, error, timezone 
   };
 
   const renderLongText = () => (
-    <div className="pt-2 border border-gray-200 rounded-lg focus-within:ring-2 focus-within:ring-blue-200 focus-within:border-blue-500 transition-all bg-white">
+    <div className={`relative border rounded-lg transition-all ${readOnly ? 'border-gray-100 bg-gray-50/30' : 'border-gray-200 focus-within:ring-2 focus-within:ring-blue-200 focus-within:border-blue-500 bg-white'}`}>
       <RichTextEditor
         value={answer || ''}
         onChange={(html) => onChange(html)}
         placeholder="詳細を入力してください..."
+        readOnly={readOnly}
       />
+      {readOnly && answer && (
+        <div className="absolute bottom-2 right-2">
+          <ResponseCopyButton html={answer} />
+        </div>
+      )}
     </div>
   );
 
@@ -428,7 +438,7 @@ export default function AnswerBox({ question, answer, onChange, error, timezone 
     }));
 
     // 複数選択の場合は配列、単一選択の場合は文字列として値を扱う
-    const displayValue = isMultiple 
+    const displayValue = isMultiple
       ? (Array.isArray(answer) ? answer : (answer ? [answer] : []))
       : (answer || '');
 
@@ -510,6 +520,21 @@ export default function AnswerBox({ question, answer, onChange, error, timezone 
     </div>
   );
 
+  const renderFileUpload = () => {
+    return (
+      <div className="pt-2">
+        <FileUploadField
+          formId={formId || ''}
+          questionId={question.id}
+          settings={question.fileUploadSettings}
+          value={answer || []}
+          onChange={onChange}
+          readOnly={readOnly}
+        />
+      </div>
+    );
+  };
+
   return (
     <div
       id={`question-${question.id}`} // 🌟 追加：自動スクロールの目的地
@@ -546,6 +571,7 @@ export default function AnswerBox({ question, answer, onChange, error, timezone 
         {question.type === 'scale' && renderScale()}
         {question.type === 'grid_radio' && renderGrid()}
         {question.type === 'date_time' && renderDateTime()}
+        {question.type === 'file_upload' && renderFileUpload()}
       </div>
     </div>
   );

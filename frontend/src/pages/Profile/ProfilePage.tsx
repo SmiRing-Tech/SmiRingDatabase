@@ -4,7 +4,7 @@ import { supabase } from '../../lib/supabase';
 import BasicInfoPage from './BasicInfoTab';
 import DetailInfoTab from './DetailInfoTab';
 import AccountSettingTab from './AccountSettingTab';
-import PhotoUploadModal from './components/PhotoUploadModal';
+import PhotoUploadModal from '../../components/ui/PhotoUploadModal';
 import PhotoViewModal from '../../components/ui/PhotoViewModal';
 import { Settings, User } from 'lucide-react';
 import { API_BASE_URL } from '../../config';
@@ -18,6 +18,7 @@ type GalleryItem = {
   visibility: string;
   created_at: string;
   view_url: string;
+  thumbnail_url: string;
 };
 
 export default function ProfilePage() {
@@ -223,9 +224,10 @@ export default function ProfilePage() {
                   }}
                 >
                   <img
-                    src={item.view_url}
+                    src={item.thumbnail_url || item.view_url}
                     alt={item.image_type ?? '写真'}
                     className="w-full h-full object-cover"
+                    loading="lazy"
                   />
                   {/* アバターマーク（GalleryPageと同じスタイル） */}
                   {item.image_type === 'avatar' && (

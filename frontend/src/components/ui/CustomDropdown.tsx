@@ -69,7 +69,7 @@ export const CustomDropdown = <T extends boolean = false>({
     const handleClickOutside = (event: MouseEvent) => {
       const isDropdownClick = dropdownRef.current && dropdownRef.current.contains(event.target as Node);
       const isMenuClick = menuRef.current && menuRef.current.contains(event.target as Node);
-      
+
       if (!isDropdownClick && !isMenuClick) {
         setIsOpen(false);
       }
@@ -89,7 +89,7 @@ export const CustomDropdown = <T extends boolean = false>({
 
     const query = searchQuery.toLowerCase();
     const result: DropdownOption[] = [];
-    
+
     let isCurrentGroupMatching = false;
     let pendingLabel: DropdownOption | null = null;
 
@@ -98,14 +98,14 @@ export const CustomDropdown = <T extends boolean = false>({
         pendingLabel = opt;
         // ラベル（グループ名）自体が検索クエリにヒットするかチェック
         isCurrentGroupMatching = opt.label.toLowerCase().includes(query);
-        
+
         if (isCurrentGroupMatching) {
           result.push(opt);
           pendingLabel = null; // 既に追加したので保留解除
         }
       } else {
         const itemMatches = opt.label.toLowerCase().includes(query);
-        
+
         // グループ名がヒットしている、またはアイテム自体がヒットしている場合に表示
         if (isCurrentGroupMatching || itemMatches) {
           if (pendingLabel) {
@@ -130,7 +130,7 @@ export const CustomDropdown = <T extends boolean = false>({
       const newValue = isSelected
         ? currentValues.filter(v => v !== opt.value)
         : [...currentValues, opt.value];
-      
+
       // TypeScriptの推論を助けるためにasを使用
       onChange(newValue as any);
     } else {
@@ -181,8 +181,8 @@ export const CustomDropdown = <T extends boolean = false>({
               transition={{ duration: 0.15, ease: "easeOut" }}
               style={{
                 position: 'fixed',
-                ...(coords.isBottomHalf 
-                  ? { bottom: window.innerHeight - coords.top + 8 } 
+                ...(coords.isBottomHalf
+                  ? { bottom: window.innerHeight - coords.top + 8 }
                   : { top: coords.bottom + 8 }),
                 left: coords.left,
                 width: coords.width,
@@ -190,97 +190,97 @@ export const CustomDropdown = <T extends boolean = false>({
               }}
               className="bg-white/95 backdrop-blur-md border border-gray-200 rounded-xl shadow-lg overflow-hidden flex flex-col"
             >
-            
-            {searchable && (
-              <div className="p-2 border-b border-gray-100 bg-white/50 sticky top-0">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                  <input
-                    type="text"
-                    // デザイン改善: 検索バーの角丸とフォーカスリング
-                    className="w-full pl-9 pr-3 py-1.5 bg-gray-50/50 border border-transparent rounded-lg focus:outline-none focus:bg-white focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10 transition-all"
-                    placeholder="検索..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                  />
-                </div>
-              </div>
-            )}
 
-            {/* スクロールバーのカスタマイズ: 細く、角を丸く、背景を透明に */}
-            <div className="max-h-[280px] overflow-y-auto py-1 
+              {searchable && (
+                <div className="p-2 border-b border-gray-100 bg-white/50 sticky top-0">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      // デザイン改善: 検索バーの角丸とフォーカスリング
+                      className="w-full pl-9 pr-3 py-1.5 bg-gray-50/50 border border-transparent rounded-lg focus:outline-none focus:bg-white focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10 transition-all"
+                      placeholder="検索..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* スクロールバーのカスタマイズ: 細く、角を丸く、背景を透明に */}
+              <div className="max-h-[280px] overflow-y-auto py-1 
               [&::-webkit-scrollbar]:w-1.5
               [&::-webkit-scrollbar-track]:bg-transparent
               [&::-webkit-scrollbar-thumb]:bg-gray-200
               [&::-webkit-scrollbar-thumb]:rounded-full
               hover:[&::-webkit-scrollbar-thumb]:bg-gray-300
               transition-colors"
-            >
-              {filteredOptions.length === 0 ? (
-                <div className="px-4 py-3 text-gray-500 text-center text-sm">見つかりませんでした</div>
-              ) : (
-                filteredOptions.map((opt, index) => {
-                  const itemKey = opt.isLabel ? `label-${index}` : opt.value;
-                  const isSelected = multiple
-                    ? ((value as string[]) || []).includes(opt.value!)
-                    : value === opt.value;
+              >
+                {filteredOptions.length === 0 ? (
+                  <div className="px-4 py-3 text-gray-500 text-center text-sm">見つかりませんでした</div>
+                ) : (
+                  filteredOptions.map((opt, index) => {
+                    const itemKey = opt.isLabel ? `label-${index}` : opt.value;
+                    const isSelected = multiple
+                      ? ((value as string[]) || []).includes(opt.value!)
+                      : value === opt.value;
 
-                  if (opt.isLabel) {
+                    if (opt.isLabel) {
+                      return (
+                        <div key={itemKey} className="px-4 py-1.5 mt-1 text-xs font-bold text-blue-400 uppercase tracking-wider select-none">
+                          {opt.label}
+                        </div>
+                      );
+                    }
+
                     return (
-                      <div key={itemKey} className="px-4 py-1.5 mt-1 text-xs font-bold text-gray-400 uppercase tracking-wider select-none">
-                        {opt.label}
+                      <div
+                        key={itemKey}
+                        onClick={() => handleSelect(opt)}
+                        // デザイン改善: プレミアムなホバーエフェクト (bg-blue-500/10)
+                        className="flex items-center px-4 py-2.5 cursor-pointer hover:bg-blue-500/10 hover:text-blue-700 transition-colors group"
+                      >
+                        {multiple && (
+                          <div className={`w-4 h-4 mr-3 border rounded flex items-center justify-center flex-shrink-0 transition-colors ${isSelected ? 'bg-blue-500 border-blue-500' : 'border-gray-300 group-hover:border-blue-400'}`}>
+                            {isSelected && <Check className="w-3 h-3 text-white" />}
+                          </div>
+                        )}
+
+                        {opt.icon && (
+                          <div className={`mr-2 flex-shrink-0 transition-colors ${isSelected ? 'text-blue-500' : 'text-gray-400 group-hover:text-blue-500'}`}>
+                            {opt.icon}
+                          </div>
+                        )}
+
+                        <span className={`truncate select-none ${isSelected && !multiple ? 'font-medium text-blue-600' : 'text-gray-700'}`}>
+                          {opt.label}
+                        </span>
+
+                        {!multiple && isSelected && (
+                          <Check className="w-4 h-4 text-blue-500 ml-auto flex-shrink-0" />
+                        )}
                       </div>
                     );
-                  }
-
-                  return (
-                    <div
-                      key={itemKey}
-                      onClick={() => handleSelect(opt)}
-                      // デザイン改善: プレミアムなホバーエフェクト (bg-blue-500/10)
-                      className="flex items-center px-4 py-2.5 cursor-pointer hover:bg-blue-500/10 hover:text-blue-700 transition-colors group"
-                    >
-                      {multiple && (
-                        <div className={`w-4 h-4 mr-3 border rounded flex items-center justify-center flex-shrink-0 transition-colors ${isSelected ? 'bg-blue-500 border-blue-500' : 'border-gray-300 group-hover:border-blue-400'}`}>
-                          {isSelected && <Check className="w-3 h-3 text-white" />}
-                        </div>
-                      )}
-                      
-                      {opt.icon && (
-                        <div className={`mr-2 flex-shrink-0 transition-colors ${isSelected ? 'text-blue-500' : 'text-gray-400 group-hover:text-blue-500'}`}>
-                          {opt.icon}
-                        </div>
-                      )}
-                      
-                      <span className={`truncate select-none ${isSelected && !multiple ? 'font-medium text-blue-600' : 'text-gray-700'}`}>
-                        {opt.label}
-                      </span>
-
-                      {!multiple && isSelected && (
-                        <Check className="w-4 h-4 text-blue-500 ml-auto flex-shrink-0" />
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {multiple && (
-              <div className="border-t border-gray-100 p-2 bg-white/50 flex justify-end sticky bottom-0">
-                <button
-                  type="button"
-                  onClick={() => setIsOpen(false)}
-                  className="px-4 py-1.5 bg-gray-900 hover:bg-black text-white text-sm font-medium rounded-lg shadow-sm transition-colors"
-                >
-                  完了
-                </button>
+                  })
+                )}
               </div>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>,
-      document.body
-    )}
+
+              {multiple && (
+                <div className="border-t border-gray-100 p-2 bg-white/50 flex justify-end sticky bottom-0">
+                  <button
+                    type="button"
+                    onClick={() => setIsOpen(false)}
+                    className="px-4 py-1.5 bg-gray-900 hover:bg-black text-white text-sm font-medium rounded-lg shadow-sm transition-colors"
+                  >
+                    完了
+                  </button>
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </div>
   );
 };

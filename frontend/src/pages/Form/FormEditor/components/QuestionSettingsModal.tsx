@@ -110,13 +110,14 @@ export default function QuestionSettingsModal({ question, onChange, onClose }: P
   const isShortText = question.type === 'short_text';
   const isDropdown = question.type === 'dropdown';
   const isDateTime = question.type === 'date_time';
+  const isFileUpload = question.type === 'file_upload';
 
   // 設定の矛盾エラーを取得
   const settingsErrors = getQuestionSettingsErrors(question);
   const getError = (field: string) => settingsErrors.find(e => e.field === field);
 
   // どの設定項目も存在しないタイプか確認
-  const hasNoSettings = !isRadioOrCheckbox && !isShortText && !isDateTime && !isDropdown;
+  const hasNoSettings = !isRadioOrCheckbox && !isShortText && !isDateTime && !isDropdown && !isFileUpload;
 
   return (
     // 背景オーバーレイ
@@ -592,6 +593,73 @@ export default function QuestionSettingsModal({ question, onChange, onClose }: P
                         onChange={v => onChange({ dateTimeSettings: { ...question.dateTimeSettings, is24h: !v } })}
                       />
                     </SettingRow>
+                  </div>
+                </>
+              )}
+              
+              {/* ===== ファイルアップロード専用設定 ===== */}
+              {isFileUpload && (
+                <>
+                  <SectionHeader label="アップロード制限" />
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-gray-500 block mb-1">最大ファイル数</label>
+                      <CustomDropdown
+                        options={[
+                          { value: '1', label: '1個' },
+                          { value: '2', label: '2個' },
+                          { value: '3', label: '3個' },
+                          { value: '5', label: '5個' },
+                          { value: '10', label: '10個' },
+                        ]}
+                        value={question.fileUploadSettings?.maxFiles?.toString() || '1'}
+                        onChange={val => onChange({ fileUploadSettings: { ...question.fileUploadSettings, maxFiles: Number(val) } })}
+                        className="!py-2 !text-sm"
+                      />
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-gray-500 block mb-1">1ファイルあたりの最大サイズ</label>
+                      <CustomDropdown
+                        options={[
+                          { value: '1', label: '1 MB' },
+                          { value: '5', label: '5 MB' },
+                          { value: '10', label: '10 MB' },
+                          { value: '20', label: '20 MB' },
+                          { value: '50', label: '50 MB' },
+                        ]}
+                        value={question.fileUploadSettings?.maxSizeMB?.toString() || '10'}
+                        onChange={val => onChange({ fileUploadSettings: { ...question.fileUploadSettings, maxSizeMB: Number(val) } })}
+                        className="!py-2 !text-sm"
+                      />
+                    </div>
+
+                    <SectionHeader label="許可するファイル形式" />
+                    <div className="grid grid-cols-2 gap-3">
+                      {[
+                        { id: 'image', label: '画像 (JPG, PNG...)' },
+                        { id: 'pdf', label: 'PDF' },
+                        { id: 'doc', label: '文書 (Word, Docs)' },
+                        { id: 'spreadsheet', label: '表計算 (Excel, Sheets)' },
+                        { id: 'zip', label: '圧縮ファイル (Zip)' },
+                      ].map(type => (
+                        <label key={type.id} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 bg-gray-50 hover:bg-white hover:border-blue-200 cursor-pointer transition-all">
+                          <input
+                            type="checkbox"
+                            checked={question.fileUploadSettings?.allowedTypes?.includes(type.id) || false}
+                            onChange={e => {
+                              const currentTypes = question.fileUploadSettings?.allowedTypes || [];
+                              const types = e.target.checked
+                                ? [...currentTypes, type.id]
+                                : currentTypes.filter(t => t !== type.id);
+                              onChange({ fileUploadSettings: { ...question.fileUploadSettings, allowedTypes: types } });
+                            }}
+                            className="w-4 h-4 rounded text-blue-500 focus:ring-blue-400"
+                          />
+                          <span className="text-xs font-bold text-gray-600">{type.label}</span>
+                        </label>
+                      ))}
+                    </div>
                   </div>
                 </>
               )}

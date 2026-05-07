@@ -38,7 +38,7 @@ export default function RichTextEditor({ value = '', onChange, placeholder = 'æ–
     editable: !readOnly,
     editorProps: {
       attributes: {
-        class: `outline-none min-h-[28px] ${richTextStyles}`,
+        class: `outline-none min-h-[120px] px-4 py-3 ${richTextStyles}`,
       },
     },
     onUpdate: ({ editor }) => onChange?.(editor.getHTML()),
@@ -75,10 +75,10 @@ export default function RichTextEditor({ value = '', onChange, placeholder = 'æ–
   };
 
   return (
-    <div className={`w-full md:w-2/3 border-b transition-colors ${isFocused ? 'border-gray-300' : 'border-transparent'}`}>
+    <div className={`w-full transition-colors`}>
       
-      {(isFocused || readOnly) && (
-        <div className="flex items-center gap-1 mb-1 pb-1 border-b border-gray-100">
+      {(isFocused && !readOnly) && (
+        <div className="flex items-center gap-1 mb-1 px-3 py-1.5 border-b border-gray-100 bg-gray-50/50 rounded-t-lg">
           
           <div className="relative">
             <button

@@ -21,6 +21,12 @@ const birthdayDateTimeSettings = {
 
 const defaultDropdownSettings = { searchable: false, multiple: false };
 
+const defaultFileUploadSettings = {
+  maxFiles: 1,
+  maxSizeMB: 10,
+  allowedTypes: ['image', 'pdf']
+};
+
 export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   name_english: {
     id: 'name_english',
@@ -37,7 +43,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   name_kanji: {
     id: 'name_kanji',
@@ -54,7 +61,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   birthday: {
     id: 'birthday',
@@ -71,7 +79,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: birthdayDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   hometown: {
     id: 'hometown',
@@ -147,7 +156,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   english_school: {
     id: 'english_school',
@@ -164,7 +174,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   study_abroad_type: {
     id: 'study_abroad_type',
@@ -185,7 +196,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   study_abroad_country: {
     id: 'study_abroad_country',
@@ -202,7 +214,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   study_abroad_city: {
     id: 'study_abroad_city',
@@ -219,7 +232,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   grade_level: {
     id: 'grade_level',
@@ -248,7 +262,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   study_abroad_history: {
     id: 'study_abroad_history',
@@ -265,7 +280,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: true, style: 'arrow' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   current_school: {
     id: 'current_school',
@@ -282,7 +298,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   school_history: {
     id: 'school_history',
@@ -299,7 +316,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: true, style: 'arrow' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   majors: {
     id: 'majors',
@@ -316,7 +334,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: true, style: 'bullet' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   minors: {
     id: 'minors',
@@ -333,7 +352,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: true, style: 'bullet' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   major_history: {
     id: 'major_history',
@@ -350,7 +370,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: true, style: 'arrow' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   personality: {
     id: 'personality',
@@ -383,7 +404,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   important_values: {
     id: 'important_values',
@@ -421,7 +443,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   future_image: {
     id: 'future_image',
@@ -460,7 +483,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   smiring_department: {
     id: 'smiring_department',
@@ -494,7 +518,8 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: defaultDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   },
   smiring_join_date: {
     id: 'smiring_join_date',
@@ -511,6 +536,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
     shortTextMultiple: { enabled: false, style: 'none' },
     dateTimeSettings: birthdayDateTimeSettings,
-    dropdownSettings: defaultDropdownSettings
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   }
 };

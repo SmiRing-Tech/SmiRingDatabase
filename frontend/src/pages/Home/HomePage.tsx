@@ -218,9 +218,10 @@ function PhotoGallerySection({ onClickMore }: { onClickMore: () => void }) {
                 }}
               >
                 <img
-                  src={photo.view_url}
+                  src={photo.thumbnail_url || photo.view_url}
                   alt={photo.image_type || '写真'}
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  loading="lazy"
                 />
               </div>
             </div>
