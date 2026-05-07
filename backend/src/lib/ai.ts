@@ -39,6 +39,95 @@ export async function getGeminiEmbedding(text: string): Promise<number[]> {
 }
 
 // ==========================================
+// HTMLタグを除去してプレーンテキストに変換
+// ==========================================
+export function stripHtml(html: string): string {
+  return html
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// ==========================================
+// 回答をプレーンテキストに変換
+// ==========================================
+type QuestionForText = {
+  id: string;
+  title: string;
+  type: string;
+  options?: {
+    scale?: { min: number; max: number };
+    [key: string]: any;
+  };
+};
+
+export function answerToText(
+  questions: QuestionForText[],
+  answers: Record<string, any>
+): string {
+  const lines: string[] = [];
+
+  for (const q of questions) {
+    const answer = answers[q.id];
+    if (answer === undefined || answer === null || answer === '') continue;
+
+    let answerText = '';
+
+    switch (q.type) {
+      case 'short_text':
+      case 'long_text':
+      case 'text':
+      case 'radio':
+      case 'dropdown':
+        answerText = String(answer);
+        break;
+
+      case 'checkbox':
+        answerText = Array.isArray(answer) ? answer.join(', ') : String(answer);
+        break;
+
+      case 'range':
+      case 'scale': {
+        const max = q.options?.scale?.max ?? 10;
+        answerText = `${answer} / ${max}`;
+        break;
+      }
+
+      case 'date':
+      case 'date_time':
+        answerText = String(answer);
+        break;
+
+      case 'grid_radio':
+      case 'grid_checkbox':
+        if (typeof answer === 'object' && !Array.isArray(answer)) {
+          answerText = Object.entries(answer)
+            .map(([row, col]) => `${row}: ${Array.isArray(col) ? col.join(', ') : col}`)
+            .join(', ');
+        }
+        break;
+
+      case 'file_upload':
+        continue;
+
+      default:
+        answerText = typeof answer === 'string' ? answer : JSON.stringify(answer);
+    }
+
+    const cleanText = stripHtml(answerText);
+    if (cleanText) {
+      lines.push(`${q.title}: ${cleanText}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// ==========================================
 // 4. Gemini(LLM)での回答生成 (RAGの仕上げ用)
 // ==========================================
 export async function generateChatResponse(prompt: string): Promise<string> {

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase';
 import { resolveAvatarUrl, getSignedFileUrl } from '../lib/r2';
+import { getLocalEmbedding, getGeminiEmbedding, answerToText } from '../lib/ai';
 
 const router = Router();
 
@@ -360,11 +361,14 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
       upsertData.id = finalResponseId;
     }
 
-    const { error: responseError } = await supabase
+    const { data: responseData, error: responseError } = await supabase
       .from('form_responses')
-      .upsert(upsertData);
+      .upsert(upsertData)
+      .select('id')
+      .single();
 
     if (responseError) throw responseError;
+    const submittedResponseId = responseData.id;
 
     // 5. 個別の回答データ(answersテーブル)の同期
     // 上書きの場合は、一度このユーザーのこのフォームへの古い回答を削除する（重複防止）
@@ -380,12 +384,86 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
       created_at: new Date().toISOString()
     }));
 
+    let savedAnswers: { id: string; question_id: string }[] = [];
     if (answerRecords.length > 0) {
-      const { error: saveError } = await supabase.from('answers').insert(answerRecords);
+      const { data, error: saveError } = await supabase
+        .from('answers')
+        .insert(answerRecords)
+        .select('id, question_id');
       if (saveError) throw saveError;
+      savedAnswers = data || [];
     }
 
     res.json({ message: "回答を受け付けました！ありがとうございます。" });
+
+    // バックグラウンドでベクトル化とインデックス保存（ユーザーを待たせない）
+    (async () => {
+      try {
+        console.log(`[AI Indexer] 回答(response_id: ${submittedResponseId})のインデックス化を開始...`);
+
+        // フォームタイトルと質問一覧を並列取得
+        const [formRes, qLinksRes] = await Promise.all([
+          supabase.from('forms').select('title').eq('id', formId).single(),
+          supabase
+            .from('form_questions')
+            .select('questions(id, title, question_type, options)')
+            .eq('form_id', formId)
+            .eq('is_deleted', false)
+        ]);
+
+        const formTitle = formRes.data?.title || '';
+        const questions = (qLinksRes.data || []).map((link: any) => ({
+          id: link.questions.id,
+          title: link.questions.title,
+          type: link.questions.question_type,
+          options: link.questions.options,
+        }));
+
+        // 再提出時: このユーザーのこのフォームの古いインデックスを削除
+        if (!allowMultiple) {
+          await supabase
+            .from('unified_search_index')
+            .delete()
+            .eq('source_type', 'form_answer')
+            .eq('metadata->>user_id', user_id)
+            .eq('metadata->>form_id', formId);
+        }
+
+        // 質問ごとに個別にベクトル化して保存
+        await Promise.all(
+          savedAnswers.map(async (savedAnswer) => {
+            const q = questions.find((q) => q.id === savedAnswer.question_id);
+            if (!q) return;
+
+            const text = answerToText([q], answers);
+            if (!text) return;
+
+            const [localVector, geminiVector] = await Promise.all([
+              getLocalEmbedding(text),
+              getGeminiEmbedding(text),
+            ]);
+
+            const { error: indexError } = await supabase
+              .from('unified_search_index')
+              .insert({
+                source_type: 'form_answer',
+                source_id: savedAnswer.id,
+                content: text,
+                embedding_local: localVector,
+                embedding_gemini: geminiVector,
+                metadata: { user_id, form_id: formId, form_title: formTitle, question_id: q.id },
+              });
+
+            if (indexError) throw indexError;
+          })
+        );
+
+        console.log(`[AI Indexer] ✅ ${savedAnswers.length}件のインデックス保存完了 (response_id: ${submittedResponseId})`);
+      } catch (err) {
+        console.error('[AI Indexer] ❌ インデックス保存エラー:', err);
+      }
+    })();
+
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

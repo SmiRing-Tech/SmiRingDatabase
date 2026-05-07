@@ -15,6 +15,8 @@ export default function SearchPage() {
   const [activeTab, setActiveTab] = useState<FilterTab>('all');
   const [members, setMembers] = useState<Member[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [vectorResults, setVectorResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/api/basic_profile_info`)
@@ -24,12 +26,42 @@ export default function SearchPage() {
       .finally(() => setIsLoading(false));
   }, []);
 
+  // 300msデバウンス → ME5でベクトル検索
+  useEffect(() => {
+    if (!query.trim()) {
+      setVectorResults([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/search/instant`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query }),
+        });
+        const data = await res.json();
+        setVectorResults(data.results || []);
+        console.log(`[Vector Search] ${data.time_ms}ms / ${data.results?.length ?? 0}件`);
+      } catch (err) {
+        console.error('ベクトル検索エラー:', err);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [query]);
+
   const filteredMembers = members.filter(m => memberMatchesQuery(m, query));
 
   const tabs: { key: FilterTab; label: string; count: number }[] = [
-    { key: 'all',     label: 'All',     count: filteredMembers.length },
+    { key: 'all',     label: 'All',     count: filteredMembers.length + vectorResults.length },
     { key: 'members', label: 'Members', count: filteredMembers.length },
   ];
+
+  const hasNoResults = filteredMembers.length === 0 && vectorResults.length === 0 && !isSearching;
 
   return (
     <div className="h-full w-full overflow-y-auto bg-white text-gray-900">
@@ -92,15 +124,45 @@ export default function SearchPage() {
           <LoadingSkeleton />
         ) : query === '' ? (
           <EmptyState />
-        ) : filteredMembers.length === 0 ? (
+        ) : hasNoResults ? (
           <NoResults query={query} />
         ) : (
-          <section>
-            <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-3">Members</h2>
-            <div className="space-y-2">
-              {filteredMembers.map(member => <MemberCard key={member.id} member={member} query={query} />)}
-            </div>
-          </section>
+          <div className="space-y-8">
+
+            {/* Members セクション */}
+            {(activeTab === 'all' || activeTab === 'members') && filteredMembers.length > 0 && (
+              <section>
+                <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Members</h2>
+                <div className="space-y-2">
+                  {filteredMembers.map(member => (
+                    <MemberCard key={member.id} member={member} query={query} />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* From Answers セクション（ベクトル検索結果） */}
+            {activeTab === 'all' && (
+              <section>
+                <div className="flex items-center gap-2 mb-3">
+                  <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider">From Answers</h2>
+                  {isSearching && (
+                    <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                  )}
+                </div>
+                {vectorResults.length > 0 ? (
+                  <div className="space-y-2">
+                    {vectorResults.map(result => (
+                      <VectorResultCard key={result.id} result={result} members={members} />
+                    ))}
+                  </div>
+                ) : !isSearching && (
+                  <p className="text-sm text-gray-400 py-4 text-center">関連する回答が見つかりませんでした</p>
+                )}
+              </section>
+            )}
+
+          </div>
         )}
       </div>
     </div>
@@ -147,6 +209,40 @@ function NoResults({ query }: { query: string }) {
       </svg>
       <p className="text-base font-bold text-gray-500 mb-1">「{query}」に一致するメンバーがいません</p>
       <p className="text-sm">別のキーワードで試してみてください</p>
+    </div>
+  );
+}
+
+function VectorResultCard({ result, members }: { result: any; members: Member[] }) {
+  const navigate = useNavigate();
+  const member = members.find(m => m.id === result.metadata?.user_id);
+  const avatarUrl = member?.avatar_link || '/assets/images/profile_photo_empty.png';
+  const name = member?.name_english || '不明なユーザー';
+  const content = (result.content as string) || '';
+  const lines = content.split('\n').filter(Boolean);
+  const firstLine = lines[0] || '';
+  const rest = lines.slice(1).join(' ').slice(0, 60);
+
+  return (
+    <div
+      onClick={() => member && navigate(`/members/${member.id}`)}
+      className={`flex items-start gap-3 p-3 rounded-xl border border-gray-100 transition-all shadow-sm ${
+        member ? 'hover:border-blue-200 hover:bg-blue-50 cursor-pointer group' : 'opacity-60'
+      }`}
+    >
+      <img
+        src={avatarUrl}
+        alt={name}
+        className="w-10 h-10 rounded-xl object-cover bg-gray-100 flex-shrink-0 border border-gray-200 mt-0.5"
+      />
+      <div className="flex-1 overflow-hidden">
+        <p className="font-bold text-sm text-gray-900 group-hover:text-blue-700 transition-colors truncate">{name}</p>
+        <p className="text-sm text-gray-700 truncate">{firstLine}</p>
+        {rest && <p className="text-xs text-gray-400 truncate">{rest}…</p>}
+      </div>
+      <svg className="w-4 h-4 text-gray-300 group-hover:text-blue-400 flex-shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+      </svg>
     </div>
   );
 }
