@@ -11,7 +11,6 @@ import type { QuestionData } from '../FormEditor/FormEditorPage';
 import NavSelector from './NavSelector';
 import { richTextStyles } from '../../../components/ui/RichTextEditor';
 import { ResponseCopyButton } from './components/ResponseCopyButton';
-import { supabase } from '../../../lib/supabase';
 import { 
   Download, ExternalLink, File as FileIcon, FileImage, 
   FileText, FileArchive, FileVideo, Music 

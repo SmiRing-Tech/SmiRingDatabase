@@ -580,6 +580,14 @@ router.get('/api/forms/:id/responses/:userId', async (req: Request, res: Respons
       return res.status(404).json({ error: '回答が見つかりません' });
     }
 
+    const { data: qLinks, error: qError } = await supabase
+      .from('form_questions')
+      .select('order_index, is_required, questions(id, title, description, question_type, options)')
+      .eq('form_id', formId)
+      .order('order_index', { ascending: true });
+
+    if (qError) throw qError;
+
     // 回答詳細のファイルパスも解決
     const resolvedContent = { ...(response.content || {}) };
     for (const q of (qLinks || [])) {
