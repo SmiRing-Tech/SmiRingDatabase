@@ -6,7 +6,7 @@ WORKDIR /app
 
 # パッケージの定義ファイルを先にコピーしてインストール（キャッシュを効かせるため）
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 
 # プロジェクトの全ファイルをコピー
 COPY . .
