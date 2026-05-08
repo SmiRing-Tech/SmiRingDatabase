@@ -1,22 +1,45 @@
-# ベースとなる環境（Node.js 20の軽量版）
-FROM node:20-slim
+# ---------------------------------------
+# 1. ビルドステージ
+# ---------------------------------------
+FROM node:22-slim AS builder
 
-# コンテナ内の作業ディレクトリを指定
 WORKDIR /app
 
-# パッケージの定義ファイルを先にコピーしてインストール（キャッシュを効かせるため）
+# モデルダウンロード等で必要なツールをインストール（必要に応じて）
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
-# プロジェクトの全ファイルをコピー
 COPY . .
-
-# TypeScriptを使っている場合、ここでビルドを実行（ビルドコマンドに合わせてください）
 RUN npm run build
 
-# Cloud Runが通信に使うポート（8080）を指定
-ENV PORT 8080
+# 🌟 重要なポイント: AIモデルをビルド時にダウンロードしておく
+# cacheディレクトリを指定して、そこをプロダクション環境にコピーします
+ENV TRANSFORMERS_CACHE=/app/.cache
+RUN node -e "const { pipeline } = require('@xenova/transformers'); pipeline('feature-extraction', 'Xenova/multilingual-e5-small');"
+
+# ---------------------------------------
+# 2. 実行ステージ
+# ---------------------------------------
+FROM node:22-slim
+
+WORKDIR /app
+
+# 実行に不要なものは含めず、最小限のパッケージだけインストール
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# ビルド成果物とAIモデルをコピー
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/.cache ./.cache
+
+# 環境変数の設定
+ENV PORT=8080
+ENV NODE_ENV=production
+ENV TRANSFORMERS_CACHE=/app/.cache
+
 EXPOSE 8080
 
-# アプリの起動コマンド（ビルド後のJSファイルを実行するか、npm start）
-CMD ["npm", "start"]
+# Cloud Run では 0.0.0.0 で待機する必要があります
+CMD ["node", "dist/index.js"]
