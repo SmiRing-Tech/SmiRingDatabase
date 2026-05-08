@@ -441,8 +441,8 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
             if (!text) return;
 
             const [localVector, geminiVector] = await Promise.all([
-              getLocalEmbedding(text),
-              getGeminiEmbedding(text),
+              getLocalEmbedding(text, false), // 文書用(passage:)
+              getGeminiEmbedding(text, false), // 文書用(RETRIEVAL_DOCUMENT)
             ]);
 
             const { error: indexError } = await supabase

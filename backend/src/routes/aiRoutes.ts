@@ -72,8 +72,8 @@ router.post('/api/answers', async (req: Request, res: Response) => {
 
         const textToEmbed = `質問: ${question?.title || '不明'}\n回答: ${JSON.stringify(answer_data)}`;
 
-        const localVector = await getLocalEmbedding(textToEmbed);
-        const geminiVector = await getGeminiEmbedding(textToEmbed);
+        const localVector = await getLocalEmbedding(textToEmbed, false); // 文書用(passage:)
+        const geminiVector = await getGeminiEmbedding(textToEmbed, false); // 文書用(RETRIEVAL_DOCUMENT)
 
         const { error: indexError } = await supabase
           .from('unified_search_index')
@@ -115,11 +115,11 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
     console.log(`[Search] 「${query}」の即時検索を開始...`);
     const startTime = Date.now();
 
-    const queryVector = await getLocalEmbedding(query);
+    const queryVector = await getLocalEmbedding(query, true); // 検索用(query:)
 
     const { data: results, error } = await supabase.rpc('search_local_vectors', {
       query_embedding: queryVector,
-      match_threshold: 0.3,
+      match_threshold: 0.8,
       match_count: 10
     });
 
@@ -149,7 +149,7 @@ router.post('/api/search/chat', async (req: Request, res: Response) => {
 
     console.log(`[Chat] 「${query}」のフルRAG検索を開始...`);
 
-    const queryVector = await getGeminiEmbedding(query);
+    const queryVector = await getGeminiEmbedding(query, true); // 検索用(RETRIEVAL_QUERY)
 
     const { data: searchResults, error } = await supabase.rpc('search_gemini_vectors', {
       query_embedding: queryVector,

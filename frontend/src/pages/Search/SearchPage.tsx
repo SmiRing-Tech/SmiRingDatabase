@@ -43,7 +43,18 @@ export default function SearchPage() {
         });
         const data = await res.json();
         setVectorResults(data.results || []);
-        console.log(`[Vector Search] ${data.time_ms}ms / ${data.results?.length ?? 0}件`);
+        
+        // 🚀 スコアを人間に見やすい形(100点満点)にしてコンソール表示
+        console.log(`[Vector Search] 「${query}」: ${data.time_ms}ms / ${data.results?.length ?? 0}件`);
+        if (data.results && data.results.length > 0) {
+          data.results.forEach((r: any, i: number) => {
+            // 🎯 スケーリング: 0.65を0点、0.95を100点とする
+            const similarity = r.similarity || 0;
+            const score = Math.max(0, Math.min(100, ((similarity - 0.65) / 0.3) * 100)).toFixed(2);
+            const preview = (r.content || "").replace(/\n/g, " ").slice(0, 40);
+            console.log(`  ${i + 1}. 【${score}点】(raw: ${similarity.toFixed(6)}) ${preview}...`);
+          });
+        }
       } catch (err) {
         console.error('ベクトル検索エラー:', err);
       } finally {
