@@ -78,10 +78,24 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
     if (isOpen && activeTab && ['hour', 'minute', 'second', 'ampm'].includes(activeTab)) {
       setTimeout(() => {
         const itemHeight = 40;
-        if (hourScrollRef.current) hourScrollRef.current.scrollTop = (is24h ? hour : (hour % 12 || 12) - (is24h ? 0 : 1)) * itemHeight;
-        if (minScrollRef.current) minScrollRef.current.scrollTop = minute * itemHeight;
-        if (secScrollRef.current) secScrollRef.current.scrollTop = second * itemHeight;
-        if (ampmScrollRef.current && !is24h) ampmScrollRef.current.scrollTop = (isPM ? 1 : 0) * itemHeight;
+        // 無限スクロール用に中央のセットにオフセットを乗せる
+        const getOffset = (max: number) => max * 5; 
+
+        if (hourScrollRef.current) {
+          const max = is24h ? 24 : 12;
+          const h = is24h ? hour : (hour % 12 || 12) - 1;
+          hourScrollRef.current.scrollTop = (getOffset(max) + h) * itemHeight;
+        }
+        if (minScrollRef.current) {
+          minScrollRef.current.scrollTop = (getOffset(60) + minute) * itemHeight;
+        }
+        if (secScrollRef.current) {
+          secScrollRef.current.scrollTop = (getOffset(60) + second) * itemHeight;
+        }
+        if (ampmScrollRef.current && !is24h) {
+          // AM/PM はループさせない
+          ampmScrollRef.current.scrollTop = (isPM ? 1 : 0) * itemHeight;
+        }
       }, 50);
     }
   }, [isOpen, activeTab]);
@@ -115,21 +129,29 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
     return fields;
   }, [format]);
 
+  // 最適なデフォルトタブを判定するヘルパー
+  const getBestDefaultTab = useCallback((): FieldType | null => {
+    if (availableFields.length === 0) return null;
+    // 1. 指定されたデフォルトフォーカスが有効ならそれを使う
+    if (defaultFocus && availableFields.includes(defaultFocus)) return defaultFocus;
+    // 2. 日付が含まれているなら日付を優先（カレンダーをまず見せたいことが多いため）
+    if (availableFields.includes('date')) return 'date';
+    // 3. それ以外は、利用可能な中で一番大きい単位（year > month > hour...）
+    return availableFields[0];
+  }, [availableFields, defaultFocus]);
+
   // モーダルが開いた時の初期タブ設定
   useEffect(() => {
     if (isOpen) {
-      if (!activeTab && availableFields.length > 0) {
-        if (defaultFocus && availableFields.includes(defaultFocus)) {
-          setActiveTab(defaultFocus);
-        } else {
-          setActiveTab(availableFields[0]);
-        }
+      if (!activeTab) {
+        const bestTab = getBestDefaultTab();
+        if (bestTab) setActiveTab(bestTab);
       }
     } else {
       setActiveTab(null);
       setInputBuffer('');
     }
-  }, [isOpen, availableFields, defaultFocus]);
+  }, [isOpen, getBestDefaultTab]);
 
   // モーダル外クリックで閉じる
   useEffect(() => {
@@ -145,7 +167,16 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
   const handleConfirm = () => {
     const maxDate = getDaysInMonth(year, month);
     const safeDate = date > maxDate ? maxDate : (date < 1 ? 1 : date);
-    const newDate = new Date(year, month - 1, safeDate, hour, minute, second);
+    
+    // 設定で無効になっている単位は 0 (または最小値) にリセットする
+    const finalYear = format.year ? year : new Date().getFullYear();
+    const finalMonth = format.month ? month - 1 : 0;
+    const finalDate = format.date ? safeDate : 1;
+    const finalHour = format.hour ? hour : 0;
+    const finalMinute = format.minute ? minute : 0;
+    const finalSecond = format.second ? second : 0;
+
+    const newDate = new Date(finalYear, finalMonth, finalDate, finalHour, finalMinute, finalSecond);
     onChange(newDate);
     if (onTimezoneChange) onTimezoneChange(localTimezone);
     setIsOpen(false);
@@ -324,24 +355,41 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>, type: string, max: number, setter: (val: number) => void, start: number = 0) => {
     const itemHeight = 40;
-    const scrollTop = e.currentTarget.scrollTop;
+    const container = e.currentTarget;
+    const scrollTop = container.scrollTop;
+
+    // AM/PM 以外は無限ループ処理を行う
+    if (type !== 'ampm') {
+      const totalHeight = max * itemHeight;
+      // 端に近づいたら中央セットにワープさせる
+      if (scrollTop < totalHeight * 2) {
+        container.scrollTop = scrollTop + totalHeight * 5;
+        return;
+      } else if (scrollTop > totalHeight * 8) {
+        container.scrollTop = scrollTop - totalHeight * 5;
+        return;
+      }
+    }
+
     const index = Math.round(scrollTop / itemHeight);
-    const val = Math.min(max - 1, Math.max(0, index)) + start;
+    const val = (index % max) + start;
 
     if (type === 'ampm') {
-      const newIsPM = val === 1;
+      const fixedVal = Math.min(1, Math.max(0, index));
+      const newIsPM = fixedVal === 1;
       if (newIsPM !== isPM) {
         if (newIsPM && hour < 12) setHour(hour + 12);
         else if (!newIsPM && hour >= 12) setHour(hour - 12);
       }
       return;
     }
+    
     if (type === 'hour' && !is24h) {
-      let h = val % 12;
+      let h = val % 12; // 12時を0時に変換
       if (isPM) h += 12;
       setter(h);
     } else {
-      setter(val);
+      setter(val % max);
     }
   };
 
@@ -357,24 +405,29 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
         <div
           ref={ref}
           onScroll={(e) => handleScroll(e, type, max, setter, start)}
-          className={`h-60 overflow-y-auto snap-y snap-mandatory scrollbar-hide py-[100px] transition-colors ${isActive ? 'bg-blue-50/30' : ''}`}
+          className={`h-60 overflow-y-auto snap-y snap-mandatory no-scrollbar py-[100px] transition-colors ${isActive ? 'bg-blue-50/30' : ''}`}
           style={{ scrollPaddingTop: '100px', scrollPaddingBottom: '100px' }}
         >
-          {Array.from({ length: max }, (_, i) => i + start).map((val, i) => (
-            <div
-              key={val}
-              onClick={() => {
-                if (ref.current) ref.current.scrollTo({ top: i * itemHeight, behavior: 'smooth' });
-                setActiveTab(type as any);
-              }}
-              className={`h-10 flex items-center justify-center snap-center snap-always cursor-pointer transition-all ${currentValue === val
-                  ? 'text-xl font-black text-blue-600 scale-110'
-                  : 'text-sm text-gray-400 hover:text-gray-600'
-                }`}
-            >
-              {items ? items[i] : String(val).padStart(2, '0')}
-            </div>
-          ))}
+          {Array.from({ length: type === 'ampm' ? max : max * 10 }, (_, i) => i).map((i) => {
+            const val = (i % max) + start;
+            const isSelected = type === 'ampm' ? currentValue === val : (currentValue % max) === (val % max);
+            
+            return (
+              <div
+                key={i}
+                onClick={() => {
+                  if (ref.current) ref.current.scrollTo({ top: i * itemHeight, behavior: 'smooth' });
+                  setActiveTab(type as any);
+                }}
+                className={`h-10 flex items-center justify-center snap-center snap-always cursor-pointer transition-all ${isSelected
+                    ? 'text-xl font-black text-blue-600 scale-110'
+                    : 'text-sm text-gray-400 hover:text-gray-600'
+                  }`}
+              >
+                {items ? items[i % max] : String(val).padStart(2, '0')}
+              </div>
+            );
+          })}
         </div>
       </div>
     );
@@ -404,7 +457,8 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
               key={loc.cityId}
               onClick={() => {
                 setLocalTimezone(loc.cityId);
-                setActiveTab('date');
+                const nextTab = getBestDefaultTab();
+                if (nextTab) setActiveTab(nextTab);
               }}
               className={`w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors ${localTimezone === loc.cityId ? 'bg-blue-50' : ''}`}
             >
@@ -509,7 +563,7 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
 
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider ml-1">Date & Time</label>
-                  <div className="bg-gray-50/80 py-2 rounded-2xl border border-gray-100 overflow-x-auto scrollbar-hide">
+                  <div className="bg-gray-50/80 py-2 rounded-2xl border border-gray-100 overflow-x-auto no-scrollbar">
                     <div className="flex items-center gap-1 w-max mx-auto px-4">
                       {format.year && renderTab('year', '年', String(year))}
                       {format.month && renderTab('month', '月', String(month).padStart(2, '0'))}

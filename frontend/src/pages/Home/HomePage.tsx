@@ -281,9 +281,8 @@ function MiniCalendar() {
     const fetchDueDates = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        const userId = session?.user?.id;
         const token = session?.access_token;
-        if (!token || !userId) return;
+        if (!token) return;
 
         const response = await fetch(`${API_BASE_URL}/api/assigned-forms`, {
           headers: { 'Authorization': `Bearer ${token}` }
@@ -291,21 +290,10 @@ function MiniCalendar() {
         if (!response.ok) return;
 
         const formsData = await response.json();
-        const formIds = formsData.map((f: any) => f.id);
-        if (formIds.length === 0) return;
-
-        const { data: responsesData } = await supabase
-          .from('form_responses')
-          .select('form_id, status')
-          .in('form_id', formIds)
-          .eq('user_id', userId);
-
-        const submittedIds = new Set(
-          (responsesData ?? []).filter(r => r.status === 'submitted').map(r => r.form_id)
-        );
-
+        
+        // バックエンドで判定済みの is_submitted を使用
         const dueDates = formsData
-          .filter((f: any) => f.due_date && !submittedIds.has(f.id))
+          .filter((f: any) => f.due_date && !f.is_submitted)
           .map((f: any) => f.due_date as string);
 
         setUnansweredDueDates(dueDates);
@@ -571,23 +559,8 @@ function AssignedFormsTimeline() {
 
         if (response.ok) {
           const formsData = await response.json();
-          const formIds = formsData.map((f: any) => f.id);
 
-          const { data: responsesData } = await supabase
-            .from('form_responses')
-            .select('form_id, status')
-            .in('form_id', formIds)
-            .eq('user_id', userId);
-
-          const mergedData = formsData.map((form: any) => {
-            const myResponse = responsesData?.find(r => r.form_id === form.id);
-            return {
-              ...form,
-              isSubmitted: myResponse?.status === 'submitted'
-            };
-          });
-
-          const sorted = mergedData.sort((a: any, b: any) => {
+          const sorted = formsData.sort((a: any, b: any) => {
             if (!a.due_date) return 1;
             if (!b.due_date) return -1;
             return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
@@ -630,7 +603,7 @@ function AssignedFormsTimeline() {
     <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
       <div className="flex flex-col space-y-4">
         {assignedForms.map((form, index) => {
-          const isSubmitted = form.isSubmitted;
+          const isSubmitted = form.is_submitted;
           const isOverdue = !isSubmitted && form.due_date && new Date(form.due_date) < new Date();
           const isSoon = !isSubmitted && form.due_date && (new Date(form.due_date).getTime() - new Date().getTime()) / (1000 * 3600 * 24) <= 3;
 

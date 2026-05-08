@@ -19,11 +19,12 @@ type Props = {
   onChange: (newAnswer: any) => void;
   error?: string;
   timezone?: string;
+  onTimezoneChange?: (timezone: string) => void;
   formId?: string;
   readOnly?: boolean;
 };
 
-export default function AnswerBox({ question, answer, onChange, error, timezone, formId, readOnly }: Props) {
+export default function AnswerBox({ question, answer, onChange, error, timezone, onTimezoneChange, formId, readOnly }: Props) {
 
   // --- 各質問タイプの入力UI ---
 
@@ -478,6 +479,7 @@ export default function AnswerBox({ question, answer, onChange, error, timezone,
               timezone: question.dateTimeSettings.format.timezone,
             }}
             timezone={timezone}
+            onTimezoneChange={onTimezoneChange}
             is24h={question.dateTimeSettings.is24h}
           />
         </div>

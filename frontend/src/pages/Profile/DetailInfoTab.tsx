@@ -99,10 +99,8 @@ export default function DetailInfoTab({ userId, isEditable = false }: Props) {
     fetchResponses();
   }, [userId]);
 
-  const handleRowClick = (formId: string) => {
-    if (userId) {
-      navigate(`/form-responses/${formId}/${userId}`);
-    }
+  const handleRowClick = (responseId: string) => {
+    navigate(`/form-responses/${responseId}`);
   };
 
   return (
@@ -122,7 +120,7 @@ export default function DetailInfoTab({ userId, isEditable = false }: Props) {
             <FormResponseRow
               key={res.id}
               response={res}
-              onClick={() => handleRowClick(res.form_id)}
+              onClick={() => handleRowClick(res.id)}
             />
           ))}
         </div>

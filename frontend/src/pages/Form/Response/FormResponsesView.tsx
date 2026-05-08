@@ -7,13 +7,14 @@ import SheetTab from './SheetTab';
 import QuestionTab from './QuestionTab';
 import IndividualTab from './IndividualTab';
 import { API_BASE_URL } from '../../../config';
+import { Table2, LayoutList, User as UserIcon, Inbox } from 'lucide-react';
 
 type ResponseTab = 'sheet' | 'question' | 'individual';
 
-const TABS: { id: ResponseTab; label: string }[] = [
-  { id: 'sheet',      label: '🗂 シート' },
-  { id: 'question',   label: '❓ 質問別' },
-  { id: 'individual', label: '👤 個人別' },
+const TABS: { id: ResponseTab; label: string; icon: any }[] = [
+  { id: 'sheet',      label: 'シート',   icon: Table2 },
+  { id: 'question',   label: '質問別',   icon: LayoutList },
+  { id: 'individual', label: '個人別',   icon: UserIcon },
 ];
 
 export default function FormResponsesView({ formId }: { formId: string }) {
@@ -95,17 +96,18 @@ export default function FormResponsesView({ formId }: { formId: string }) {
     <div className="flex-1 flex flex-col overflow-hidden bg-gray-50">
 
       {/* サブタブバー */}
-      <div className="bg-white border-b border-gray-200 px-4 flex items-end gap-0 flex-shrink-0">
+      <div className="bg-white border-b border-gray-200 px-4 flex items-end justify-center gap-2 md:gap-8 flex-shrink-0">
         {TABS.map(tab => (
           <button
             key={tab.id}
             onClick={() => handleTabChange(tab.id)}
-            className={`px-5 py-3 text-sm font-bold border-b-2 transition-all duration-200 ${
+            className={`px-5 py-3 text-sm font-bold border-b-2 transition-all duration-200 flex items-center gap-2 ${
               activeTab === tab.id
                 ? 'border-purple-600 text-purple-700'
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
             }`}
           >
+            <tab.icon className={`w-4 h-4 ${activeTab === tab.id ? 'text-purple-600' : 'text-gray-400'}`} />
             {tab.label}
           </button>
         ))}
@@ -121,7 +123,9 @@ export default function FormResponsesView({ formId }: { formId: string }) {
         </div>
       ) : responses.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center text-gray-400 gap-4">
-          <div className="w-20 h-20 rounded-2xl bg-gray-100 flex items-center justify-center text-4xl">📭</div>
+          <div className="w-20 h-20 rounded-3xl bg-gray-100 flex items-center justify-center text-gray-300">
+            <Inbox className="w-10 h-10" />
+          </div>
           <p className="text-lg font-bold text-gray-500">まだ回答がありません</p>
           <p className="text-sm">フォームを公開してメンバーに回答を依頼しましょう。</p>
         </div>

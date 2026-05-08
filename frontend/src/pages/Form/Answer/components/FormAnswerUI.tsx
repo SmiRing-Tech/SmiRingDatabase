@@ -29,6 +29,7 @@ type Props = {
   lastSavedTime?: Date | null;
   readonlyInfo?: ReadonlyInfo;
   timezone?: string;
+  onTimezoneChange?: (timezone: string) => void;
   formId?: string;
 };
 
@@ -37,7 +38,7 @@ export default function FormAnswerUI({
   onAnswerChange, onSubmit, mode, isLoading = false,
   onOpenFullScreen, onClearAnswers,
   isSaving = false, lastSavedTime = null,
-  readonlyInfo, timezone, formId,
+  readonlyInfo, timezone, onTimezoneChange, formId,
 }: Props) {
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -149,6 +150,8 @@ export default function FormAnswerUI({
               const data = await res.json();
               uploadedItems.push({
                 path: data.path,
+                thumbnailPath: data.thumbnailPath,
+                galleryId: data.galleryId,
                 name: data.filename,
                 type: data.mimetype,
                 size: data.size
@@ -248,6 +251,7 @@ export default function FormAnswerUI({
                 }}
                 error={errors[q.id]}
                 timezone={timezone}
+                onTimezoneChange={onTimezoneChange}
                 formId={formId}
                 readOnly={!!readonlyInfo}
               />

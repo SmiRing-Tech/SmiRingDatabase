@@ -139,14 +139,20 @@ export default function FormEditorPage() {
 
   // 回答数をバックグラウンドで取得
   useEffect(() => {
-    if (!urlId) return;
-    supabase
-      .from('form_responses')
-      .select('id', { count: 'exact', head: true })
-      .eq('form_id', urlId)
-      .eq('status', 'submitted')
-      .then(({ count }) => { if (count !== null) setResponseCount(count); });
-  }, [urlId]);
+    const fetchCount = async () => {
+      if (!urlId) return;
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/forms/${urlId}/responses/count`);
+        if (response.ok) {
+          const data = await response.json();
+          setResponseCount(data.count);
+        }
+      } catch (err) {
+        console.error("回答数取得エラー:", err);
+      }
+    };
+    fetchCount();
+  }, [urlId, viewMode]);
 
   // ==========================================
   // viewMode の制御
@@ -215,7 +221,10 @@ export default function FormEditorPage() {
       }
 
       try {
-        const { data: form } = await supabase.from('forms').select('*').eq('id', urlId).maybeSingle();
+        const response = await fetch(`${API_BASE_URL}/api/forms/${urlId}?includeDeleted=true`);
+        if (!response.ok) throw new Error('フォームの取得に失敗しました');
+        const form = await response.json();
+
         if (form) {
           setTitle(form.title || '');
           setDescription(form.description || '');
@@ -227,49 +236,41 @@ export default function FormEditorPage() {
           setCurrentAllowEdit(form.allow_edit_responses !== false); // default to true if undefined
           setCurrentTimezone(form.timezone || form.publish_settings?.timezone);
 
-          const { data: qLinks } = await supabase
-            .from('form_questions')
-            .select('*, questions(*)')
-            .eq('form_id', urlId)
-            .eq('is_deleted', false)
-            .order('order_index', { ascending: true });
-
-          if (qLinks && qLinks.length > 0) {
-            const loadedQuestions = qLinks.map(link => {
-              const q = link.questions;
+          if (form.questions && form.questions.length > 0) {
+            const loadedQuestions = (form.questions as any[]).map((q: any) => {
               return {
                 id: q.id,
                 title: q.title || '',
                 description: q.description || '',
-                type: q.question_type || 'radio',
-                isRequired: link.is_required || false,
-                options: Array.isArray(q.options?.choices)
-                  ? q.options.choices.map((c: any, idx: number) => 
-                      typeof c === 'string' ? { id: Date.now() + idx, text: c } : c
-                    )
+                type: q.type || 'radio',
+                isRequired: q.isRequired || false,
+                options: Array.isArray(q.options)
+                  ? q.options.map((c: any, idx: number) =>
+                    typeof c === 'string' ? { id: Date.now() + idx, text: c } : c
+                  )
                   : [{ id: Date.now(), text: '' }, { id: Date.now() + 1, text: '' }],
-                allowCustomAnswer: q.options?.allowCustomAnswer || false,
-                scale: q.options?.scale || { min: 1, max: 5, minLabel: '', maxLabel: '' },
-                gridRows: Array.isArray(q.options?.gridRows)
-                  ? q.options.gridRows.map((r: any, idx: number) => 
-                      typeof r === 'string' ? { id: Date.now() + idx, text: r } : r
-                    )
+                allowCustomAnswer: q.allowCustomAnswer || false,
+                scale: q.scale || { min: 1, max: 5, minLabel: '', maxLabel: '' },
+                gridRows: Array.isArray(q.gridRows)
+                  ? q.gridRows.map((r: any, idx: number) =>
+                    typeof r === 'string' ? { id: Date.now() + idx, text: r } : r
+                  )
                   : [{ id: Date.now(), text: '' }],
-                gridCols: Array.isArray(q.options?.gridCols)
-                  ? q.options.gridCols.map((c: any, idx: number) => 
-                      typeof c === 'string' ? { id: Date.now() + idx, text: c } : c
-                    )
+                gridCols: Array.isArray(q.gridCols)
+                  ? q.gridCols.map((c: any, idx: number) =>
+                    typeof c === 'string' ? { id: Date.now() + idx, text: c } : c
+                  )
                   : [{ id: Date.now(), text: '' }],
-                gridInputType: q.options?.gridInputType || 'radio',
-                shortTextValidation: q.options?.validation || { enabled: false, type: 'number', condition: 'between', value1: '', value2: '', errorMsg: '' },
-                checkboxValidation: q.options?.checkboxValidation || { enabled: false, min: '', max: '', errorMsg: '' },
-                shortTextMultiple: q.options?.shortTextMultiple || { enabled: false, style: 'bullet' },
-                dateTimeSettings: q.options?.dateTimeSettings || {
+                gridInputType: q.gridInputType || 'radio',
+                shortTextValidation: q.shortTextValidation || { enabled: false, type: 'number', condition: 'between', value1: '', value2: '', errorMsg: '' },
+                checkboxValidation: q.checkboxValidation || { enabled: false, min: '', max: '', errorMsg: '' },
+                shortTextMultiple: q.shortTextMultiple || { enabled: false, style: 'bullet' },
+                dateTimeSettings: q.dateTimeSettings || {
                   format: { year: true, month: true, date: true, hour: true, minute: true, second: false, timezone: false },
                   is24h: true
                 },
-                dropdownSettings: q.options?.dropdownSettings || { searchable: false, multiple: false },
-                fileUploadSettings: q.options?.fileUploadSettings || {
+                dropdownSettings: q.dropdownSettings || { searchable: false, multiple: false },
+                fileUploadSettings: q.fileUploadSettings || {
                   maxFiles: 1,
                   maxSizeMB: 10,
                   allowedTypes: ['image', 'pdf']
@@ -610,6 +611,7 @@ export default function FormEditorPage() {
             mode="preview"
             onClearAnswers={clearAnswers}
             timezone={currentTimezone}
+            onTimezoneChange={setCurrentTimezone}
             formId={formId}
           />
         </div>
@@ -892,6 +894,7 @@ export default function FormEditorPage() {
                 onOpenFullScreen={openFullPreview}
                 onClearAnswers={clearAnswers}
                 timezone={currentTimezone}
+                onTimezoneChange={setCurrentTimezone}
               />
             </div>
           )}
