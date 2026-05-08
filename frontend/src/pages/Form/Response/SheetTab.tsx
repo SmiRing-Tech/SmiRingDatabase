@@ -11,10 +11,17 @@ const CellContent = ({ question, answer }: { question: QuestionData, answer: any
     return <span className="text-gray-300 italic text-xs">未回答</span>;
   }
 
+  // 共通のラッパー（高さ制限と三点リーダー用）
+  const Wrapper = ({ children, className = "" }: { children: React.ReactNode, className?: string }) => (
+    <div className={`text-sm text-gray-700 break-words line-clamp-6 leading-relaxed ${className}`}>
+      {children}
+    </div>
+  );
+
   switch (question.type) {
     case 'date_time': {
       const date = new Date(answer);
-      if (isNaN(date.getTime())) return <span className="text-sm">{String(answer)}</span>;
+      if (isNaN(date.getTime())) return <Wrapper>{String(answer)}</Wrapper>;
       
       const fmt = question.dateTimeSettings?.format || {};
       const dateParts = [];
@@ -28,7 +35,7 @@ const CellContent = ({ question, answer }: { question: QuestionData, answer: any
       if (fmt.second) timeParts.push(`${date.getSeconds()}秒`);
 
       return (
-        <div className="flex items-center gap-1.5 text-gray-700 text-sm">
+        <div className="flex items-center gap-1.5 text-gray-700 text-sm py-1">
           <Calendar className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
           <span className="font-bold whitespace-nowrap">
             {dateParts.join('')} {timeParts.join('')}
@@ -38,23 +45,25 @@ const CellContent = ({ question, answer }: { question: QuestionData, answer: any
     }
 
     case 'grid_radio': {
-      if (typeof answer !== 'object') return <span className="text-sm">{String(answer)}</span>;
+      if (typeof answer !== 'object') return <Wrapper>{String(answer)}</Wrapper>;
       return (
-        <div className="space-y-1 py-1">
+        <Wrapper className="space-y-1 py-1">
           {Object.entries(answer).map(([row, col]) => (
-            <div key={row} className="text-xs flex gap-1.5 leading-relaxed">
-              <span className="font-bold text-gray-400 flex-shrink-0">{row}:</span>
-              <span className="text-gray-800 break-words font-medium">{Array.isArray(col) ? col.join('、') : String(col)}</span>
+            <div key={row} className="text-xs flex gap-1.5 min-w-0">
+              <span className="font-bold text-gray-400 shrink-0">{row}:</span>
+              <span className="text-gray-800 font-medium">
+                {Array.isArray(col) ? col.join('、') : String(col)}
+              </span>
             </div>
           ))}
-        </div>
+        </Wrapper>
       );
     }
 
     case 'file_upload': {
-      if (!Array.isArray(answer)) return <span className="text-sm">{String(answer)}</span>;
+      if (!Array.isArray(answer)) return <Wrapper>{String(answer)}</Wrapper>;
       return (
-        <div className="flex flex-col gap-1.5 py-1">
+        <Wrapper className="flex flex-col gap-1.5 py-1">
           {answer.map((file: any, i: number) => {
             const isImage = file.type?.startsWith('image/');
             const isPdf = file.type === 'application/pdf' || file.name?.endsWith('.pdf');
@@ -65,7 +74,7 @@ const CellContent = ({ question, answer }: { question: QuestionData, answer: any
                 href={file.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-2 p-1.5 pr-3 bg-white border border-gray-100 rounded-lg hover:border-blue-200 hover:bg-blue-50 transition-all group max-w-full shadow-sm"
+                className="flex items-center gap-2 p-1.5 pr-3 bg-white border border-gray-100 rounded-lg hover:border-blue-200 hover:bg-blue-50 transition-all group shadow-sm w-full overflow-hidden"
               >
                 <div className="w-6 h-6 rounded flex-shrink-0 bg-gray-50 border border-gray-100 overflow-hidden flex items-center justify-center">
                   {isImage && (file.thumbnailUrl || file.url) ? (
@@ -82,16 +91,16 @@ const CellContent = ({ question, answer }: { question: QuestionData, answer: any
               </a>
             );
           })}
-        </div>
+        </Wrapper>
       );
     }
 
     case 'checkbox': {
-      if (!Array.isArray(answer)) return <span className="text-sm">{String(answer)}</span>;
+      if (!Array.isArray(answer)) return <Wrapper>{String(answer)}</Wrapper>;
       return (
-        <span className="text-sm text-gray-700 font-medium">
+        <Wrapper className="font-medium">
           {answer.join('、')}
-        </span>
+        </Wrapper>
       );
     }
 
@@ -99,14 +108,14 @@ const CellContent = ({ question, answer }: { question: QuestionData, answer: any
       // HTMLタグを除去し、改行だけを活かす
       const plainText = answer.replace(/<[^>]*>/g, (tag: string) => (tag === '</p>' || tag === '<br>' || tag === '<br/>' ? '\n' : ''));
       return (
-        <div className="text-sm text-gray-600 whitespace-pre-wrap leading-relaxed py-1 line-clamp-6">
+        <Wrapper className="whitespace-pre-wrap text-gray-600">
           {plainText}
-        </div>
+        </Wrapper>
       );
     }
 
     default:
-      return <span className="text-sm whitespace-pre-wrap">{String(answer)}</span>;
+      return <Wrapper className="whitespace-pre-wrap">{String(answer)}</Wrapper>;
   }
 };
 

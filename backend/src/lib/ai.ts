@@ -7,7 +7,7 @@ let localExtractor: any = null;
 // ==========================================
 // 2. ローカルAIでのベクトル化 (384次元)
 // ==========================================
-export async function getLocalEmbedding(text: string): Promise<number[]> {
+export async function getLocalEmbedding(text: string, isQuery: boolean = true): Promise<number[]> {
   // 初回呼び出し時だけ、モデル(約100MB)をメモリにダウンロードして読み込む（Lazy Loading）
   if (!localExtractor) {
     console.log('ローカルAIモデルを初期化中... (初回は数秒かかります)');
@@ -15,15 +15,19 @@ export async function getLocalEmbedding(text: string): Promise<number[]> {
     console.log('ローカルAIモデルの準備完了！');
   }
 
+  // E5モデルの精度向上のため、クエリなら "query: ", 文書なら "passage: " を付与する
+  const prefix = isQuery ? 'query: ' : 'passage: ';
+  const input = prefix + text;
+
   // テキストをベクトル化 (poolingとnormalizeで検索精度を最適化)
-  const output = await localExtractor(text, { pooling: 'mean', normalize: true });
+  const output = await localExtractor(input, { pooling: 'mean', normalize: true });
   return Array.from(output.data);
 }
 
 // ==========================================
 // 3. Geminiでのベクトル化 (768次元に圧縮！)
 // ==========================================
-export async function getGeminiEmbedding(text: string): Promise<number[]> {
+export async function getGeminiEmbedding(text: string, isQuery: boolean = false): Promise<number[]> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("サーバーエラー: GEMINI_API_KEY が見つかりません");
   const genAI = new GoogleGenerativeAI(apiKey);
@@ -31,7 +35,7 @@ export async function getGeminiEmbedding(text: string): Promise<number[]> {
   
   const result = await model.embedContent({
     content: { role: "user", parts: [{ text }] }, 
-    taskType: TaskType.RETRIEVAL_DOCUMENT,
+    taskType: isQuery ? TaskType.RETRIEVAL_QUERY : TaskType.RETRIEVAL_DOCUMENT,
     outputDimensionality: 768,
   } as any );
   
