@@ -17,8 +17,7 @@ RUN npm run build
 # 🌟 重要なポイント: AIモデルをビルド時にダウンロードしておく
 # cacheディレクトリを指定して、そこをプロダクション環境にコピーします
 ENV TRANSFORMERS_CACHE=/app/.cache
-RUN node -e "const { pipeline } = require('@xenova/transformers'); pipeline('feature-extraction', 'Xenova/multilingual-e5-small');"
-
+RUN mkdir -p /app/.cache && node -e "const { pipeline } = require('@xenova/transformers'); (async () => { console.log('🤖 モデルをダウンロード中...'); await pipeline('feature-extraction', 'Xenova/multilingual-e5-small'); console.log('✅ ダウンロード完了！'); })();"
 # ---------------------------------------
 # 2. 実行ステージ
 # ---------------------------------------
