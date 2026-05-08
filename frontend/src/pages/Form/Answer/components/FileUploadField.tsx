@@ -179,6 +179,7 @@ export default function FileUploadField({ settings, value, onChange, readOnly }:
             const isError = !!item.error || (idx >= safeSettings.maxFiles);
             const errorMessage = item.error || (idx >= safeSettings.maxFiles ? "上限数を超えています" : null);
             const isPdf = item.type === 'application/pdf' || item.name.endsWith('.pdf');
+            const isImage = item.type?.startsWith('image/');
 
             return (
               <div 
@@ -192,8 +193,8 @@ export default function FileUploadField({ settings, value, onChange, readOnly }:
                   <div className={`w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 overflow-hidden ${
                     isError ? 'bg-red-100 text-red-500' : 'bg-gray-50 text-blue-500'
                   }`}>
-                    {item.preview ? (
-                      <img src={item.preview} className="w-full h-full object-cover" alt="" />
+                    {(item.preview || (isImage && (item as any).thumbnailUrl) || (isImage && (item as any).url)) ? (
+                      <img src={item.preview || (item as any).thumbnailUrl || (item as any).url} className="w-full h-full object-cover" alt="" />
                     ) : isError ? (
                       <FileWarning className="w-5 h-5" />
                     ) : isPdf ? (

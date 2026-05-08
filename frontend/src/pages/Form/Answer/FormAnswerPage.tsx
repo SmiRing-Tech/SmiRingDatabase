@@ -97,12 +97,19 @@ export default function FormAnswerPage() {
         const [formRes, draftRes] = await Promise.all([
           fetch(`${API_BASE_URL}/api/forms/${id}`),
           userId && !isPreviewMode 
-            ? supabase.from('form_responses').select('*').eq('form_id', id).eq('user_id', userId).order('updated_at', { ascending: false })
-            : Promise.resolve({ data: [] })
+            ? fetch(`${API_BASE_URL}/api/forms/${id}/my-responses`, {
+                headers: { 'Authorization': `Bearer ${session.access_token}` }
+              })
+            : Promise.resolve(null)
         ]);
 
         if (!formRes.ok) throw new Error('フォームの取得に失敗しました');
         const formData = await formRes.json();
+        
+        let pResponses = [];
+        if (draftRes && draftRes.ok) {
+          pResponses = await draftRes.json();
+        }
 
         // 1. まずフォームの基本情報をセット
         setTitle(formData.title || '');
@@ -129,8 +136,6 @@ export default function FormAnswerPage() {
         setAllowMultiple(allowMult);
         setAllowEdit(allowEd);
 
-        // 2. 回答状態の判定
-        const pResponses = draftRes?.data || [];
         setPastResponses(pResponses);
         
         const hasSubmitted = pResponses.some((r: any) => r.status === 'submitted');
@@ -388,6 +393,7 @@ export default function FormAnswerPage() {
         isSaving={isSaving}           // 🌟 追加
         lastSavedTime={lastSavedTime} // 🌟 追加
         timezone={timezone}
+        onTimezoneChange={setTimezone}
         formId={id}
       />
     </div>

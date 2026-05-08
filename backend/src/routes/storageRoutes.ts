@@ -60,24 +60,27 @@ router.post('/api/gallery/upload', upload.single('file'), async (req: Request, r
 
     // ファイル名を一意にする
     const timestamp = Date.now();
-    const ext = file.originalname.split('.').pop();
-    const largeKey = `gallery/large/${user.id}/${timestamp}.${ext}`;
+    const largeKey = `gallery/large/${user.id}/${timestamp}.jpg`;
     const thumbKey = `gallery/thumbnails/${user.id}/${timestamp}.webp`;
 
-    // Step 1: サムネイル生成 (sharp)
-    // 縦横どちらか長い方を 400px に制限し、WebP 形式で圧縮
+    // Step 1: ラージ画像 (1920px) & サムネイル (400px) 生成
+    const largeBuffer = await sharp(file.buffer)
+      .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 80, progressive: true })
+      .toBuffer();
+
     const thumbBuffer = await sharp(file.buffer)
       .resize(400, 400, { fit: 'inside' })
       .webp({ quality: 80 })
       .toBuffer();
 
-    // Step 2: R2へアップロード（オリジナル & サムネイル）
-    // オリジナル (Large)
+    // Step 2: R2へアップロード
+    // ラージ (1920px版)
     await r2.send(new PutObjectCommand({
       Bucket: BUCKET_NAME,
       Key: largeKey,
-      Body: file.buffer,
-      ContentType: file.mimetype,
+      Body: largeBuffer,
+      ContentType: 'image/jpeg',
     }));
 
     // サムネイル
@@ -437,40 +440,88 @@ router.post('/api/forms/attachments/upload', attachmentUpload.single('file'), as
 
     const file = req.file;
     const timestamp = Date.now();
-    const safeFileName = file.originalname.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
-    const storagePath = `form_attachments/${form_id}/${user.id}/${timestamp}_${safeFileName}`;
+    const isImage = file.mimetype.startsWith('image/');
 
-    let uploadBuffer = file.buffer;
-    let contentType = file.mimetype;
+    if (isImage) {
+      // 🖼️ 画像の場合はギャラリーとして処理
+      const largeKey = `gallery/large/${user.id}/${timestamp}.jpg`;
+      const thumbKey = `gallery/thumbnails/${user.id}/${timestamp}.webp`;
 
-    // 画像の場合は圧縮を試みる (Sharpが対応している形式のみ)
-    if (file.mimetype.startsWith('image/')) {
-      try {
-        uploadBuffer = await sharp(file.buffer)
-          .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality: 80, progressive: true })
-          .toBuffer();
-        contentType = 'image/jpeg';
-      } catch (sharpError) {
-        console.warn('画像圧縮に失敗したため、オリジナルをアップロードします:', sharpError);
-      }
+      // Step 1: ラージ画像 (1920px) & サムネイル (400px) 生成
+      const largeBuffer = await sharp(file.buffer)
+        .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 80, progressive: true })
+        .toBuffer();
+
+      const thumbBuffer = await sharp(file.buffer)
+        .resize(400, 400, { fit: 'inside' })
+        .webp({ quality: 80 })
+        .toBuffer();
+
+      // Step 2: R2へアップロード
+      // ラージ (1920px版)
+      await r2.send(new PutObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: largeKey,
+        Body: largeBuffer,
+        ContentType: 'image/jpeg',
+      }));
+
+      // サムネイル
+      await r2.send(new PutObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: thumbKey,
+        Body: thumbBuffer,
+        ContentType: 'image/webp',
+      }));
+
+      // Step 3: galleryテーブルへ登録（組織内公開）
+      const { data: gallery, error: insertError } = await supabase
+        .from('gallery')
+        .insert({
+          user_id: user.id,
+          storage_path: largeKey,
+          thumbnail_path: thumbKey,
+          image_type: 'form_attachment',
+          tags: [`form:${form_id}`],
+          visibility: 'organization',
+          description: `Form Attachment: ${file.originalname}`,
+        })
+        .select()
+        .single();
+
+      if (insertError) throw insertError;
+
+      res.json({
+        message: '写真をギャラリーに保存しました',
+        galleryId: gallery.id,
+        path: largeKey,
+        thumbnailPath: thumbKey,
+        filename: file.originalname,
+        mimetype: file.mimetype,
+        size: file.size
+      });
+
+    } else {
+      // 📎 画像以外は通常の添付ファイルとして処理
+      const safeFileName = file.originalname.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
+      const storagePath = `form_attachments/${form_id}/${user.id}/${timestamp}_${safeFileName}`;
+
+      await r2.send(new PutObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: storagePath,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+      }));
+
+      res.json({
+        message: 'ファイルをアップロードしました',
+        path: storagePath,
+        filename: file.originalname,
+        mimetype: file.mimetype,
+        size: file.size
+      });
     }
-
-    // R2へアップロード
-    await r2.send(new PutObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: storagePath,
-      Body: uploadBuffer,
-      ContentType: contentType,
-    }));
-
-    res.json({
-      message: 'ファイルをアップロードしました',
-      path: storagePath,
-      filename: file.originalname,
-      mimetype: contentType,
-      size: uploadBuffer.length
-    });
 
   } catch (error: any) {
     console.error('添付ファイルアップロードエラー:', error);

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
+import { API_BASE_URL } from '../../config';
 
 export default function SignUpPage() {
   const [username, setUsername] = useState('');
@@ -16,12 +17,18 @@ export default function SignUpPage() {
     setIsLoading(true);
   
     try {
-      // 1. まずはRPCでコードが正しいか確認 (門番)
-      const { data: isValidCode, error: rpcError } = await supabase.rpc('check_signup_code', {
-        code_to_check: signupCode.trim(),
+      // 1. まずはバックエンドでコードが正しいか確認 (門番)
+      const codeRes = await fetch(`${API_BASE_URL}/api/auth/check-invitation-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: signupCode.trim() }),
       });
-  
-      if (rpcError) throw rpcError;
+
+      if (!codeRes.ok) {
+        throw new Error('コードの検証中にエラーが発生しました');
+      }
+
+      const { isValid: isValidCode } = await codeRes.json();
   
       if (!isValidCode) {
         alert('サインアップコードが正しくありません。');

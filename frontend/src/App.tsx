@@ -118,7 +118,7 @@ const router = createBrowserRouter([
       { path: '/form-editor/:id', element: <FormEditorPage /> },
       { path: '/form-preview/:id', element: <FormAnswerPage /> },
       { path: '/form-answer/:id', element: <FormAnswerPage /> },
-      { path: '/form-responses/:formId/:userId', element: <FormResponseDetailPage /> },
+      { path: '/form-responses/:responseId', element: <FormResponseDetailPage /> },
       { path: '/search', element: <SearchPage /> },
     ],
   },
