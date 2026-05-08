@@ -2,6 +2,7 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 import express, { Request, Response } from 'express';
 import cors from 'cors';
+import { initAIModel } from './lib/ai';
 
 import profileRoutes from './routes/profileRoutes';
 import formRoutes from './routes/formRoutes';
@@ -36,6 +37,21 @@ app.use(authRoutes);    // 🔐 認証系
 // ==========================================
 // サーバー起動
 // ==========================================
-app.listen(port, () => {
-  console.log(`🚀 サーバーが起動しました: ${port}`);
-});
+async function startServer() {
+  try {
+    console.log('サーバーの起動準備中...');
+    
+    // 🌟 3. リクエストを受け付ける前に、AIモデルを確実にロードする
+    await initAIModel();
+
+    // 🌟 4. AIの準備が完了したら、はじめてポートを開放する
+    app.listen(port, () => {
+      console.log(`🚀 サーバーが起動しました: ${port}`);
+    });
+  } catch (error) {
+    console.error('❌ サーバー起動エラー:', error);
+    process.exit(1); // エラーが起きたらプロセスを終了させる
+  }
+}
+
+startServer();

@@ -453,7 +453,7 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
                 content: text,
                 embedding_local: localVector,
                 embedding_gemini: geminiVector,
-                metadata: { user_id, form_id: formId, form_title: formTitle, question_id: q.id },
+                metadata: { user_id, form_id: formId, form_title: formTitle, question_id: q.id, response_id: submittedResponseId },
               });
 
             if (indexError) throw indexError;

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useFeedback } from '../../../context/FeedbackContext';
 import { useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom';
 import QuestionBox from './components/QuestionBox';
 import { FileText, Eye, Send, Globe, AlertTriangle } from 'lucide-react';
@@ -105,6 +106,7 @@ const createDefaultQuestion = (): QuestionData => ({
 });
 
 export default function FormEditorPage() {
+  const { showFeedback } = useFeedback();
   const navigate = useNavigate();
   const { id: urlId } = useParams();
   const [formId] = useState(urlId || crypto.randomUUID());
@@ -530,11 +532,16 @@ export default function FormEditorPage() {
         ? '全員を削除したため、下書きに戻しました。'
         : (formStatus === 'published' ? '設定を更新しました！' : '🚀 フォームを公開しました！');
 
-      alert(message);
+      const isPublished = newStatus === 'published' && formStatus !== 'published';
+      showFeedback(message, { 
+        mode: isPublished ? 'splash' : 'toast', 
+        type: 'success',
+        emoji: isPublished ? '🚀' : undefined
+      });
       setViewMode('edit');
     } catch (err) {
       console.error('Publish error:', err);
-      alert('エラーが発生しました');
+      showFeedback('エラーが発生しました', { type: 'error', mode: 'banner' });
     } finally {
       setIsSaving(false);
     }
@@ -544,7 +551,7 @@ export default function FormEditorPage() {
     const errors = validateFormCritical(title, questions);
     if (errors.length > 0) {
       const errorList = errors.map(e => `・ ${e.message}`).join('\n');
-      alert(`以下の不備を修正してください。\n\n${errorList}`);
+      showFeedback(`以下の不備を修正してください。\n\n${errorList}`, { type: 'error', mode: 'banner' });
       // 最初のエラーのある質問に自動スクロール
       if (errors[0].questionId) {
         const el = document.getElementById(`box-${errors[0].questionId}`);
@@ -607,7 +614,7 @@ export default function FormEditorPage() {
             questions={questions}
             answers={testAnswers}
             onAnswerChange={(qid, val) => setTestAnswers(prev => ({ ...prev, [qid]: val }))}
-            onSubmit={() => alert("これはプレビューです。設定を完了して送信してください。")}
+            onSubmit={() => showFeedback("これはプレビューです。設定を完了して送信してください。", { type: 'info', mode: 'toast' })}
             mode="preview"
             onClearAnswers={clearAnswers}
             timezone={currentTimezone}
@@ -888,7 +895,7 @@ export default function FormEditorPage() {
                 answers={testAnswers}
                 onAnswerChange={(qid, val) => setTestAnswers(prev => ({ ...prev, [qid]: val }))}
                 onSubmit={(token) => {
-                  alert("プレビュー送信テスト:\n" + JSON.stringify(testAnswers, null, 2) + "\n\nTurnstile Token: " + token);
+                  showFeedback("プレビュー送信テスト:\n" + JSON.stringify(testAnswers, null, 2), { mode: 'splash', emoji: '🧪' });
                 }}
                 mode="preview"
                 onOpenFullScreen={openFullPreview}

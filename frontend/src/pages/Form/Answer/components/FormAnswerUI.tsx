@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useFeedback } from '../../../../context/FeedbackContext';
 import type { QuestionData } from '../../FormEditor/FormEditorPage';
 import { richTextStyles } from '../../../../components/ui/RichTextEditor';
 import AnswerBox from './AnswerBox';
@@ -40,6 +41,7 @@ export default function FormAnswerUI({
   isSaving = false, lastSavedTime = null,
   readonlyInfo, timezone, onTimezoneChange, formId,
 }: Props) {
+  const { showFeedback } = useFeedback();
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
@@ -167,7 +169,7 @@ export default function FormAnswerUI({
       // そこでも isLoading がセットされるが、ここではアップロード分を先に終わらせる
       await onSubmit?.(turnstileToken, finalAnswers);
     } catch (err: any) {
-      alert(err.message || 'エラーが発生しました');
+      showFeedback(err.message || 'エラーが発生しました', { type: 'error', mode: 'banner' });
     } finally {
       setIsUploadingFiles(false);
     }
@@ -241,7 +243,7 @@ export default function FormAnswerUI({
         {/* 質問一覧 */}
         <div className="">
           {questions.map((q) => (
-            <div key={q.id} className="mb-6">
+            <div key={q.id} id={`question-${q.id}`} className="mb-6 scroll-mt-20">
               <AnswerBox
                 question={q}
                 answer={answers[q.id]}

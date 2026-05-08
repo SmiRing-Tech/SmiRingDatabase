@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { type Member, memberMatchesQuery, HighlightedText } from './SearchBar';
-import { API_BASE_URL } from '../../config';
+import { apiClient } from '../../lib/apiClient';
 
 type FilterTab = 'all' | 'members';
 
@@ -10,7 +10,7 @@ type FilterTab = 'all' | 'members';
 // ==========================================
 
 export default function SearchPage() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState(() => searchParams.get('q') ?? '');
   const [activeTab, setActiveTab] = useState<FilterTab>('all');
   const [members, setMembers] = useState<Member[]>([]);
@@ -19,12 +19,20 @@ export default function SearchPage() {
   const [isSearching, setIsSearching] = useState(false);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/basic_profile_info`)
+    apiClient.get('/api/basic_profile_info')
       .then(res => res.json())
       .then(data => setMembers(data))
       .catch(err => console.error('メンバー取得エラー:', err))
       .finally(() => setIsLoading(false));
   }, []);
+
+  // URLのクエリパラメータが変わったら state に反映する（ブラウザの「戻る」対応）
+  useEffect(() => {
+    const q = searchParams.get('q') ?? '';
+    if (q !== query) {
+      setQuery(q);
+    }
+  }, [searchParams]);
 
   // 300msデバウンス → ME5でベクトル検索
   useEffect(() => {
@@ -36,11 +44,8 @@ export default function SearchPage() {
     const timer = setTimeout(async () => {
       setIsSearching(true);
       try {
-        const res = await fetch(`${API_BASE_URL}/api/search/instant`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query }),
-        });
+        // apiClient を使うことで、自動で Authorization ヘッダーが付き、リフレッシュも行われる
+        const res = await apiClient.post('/api/search/instant', { query });
         const data = await res.json();
         setVectorResults(data.results || []);
         
@@ -91,6 +96,11 @@ export default function SearchPage() {
               type="text"
               value={query}
               onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  setSearchParams({ q: query }, { replace: true });
+                }
+              }}
               placeholder="名前、大学、専攻、国などで検索..."
               autoFocus
               className="w-full pl-11 pr-10 py-3.5 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none shadow-sm transition-all text-sm"
@@ -234,11 +244,20 @@ function VectorResultCard({ result, members }: { result: any; members: Member[] 
   const firstLine = lines[0] || '';
   const rest = lines.slice(1).join(' ').slice(0, 60);
 
+  const handleClick = () => {
+    if (result.source_type === 'form_answer' && result.metadata?.response_id) {
+      const qId = result.metadata.question_id;
+      navigate(`/form-responses/${result.metadata.response_id}${qId ? `?questionId=${qId}` : ''}`);
+    } else if (member) {
+      navigate(`/members/${member.id}`);
+    }
+  };
+
   return (
     <div
-      onClick={() => member && navigate(`/members/${member.id}`)}
+      onClick={handleClick}
       className={`flex items-start gap-3 p-3 rounded-xl border border-gray-100 transition-all shadow-sm ${
-        member ? 'hover:border-blue-200 hover:bg-blue-50 cursor-pointer group' : 'opacity-60'
+        (member || result.metadata?.response_id) ? 'hover:border-blue-200 hover:bg-blue-50 cursor-pointer group' : 'opacity-60'
       }`}
     >
       <img

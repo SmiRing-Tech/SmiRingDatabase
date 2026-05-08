@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronLeft } from 'lucide-react';
 import FormAnswerUI from '../Answer/components/FormAnswerUI';
-import { API_BASE_URL } from '../../../config';
+import { apiClient } from '../../../lib/apiClient';
 
 export default function FormResponseDetailPage() {
   const { responseId } = useParams();
@@ -17,6 +17,27 @@ export default function FormResponseDetailPage() {
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [readonlyInfo, setReadonlyInfo] = useState<{ displayName: string, submittedAt: string, avatarLink: string | null } | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+
+  // 🎯 特定の質問へスクロールするロジック
+  useEffect(() => {
+    const qId = searchParams.get('questionId');
+    if (!isLoading && qId) {
+      // レンダリング完了を少し待ってから実行
+      const timer = setTimeout(() => {
+        const el = document.getElementById(`question-${qId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          // 視覚的なフィードバック（一瞬青く光らせる）
+          el.classList.add('ring-4', 'ring-blue-400', 'ring-opacity-50', 'rounded-xl', 'transition-all', 'duration-1000');
+          setTimeout(() => {
+            el.classList.remove('ring-4', 'ring-blue-400', 'ring-opacity-50');
+          }, 2000);
+        }
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [isLoading, searchParams]);
 
   useEffect(() => {
     const fetchDetail = async () => {
@@ -25,7 +46,7 @@ export default function FormResponseDetailPage() {
       setError(null);
       
       try {
-        const res = await fetch(`${API_BASE_URL}/api/form-responses/${responseId}`);
+        const res = await apiClient.get(`/api/form-responses/${responseId}`);
         if (!res.ok) {
            if (res.status === 404) {
              throw new Error('回答が見つかりませんでした');

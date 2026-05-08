@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../context/AuthContext';
+import { apiClient } from '../../lib/apiClient';
 import HomeSearchBar from '../Search/SearchBar';
 import PhotoViewModal from '../../components/ui/PhotoViewModal';
 import { 
@@ -16,7 +18,6 @@ import {
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
-import { API_BASE_URL } from '../../config';
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -103,7 +104,7 @@ function ProfilesSection({ onClickMore }: { onClickMore: () => void }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/basic_profile_info`)
+    apiClient.get('/api/basic_profile_info')
       .then(r => r.json())
       .then((data: any[]) => {
         const sorted = [...data].sort((a, b) =>
@@ -163,18 +164,14 @@ function PhotoGallerySection({ onClickMore }: { onClickMore: () => void }) {
   const [isLoading, setIsLoading] = useState(true);
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState<any | null>(null);
+  const { user } = useAuth();
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   const fetchPhotos = async () => {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-      if (!token) return;
-      setCurrentUserId(session.user.id);
+      if (user) setCurrentUserId(user.id);
 
-      const response = await fetch(`${API_BASE_URL}/api/gallery`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const response = await apiClient.get('/api/gallery');
       if (response.ok) {
         const data = await response.json();
         setPhotos(data);
@@ -280,13 +277,7 @@ function MiniCalendar() {
   useEffect(() => {
     const fetchDueDates = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const token = session?.access_token;
-        if (!token) return;
-
-        const response = await fetch(`${API_BASE_URL}/api/assigned-forms`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const response = await apiClient.get('/api/assigned-forms');
         if (!response.ok) return;
 
         const formsData = await response.json();
@@ -405,13 +396,7 @@ function UserProfileCard() {
   useEffect(() => {
     const fetchMyProfile = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const token = session?.access_token;
-        if (!token) return;
-
-        const response = await fetch(`${API_BASE_URL}/api/basic_profile_info/me`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const response = await apiClient.get('/api/basic_profile_info/me');
 
         if (response.ok) {
           const data = await response.json();
@@ -474,13 +459,7 @@ function MyRecentForms() {
   useEffect(() => {
     const fetchRecentForms = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const token = session?.access_token;
-        if (!token) return;
-
-        const response = await fetch(`${API_BASE_URL}/api/my-forms`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const response = await apiClient.get('/api/my-forms');
 
         if (response.ok) {
           const data = await response.json();
@@ -548,14 +527,7 @@ function AssignedFormsTimeline() {
   useEffect(() => {
     const fetchAssignedForms = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const userId = session?.user?.id;
-        const token = session?.access_token;
-        if (!token || !userId) return;
-
-        const response = await fetch(`${API_BASE_URL}/api/assigned-forms`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const response = await apiClient.get('/api/assigned-forms');
 
         if (response.ok) {
           const formsData = await response.json();

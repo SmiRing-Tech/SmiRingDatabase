@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
+import { useFeedback } from '../../context/FeedbackContext';
 import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../../config';
 
 export default function SignUpPage() {
+  const { showFeedback } = useFeedback();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -31,7 +33,7 @@ export default function SignUpPage() {
       const { isValid: isValidCode } = await codeRes.json();
   
       if (!isValidCode) {
-        alert('サインアップコードが正しくありません。');
+        showFeedback('サインアップコードが正しくありません。', { type: 'error', mode: 'banner' });
         setIsLoading(false);
         return;
       }
@@ -51,11 +53,11 @@ export default function SignUpPage() {
       if (signUpError) throw signUpError;
   
       if (data.session === null) {
-        alert('確認メールを送信しました！メールを確認してください。');
+        showFeedback('確認メールを送信しました！メールを確認してください。', { type: 'success', mode: 'toast' });
         navigate('/sign-in');
       }
     } catch (error: any) {
-      alert(`エラー: ${error.message}`);
+      showFeedback(`エラー: ${error.message}`, { type: 'error', mode: 'banner' });
     } finally {
       setIsLoading(false);
     }

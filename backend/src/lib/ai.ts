@@ -1,18 +1,27 @@
 import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
 import { pipeline } from '@xenova/transformers';
 
-// ローカルモデル用の変数（サーバー起動時は空にしておく）
+// ローカルモデル用の変数
 let localExtractor: any = null;
+
+// ==========================================
+// 1. サーバー起動時に呼び出す初期化関数
+// ==========================================
+export async function initAIModel() {
+  if (!localExtractor) {
+    console.log('🤖 ローカルAIモデルを事前ロードしています... (数秒かかります)');
+    localExtractor = await pipeline('feature-extraction', 'Xenova/multilingual-e5-small');
+    console.log('✅ ローカルAIモデルの準備完了！');
+  }
+}
 
 // ==========================================
 // 2. ローカルAIでのベクトル化 (384次元)
 // ==========================================
 export async function getLocalEmbedding(text: string, isQuery: boolean = true): Promise<number[]> {
-  // 初回呼び出し時だけ、モデル(約100MB)をメモリにダウンロードして読み込む（Lazy Loading）
+  // すでに起動時にロードされているはずなので、ここではチェックのみ
   if (!localExtractor) {
-    console.log('ローカルAIモデルを初期化中... (初回は数秒かかります)');
-    localExtractor = await pipeline('feature-extraction', 'Xenova/multilingual-e5-small');
-    console.log('ローカルAIモデルの準備完了！');
+    throw new Error("サーバーエラー: AIモデルがまだ準備されていません。サーバー起動時の initAIModel() の呼び出しを確認してください。");
   }
 
   // E5モデルの精度向上のため、クエリなら "query: ", 文書なら "passage: " を付与する

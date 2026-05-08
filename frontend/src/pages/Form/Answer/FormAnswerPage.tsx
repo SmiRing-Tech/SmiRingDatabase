@@ -1,6 +1,7 @@
 // src/components/Answer/FormAnswerPage.tsx
 
 import { useEffect, useState } from 'react';
+import { useFeedback } from '../../../context/FeedbackContext';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import type { QuestionData } from '../FormEditor/FormEditorPage';
 import FormAnswerUI from './components/FormAnswerUI';
@@ -9,6 +10,7 @@ import { CheckCircle2, Home, Edit2, PlusCircle } from 'lucide-react';
 import { API_BASE_URL } from '../../../config';
 
 export default function FormAnswerPage() {
+  const { showFeedback } = useFeedback();
   const { id } = useParams();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -216,7 +218,7 @@ export default function FormAnswerPage() {
   const handleSubmit = async (turnstileToken: string, finalAnswers?: Record<string, any>) => {
     const answersToSubmit = finalAnswers || answers;
     if (isPreviewMode) {
-      alert('👀 プレビューモードのため送信されません。\n\n【回答データ】\n' + JSON.stringify(answersToSubmit, null, 2));
+      showFeedback('👀 プレビューモードのため送信されません。\n\n【回答データ】\n' + JSON.stringify(answersToSubmit, null, 2), { type: 'info', mode: 'toast', duration: 6000 });
       return;
     }
 
@@ -242,9 +244,10 @@ export default function FormAnswerPage() {
         throw new Error(errorData.error || '送信に失敗しました');
       }
 
+      showFeedback('回答ありがとうございました！', { mode: 'splash', type: 'success', emoji: '🎉' });
       setIsSubmitted(true);
     } catch (err: any) {
-      alert(err.message || 'エラーが発生しました。もう一度お試しください。');
+      showFeedback(err.message || 'エラーが発生しました。もう一度お試しください。', { type: 'error', mode: 'banner' });
     } finally {
       setIsLoading(false);
     }
