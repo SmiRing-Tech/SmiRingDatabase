@@ -1,8 +1,5 @@
 import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom';
-import { useEffect, useState } from 'react';
-import { supabase } from './lib/supabase';
-import type { Session } from '@supabase/supabase-js';
-import { API_BASE_URL } from './config';
+import { useEffect } from 'react';
 
 // ページのインポート
 import SignInPage from './pages/SignIn/SignInPage';

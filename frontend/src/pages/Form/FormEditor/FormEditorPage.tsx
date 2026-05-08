@@ -894,7 +894,7 @@ export default function FormEditorPage() {
                 questions={questions}
                 answers={testAnswers}
                 onAnswerChange={(qid, val) => setTestAnswers(prev => ({ ...prev, [qid]: val }))}
-                onSubmit={(token) => {
+                onSubmit={(_) => {
                   showFeedback("プレビュー送信テスト:\n" + JSON.stringify(testAnswers, null, 2), { mode: 'splash', emoji: '🧪' });
                 }}
                 mode="preview"
