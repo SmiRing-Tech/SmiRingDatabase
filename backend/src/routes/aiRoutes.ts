@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase';
 import { getLocalEmbedding, getGeminiEmbedding, generateChatResponse } from '../lib/ai';
+import { queueIndexWork } from '../lib/vectorIndexer';
 
 const router = Router();
 
@@ -59,44 +60,25 @@ router.post('/api/answers', async (req: Request, res: Response) => {
 
     res.json({ message: "回答を保存しました！裏側でAIが解析を開始します。", answer });
 
-    // 🤖 バックグラウンドでAIベクトル化を実行（レスポンスを遅らせない）
-    (async () => {
-      try {
-        console.log(`[AI Worker] 回答(ID: ${answer.id})のベクトル化を開始...`);
+    // 🤖 バックグラウンドでAIベクトル化を実行
+    const { data: question } = await supabase
+      .from('questions')
+      .select('title, primary_category, tags')
+      .eq('id', question_id)
+      .single();
 
-        const { data: question } = await supabase
-          .from('questions')
-          .select('title, primary_category, tags')
-          .eq('id', question_id)
-          .single();
+    const textToEmbed = `質問: ${question?.title || '不明'}\n回答: ${JSON.stringify(answer_data)}`;
 
-        const textToEmbed = `質問: ${question?.title || '不明'}\n回答: ${JSON.stringify(answer_data)}`;
-
-        const localVector = await getLocalEmbedding(textToEmbed, false); // 文書用(passage:)
-        const geminiVector = await getGeminiEmbedding(textToEmbed, false); // 文書用(RETRIEVAL_DOCUMENT)
-
-        const { error: indexError } = await supabase
-          .from('unified_search_index')
-          .insert([{
-            source_type: 'form_answer',
-            source_id: answer.id,
-            content: textToEmbed,
-            embedding_local: localVector,
-            embedding_gemini: geminiVector,
-            metadata: {
-              category: question?.primary_category,
-              tags: question?.tags,
-              user_id: user_id
-            }
-          }]);
-
-        if (indexError) throw indexError;
-        console.log(`[AI Worker] ✅ 回答(ID: ${answer.id})のベクトル化とインデックス保存が完了！`);
-
-      } catch (aiError) {
-        console.error(`[AI Worker Error] ベクトル化に失敗:`, aiError);
+    await queueIndexWork({
+      source_type: 'form_answer',
+      source_id: answer.id,
+      content: textToEmbed,
+      metadata: {
+        category: question?.primary_category,
+        tags: question?.tags,
+        user_id: user_id
       }
-    })();
+    });
 
   } catch (error: any) {
     console.error('回答保存エラー:', error);

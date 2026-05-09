@@ -43,7 +43,7 @@ function SettingRow({ label, description, action, danger }: {
 function ComingSoonBadge() {
   return (
     <span className="text-xs font-bold bg-amber-100 text-amber-600 border border-amber-200 px-2 py-0.5 rounded-full">
-      Coming Soon
+      準備中
     </span>
   );
 }
@@ -284,7 +284,7 @@ export default function AccountSettingTab({ onBack }: { onBack: () => void }) {
         <div className="bg-white rounded-xl border border-red-200 shadow-sm overflow-hidden">
           <div className="flex items-center gap-3 px-5 py-4 border-b border-red-100 bg-red-50/60">
             <Trash2 className="w-4 h-4 text-red-500" />
-            <h3 className="font-bold text-red-600 text-sm">Danger Zone</h3>
+            <h3 className="font-bold text-red-600 text-sm">危険な操作</h3>
           </div>
           <div className="px-5 py-5 space-y-4">
             <div>

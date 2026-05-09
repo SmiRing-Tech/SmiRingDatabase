@@ -150,7 +150,7 @@ export default function ProfilePage() {
           <button
             onClick={() => setActiveTab(activeTab === 'account' ? 'basic' : 'account')}
             className={`absolute top-4 right-4 p-2 rounded-full transition-colors ${activeTab === 'account' ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:bg-gray-200 hover:text-gray-700'}`}
-            title="Account Settings"
+            title="アカウント設定"
           >
             <Settings className="w-5 h-5" />
           </button>
@@ -178,7 +178,7 @@ export default function ProfilePage() {
         </div>
 
         <h2 className="text-3xl mt-5 md:text-4xl font-bold mb-6 md:mb-10 truncate">
-          {profileData?.name_english ?? 'No Name'}
+          {profileData?.name_english ?? '名前未設定'}
         </h2>
 
         {/* 2. 写真一覧 (Photos)
@@ -187,7 +187,7 @@ export default function ProfilePage() {
         */}
         <div className="w-full mt-6 md:mt-8">
           <div className="flex items-center justify-between mb-3 md:mb-4">
-            <h3 className="font-bold text-base md:text-lg">Photos</h3>
+            <h3 className="font-bold text-base md:text-lg">写真ギャラリー</h3>
             {/* 追加ボタンは自分のプロフィールのみ */}
             {isEditable && (
               <button
@@ -273,14 +273,14 @@ export default function ProfilePage() {
                 className={`pb-3 font-medium text-base md:text-lg transition-colors relative whitespace-nowrap ${activeTab === 'basic' ? 'text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
                 onClick={() => setActiveTab('basic')}
               >
-                Basic Information
+                基本情報
                 {activeTab === 'basic' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
               </button>
               <button
                 className={`pb-3 font-medium text-base md:text-lg transition-colors relative whitespace-nowrap ${activeTab === 'detail' ? 'text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
                 onClick={() => setActiveTab('detail')}
               >
-                Detail Information
+                詳細情報
                 {activeTab === 'detail' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
               </button>
             </div>

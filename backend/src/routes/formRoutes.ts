@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase';
 import { resolveAvatarUrl, getSignedFileUrl } from '../lib/r2';
 import { getLocalEmbedding, getGeminiEmbedding, answerToText } from '../lib/ai';
+import { queueIndexWork, deleteSearchIndexByMetadata } from '../lib/vectorIndexer';
 
 const router = Router();
 
@@ -398,11 +399,9 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
 
     res.json({ message: "回答を受け付けました！ありがとうございます。" });
 
-    // バックグラウンドでベクトル化とインデックス保存（ユーザーを待たせない）
+    // バックグラウンドでベクトル化とインデックス保存
     (async () => {
       try {
-        console.log(`[AI Indexer] 回答(response_id: ${submittedResponseId})のインデックス化を開始...`);
-
         // フォームタイトルと質問一覧を並列取得
         const [formRes, qLinksRes] = await Promise.all([
           supabase.from('forms').select('title').eq('id', formId).single(),
@@ -423,12 +422,10 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
 
         // 再提出時: このユーザーのこのフォームの古いインデックスを削除
         if (!allowMultiple) {
-          await supabase
-            .from('unified_search_index')
-            .delete()
-            .eq('source_type', 'form_answer')
-            .eq('metadata->>user_id', user_id)
-            .eq('metadata->>form_id', formId);
+          await deleteSearchIndexByMetadata('form_answer', { 
+            user_id: String(user_id), 
+            form_id: String(formId) 
+          });
         }
 
         // 質問ごとに個別にベクトル化して保存
@@ -440,29 +437,16 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
             const text = answerToText([q], answers);
             if (!text) return;
 
-            const [localVector, geminiVector] = await Promise.all([
-              getLocalEmbedding(text, false), // 文書用(passage:)
-              getGeminiEmbedding(text, false), // 文書用(RETRIEVAL_DOCUMENT)
-            ]);
-
-            const { error: indexError } = await supabase
-              .from('unified_search_index')
-              .insert({
-                source_type: 'form_answer',
-                source_id: savedAnswer.id,
-                content: text,
-                embedding_local: localVector,
-                embedding_gemini: geminiVector,
-                metadata: { user_id, form_id: formId, form_title: formTitle, question_id: q.id, response_id: submittedResponseId },
-              });
-
-            if (indexError) throw indexError;
+            await queueIndexWork({
+              source_type: 'form_answer',
+              source_id: savedAnswer.id,
+              content: text,
+              metadata: { user_id, form_id: formId, form_title: formTitle, question_id: q.id, response_id: submittedResponseId },
+            });
           })
         );
-
-        console.log(`[AI Indexer] ✅ ${savedAnswers.length}件のインデックス保存完了 (response_id: ${submittedResponseId})`);
       } catch (err) {
-        console.error('[AI Indexer] ❌ インデックス保存エラー:', err);
+        console.error('[AI Indexer] ❌ Failed to start indexing:', err);
       }
     })();
 
