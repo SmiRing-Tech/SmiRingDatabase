@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase';
-import { getLocalEmbedding, getGeminiEmbedding, generateChatResponse } from '../lib/ai';
+import { getLocalEmbedding, getGeminiEmbedding, generateChatResponse, analyzeSearchQuery } from '../lib/ai';
 import { queueIndexWork } from '../lib/vectorIndexer';
 
 const router = Router();
@@ -91,21 +91,125 @@ router.post('/api/answers', async (req: Request, res: Response) => {
 // ==========================================
 router.post('/api/search/instant', async (req: Request, res: Response) => {
   try {
-    const { query } = req.body;
+    const { query, limit, model } = req.body;
     if (!query) return res.status(400).json({ error: '検索キーワードが必要です' });
 
-    console.log(`[Search] 「${query}」の即時検索を開始...`);
+    console.log(`[Search] 「${query}」の即時検索を開始... (model: ${model || 'local'})`);
     const startTime = Date.now();
 
-    const queryVector = await getLocalEmbedding(query, true); // 検索用(query:)
+    let results;
 
-    const { data: results, error } = await supabase.rpc('search_local_vectors', {
-      query_embedding: queryVector,
-      match_threshold: 0.8,
-      match_count: 10
-    });
+    if (model === 'groq') {
+      const analysis = await analyzeSearchQuery(query);
+      console.log(`[Search] Groq Extraction:`, analysis);
 
-    if (error) throw error;
+      // 抽出されたキーワード（重複排除）、もし空なら元のクエリを使用
+      const keywords = Array.from(new Set(analysis.keywords));
+      if (keywords.length === 0) keywords.push(query);
+
+      // 並列で各キーワードのベクトル化
+      const embeddings = await Promise.all(keywords.map(kw => getGeminiEmbedding(kw, true)));
+
+      // 並列でDB検索
+      const searchPromises = embeddings.map(emb => supabase.rpc('search_gemini_vectors', {
+        query_embedding: emb,
+        match_threshold: 0.67,
+        match_count: limit || 15
+      }));
+      const searchResultsArray = await Promise.all(searchPromises);
+
+      // user_idごとにスコアを集計する
+      const userScores: Record<string, { total_score: number, matched_keywords: string[], matches: any[] }> = {};
+
+      searchResultsArray.forEach((response, idx) => {
+        const keyword = keywords[idx];
+        if (response.error) {
+          console.error(`Error searching for keyword ${keyword}:`, response.error);
+          return;
+        }
+
+        const matches = response.data || [];
+        console.log(`  └ Keyword [${keyword}]: ${matches.length} matches found.`);
+        
+        // 1つのキーワードに対して、ユーザーごとに最大のスコアを採用
+        const keywordUserMax: Record<string, { similarity: number, content: string, source_type: string, metadata: any }> = {};
+        matches.forEach((r: any) => {
+          const userId = r.metadata?.user_id || r.source_id;
+          if (!userId) return;
+          const sim = r.similarity || 0;
+          
+          if (!keywordUserMax[userId] || sim > keywordUserMax[userId].similarity) {
+            keywordUserMax[userId] = { 
+              similarity: sim, 
+              content: r.content || "",
+              source_type: r.source_type || "",
+              metadata: r.metadata || {}
+            };
+          }
+        });
+
+        // ユーザーの合計スコアに加算
+        for (const [userId, matchData] of Object.entries(keywordUserMax)) {
+          if (!userScores[userId]) {
+            userScores[userId] = { total_score: 0, matched_keywords: [], matches: [] };
+          }
+          userScores[userId].total_score += matchData.similarity;
+          if (!userScores[userId].matched_keywords.includes(keyword)) {
+            userScores[userId].matched_keywords.push(keyword);
+          }
+          
+          userScores[userId].matches.push({
+            keyword: keyword,
+            score: matchData.similarity,
+            content: matchData.content,
+            source_type: matchData.source_type,
+            metadata: matchData.metadata
+          });
+          
+          // スコアが高い場合のみ詳細をログ出し (デバッグ用)
+          if (matchData.similarity > 0.75) {
+            const preview = matchData.content.substring(0, 50).replace(/\n/g, " ") + "...";
+            console.log(`    MATCH: user=${userId.substring(0,8)} kw=${keyword} score=${matchData.similarity.toFixed(3)} text=${preview}`);
+          }
+        }
+      });
+
+      // 配列に変換し、合計スコアの降順でソートして返す
+      results = Object.entries(userScores)
+        .map(([user_id, data]) => ({
+          user_id,
+          total_score: data.total_score,
+          matched_keywords: data.matched_keywords,
+          matches: data.matches
+        }))
+        .sort((a, b) => b.total_score - a.total_score)
+        .slice(0, limit || 15);
+      
+      console.log(`[Search] Aggregation complete. Top user: ${results[0]?.user_id.substring(0,8)} (Score: ${results[0]?.total_score.toFixed(3)})`);
+
+    } else {
+      // 🎯 2. Keyword/Vector fallback search (High performance)
+      const queryVector = await getLocalEmbedding(query, true); // 検索用(query:)
+      const { data, error } = await supabase.rpc('search_local_vectors', {
+        query_embedding: queryVector,
+        match_threshold: 0.8, // ME5のしきい値
+        match_count: limit || 10
+      });
+      if (error) throw error;
+      
+      // フロントエンドのアコーディオン用に形式を整える
+      results = (data || []).map((r: any) => ({
+        ...r,
+        user_id: r.metadata?.user_id || r.source_id,
+        matches: [{
+          keyword: query,
+          score: r.similarity || 0,
+          content: r.content || "",
+          source_type: r.source_type,
+          metadata: r.metadata
+        }]
+      }));
+    }
 
     const executeTime = Date.now() - startTime;
     console.log(`[Search] ✅ 検索完了！(${executeTime}ms) ${results?.length || 0}件ヒット`);
@@ -174,3 +278,4 @@ ${contextText}
 });
 
 export default router;
+

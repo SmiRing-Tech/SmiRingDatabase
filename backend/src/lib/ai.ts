@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
 import { pipeline } from '@xenova/transformers';
+import Groq from 'groq-sdk';
 
 // ローカルモデル用の変数
 let localExtractor: any = null;
@@ -280,4 +281,40 @@ export async function generateChatResponse(prompt: string): Promise<string> {
   const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
   const result = await model.generateContent(prompt);
   return result.response.text();
+}
+
+// ==========================================
+// 5. 検索クエリのJSON解析 (Groqを使用)
+// ==========================================
+export async function analyzeSearchQuery(query: string): Promise<{ target: string, keywords: string[] }> {
+  const apiKey = process.env.GROQ_API_KEY; // GroqのAPIキーを使用
+  if (!apiKey) {
+    console.warn("警告: GROQ_API_KEY が見つかりません。名前検索としてフォールバックします。");
+    return { target: "person", keywords: [query] };
+  }
+  
+  const client = new Groq({ apiKey });
+  
+  // プロンプトファイルの読み込み (プロジェクトルートからの相対パス)
+  const fs = require('fs');
+  const path = require('path');
+  const promptPath = path.resolve(process.cwd(), 'src/lib/prompt/keywords_extraction_prompt.txt');
+  const systemPrompt = fs.readFileSync(promptPath, 'utf8');
+  
+  try {
+    const completion = await client.chat.completions.create({
+      model: "openai/gpt-oss-20b", // ご指定のモデル
+      messages: [
+        { role: "system", content: "You are a JSON-only output API." },
+        { role: "user", content: `${systemPrompt}\n\nInput: ${query}\nOutput:` }
+      ],
+      response_format: { type: "json_object" }
+    });
+
+    const text = completion.choices[0]?.message?.content || "";
+    return JSON.parse(text);
+  } catch (e) {
+    console.error("Groq Query Analysis Error:", e);
+    return { target: "person", keywords: [query] };
+  }
 }

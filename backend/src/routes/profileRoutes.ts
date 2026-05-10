@@ -110,7 +110,7 @@ router.patch('/api/basic_profile_info/me', async (req: Request, res: Response) =
           if (text) {
             await queueIndexWork({
               source_type: 'basic_profile',
-              source_id: `${user_id}:${field_key}`,
+              source_id: user_id,
               content: text,
               metadata: { user_id, field_key, label }
             });
@@ -123,7 +123,7 @@ router.patch('/api/basic_profile_info/me', async (req: Request, res: Response) =
             const text = `${key}: ${Array.isArray(value) ? value.join(', ') : value}`;
             await queueIndexWork({
               source_type: 'basic_profile',
-              source_id: `${user_id}:${key}`,
+              source_id: user_id,
               content: text,
               metadata: { user_id, field_key: key }
             });

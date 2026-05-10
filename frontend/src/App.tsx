@@ -17,6 +17,7 @@ import FormListPage from './pages/Form/FormList/FormListPage';
 import FormAnswerPage from './pages/Form/Answer/FormAnswerPage';
 import FormResponseDetailPage from './pages/Form/Response/FormResponseDetailPage';
 import SearchPage from './pages/Search/SearchPage';
+import ChatPage from './pages/Search/ChatPage';
 import { FeedbackProvider } from './context/FeedbackContext';
 import FeedbackSystem from './components/ui/FeedbackSystem';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -96,6 +97,7 @@ const router = createBrowserRouter([
       { path: '/form-answer/:id', element: <FormAnswerPage /> },
       { path: '/form-responses/:responseId', element: <FormResponseDetailPage /> },
       { path: '/search', element: <SearchPage /> },
+      { path: '/search/chat', element: <ChatPage /> },
     ],
   },
 ]);

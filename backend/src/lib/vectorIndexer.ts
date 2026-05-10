@@ -32,11 +32,18 @@ export async function queueIndexWork(params: IndexingParams) {
       // ※ DBに一意制約がない場合は、まず削除してから挿入する
       
       // まず既存の同じソースのデータを削除
-      const { error: deleteError } = await supabase
+      // プロフィールの場合は field_key も考慮して、その項目だけを上書きするようにする
+      let deleteQuery = supabase
         .from('unified_search_index')
         .delete()
         .eq('source_type', source_type)
         .eq('source_id', source_id);
+      
+      if (metadata && metadata.field_key) {
+        deleteQuery = deleteQuery.eq('metadata->>field_key', metadata.field_key);
+      }
+
+      const { error: deleteError } = await deleteQuery;
 
       if (deleteError) {
         console.warn(`[VectorIndexer] Warning: Delete old index failed:`, deleteError);
@@ -51,6 +58,7 @@ export async function queueIndexWork(params: IndexingParams) {
           content,
           embedding_local: localVector,
           embedding_gemini: geminiVector,
+          visibility: 'organization',
           metadata
         });
 
