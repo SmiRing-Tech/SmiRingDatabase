@@ -341,7 +341,10 @@ export default function SearchPage() {
                 // 2. ベクトル検索の結果を追加・マージ
                 vectorResults.forEach(r => {
                   const m = members.find(m => m.id === r.user_id);
-                  if (!m) return;
+                  if (!m) {
+                    console.warn(`⚠️ プロフィールが見つからないID: ${r.user_id}`);
+                    return;
+                  }
 
                   const existingIndex = resultItems.findIndex(item => item.member.id === r.user_id);
                   if (existingIndex === -1) {
