@@ -346,7 +346,6 @@ export default function SearchPage() {
                     console.warn(`⚠️ プロフィールが見つからないID: ${r.user_id}`);
                     return;
                   }
-                  console.warn(`✅ マッチしたメンバー: ${m.name_english}`);
 
                   const existingIndex = resultItems.findIndex(item => item.member.id === r.user_id);
                   if (existingIndex === -1) {

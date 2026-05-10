@@ -17,6 +17,17 @@ type Message = {
   timestamp: Date;
 };
 
+// 🎯 ゆらゆら揺れるアニメーションの定義
+const swayAnimation = `
+  @keyframes sway {
+    0%, 100% { transform: rotate(-5deg); }
+    50% { transform: rotate(5deg); }
+  }
+  .animate-sway {
+    animation: sway 5s ease-in-out infinite;
+  }
+`;
+
 export default function ChatPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -85,6 +96,7 @@ export default function ChatPage() {
 
   return (
     <div className="flex flex-col h-full bg-[#fdfdfd] text-gray-900 relative overflow-hidden font-sans">
+      <style>{swayAnimation}</style>
       {/* 背景の装飾的な要素 */}
       <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-50 rounded-full blur-[120px] opacity-60 pointer-events-none" />
       <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-50 rounded-full blur-[120px] opacity-60 pointer-events-none" />
@@ -100,10 +112,10 @@ export default function ChatPage() {
           </button>
           <div className="flex items-center gap-2">
             <div className="w-9 h-9 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-200">
-              <Bot className="w-5 h-5 text-white" />
+              <Sparkles className="w-5 h-5 text-[#CCCCEE]" />
             </div>
             <div>
-              <h1 className="text-sm font-bold leading-none mb-1">SmiRing AI</h1>
+              <h1 className="text-sm font-bold leading-none mb-1">SmiRing Intelligence</h1>
               <span className="text-[9px] text-gray-400 font-bold uppercase tracking-widest">Intelligent Assistant</span>
             </div>
           </div>
@@ -126,14 +138,16 @@ export default function ChatPage() {
           {messages.length === 0 ? (
             /* ✨ センターウェルカム画面 ✨ */
             <div className="h-full flex flex-col items-center justify-center py-20 animate-in fade-in zoom-in-95 duration-1000">
-              <div className="w-20 h-20 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-3xl flex items-center justify-center shadow-2xl shadow-blue-200 mb-8">
+              <div className="w-20 h-20 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-3xl flex items-center justify-center shadow-2xl shadow-blue-200 mb-8 animate-sway">
                 <Sparkles className="w-10 h-10 text-white animate-pulse" />
               </div>
-              <h2 className="text-3xl font-black text-gray-900 mb-3 tracking-tight">SmiRing AI</h2>
+              <h2 className="text-3xl font-black text-gray-900 mb-3 tracking-tight">SmiRing Intelligence</h2>
               <p className="text-gray-500 text-center max-w-sm mb-12 leading-relaxed">
                 知りたいことを何でも聞いてください。
                 <br />
                 データベースから最適な情報を探し出します。
+                <br />
+                （Coming Soon...）
               </p>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full max-w-xl px-4">
@@ -190,7 +204,7 @@ export default function ChatPage() {
           {isLoading && (
             <div className="flex flex-col items-center animate-in fade-in duration-500">
               <div className="flex flex-col items-center mb-4">
-                <div className="w-12 h-12 bg-gradient-to-tr from-blue-500 to-indigo-500 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-100 mb-2 animate-pulse">
+                <div className="w-12 h-12 bg-gradient-to-tr from-blue-500 to-indigo-500 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-100 mb-2 animate-sway">
                   <Bot className="w-7 h-7 text-white" />
                 </div>
                 <span className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500/60">SmiRing Intelligence</span>
@@ -209,42 +223,31 @@ export default function ChatPage() {
 
       {/* --- Input Area --- */}
       <div className="p-4 md:p-6 bg-transparent">
-        <div className="max-w-3xl mx-auto relative group">
-          <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl blur opacity-25 group-focus-within:opacity-40 transition duration-1000 group-focus-within:duration-200"></div>
-          <div className="relative flex items-center gap-2 bg-white rounded-xl border border-gray-200 p-2 shadow-lg">
+        <div className="max-w-3xl mx-auto relative group opacity-60 pointer-events-none">
+          <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl blur opacity-10 transition duration-1000"></div>
+          <div className="relative flex items-center gap-2 bg-gray-50/50 rounded-xl border border-gray-100 p-2 shadow-sm">
             <div className="pl-3">
-              <Sparkles className="w-5 h-5 text-blue-400" />
+              <Sparkles className="w-5 h-5 text-gray-300" />
             </div>
             <textarea
               ref={textareaRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  handleSend(input);
-                }
-              }}
-              placeholder="質問を入力..."
+              disabled
+              placeholder="Coming Soon..."
               rows={1}
-              className="flex-1 bg-transparent border-none outline-none text-sm py-2 px-1 focus:ring-0 resize-none max-h-40 min-h-[24px] overflow-y-auto leading-relaxed"
+              className="flex-1 bg-transparent border-none outline-none text-sm py-2 px-1 resize-none max-h-40 min-h-[24px] overflow-y-auto leading-relaxed text-gray-400 font-medium tracking-wide"
             />
             <button
-              onClick={() => handleSend(input)}
-              disabled={!input.trim() || isLoading}
-              className={`p-2 rounded-lg transition-all ${
-                input.trim() && !isLoading
-                  ? 'bg-blue-600 text-white shadow-md hover:bg-blue-700 active:scale-95'
-                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-              }`}
+              disabled
+              className="p-2 rounded-lg bg-gray-100 text-gray-300 cursor-not-allowed"
             >
               <Send className="w-5 h-5" />
             </button>
           </div>
         </div>
-        <p className="text-[10px] text-center text-gray-400 mt-3 font-medium uppercase tracking-widest flex items-center justify-center gap-1.5">
-          <MessageSquare className="w-3 h-3" />
-          Powered by Gemini AI Engine
+        <p className="text-[10px] text-center text-gray-400 mt-4 font-medium uppercase tracking-[0.2em] flex items-center justify-center gap-2">
+          <Bot className="w-3.5 h-3.5" />
+          SmiRing Intelligence is preparing...
         </p>
       </div>
     </div>
