@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
 import { pipeline } from '@xenova/transformers';
 import Groq from 'groq-sdk';
+import { KEYWORDS_EXTRACTION_PROMPT } from './prompt/keywords_extraction_prompt';
 
 // ローカルモデル用の変数
 let localExtractor: any = null;
@@ -294,12 +295,7 @@ export async function analyzeSearchQuery(query: string): Promise<{ target: strin
   }
   
   const client = new Groq({ apiKey });
-  
-  // プロンプトファイルの読み込み (プロジェクトルートからの相対パス)
-  const fs = require('fs');
-  const path = require('path');
-  const promptPath = path.resolve(process.cwd(), 'src/lib/prompt/keywords_extraction_prompt.txt');
-  const systemPrompt = fs.readFileSync(promptPath, 'utf8');
+  const systemPrompt = KEYWORDS_EXTRACTION_PROMPT;
   
   try {
     const completion = await client.chat.completions.create({

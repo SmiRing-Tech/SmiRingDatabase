@@ -134,7 +134,7 @@ export default function SearchPage() {
       return;
     }
 
-    // 🎯 500ms以内の連打は無視する（二重実行防止）
+    // 🎯 1000ms以内の連打は無視する（二重実行防止）
     const now = Date.now();
     if (now - lastExecutedQueryRef.current < 1000) return;
     lastExecutedQueryRef.current = now;
