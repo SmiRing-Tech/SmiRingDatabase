@@ -130,11 +130,15 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
 
         const matches = response.data || [];
         console.log(`  └ Keyword [${keyword}]: ${matches.length} matches found.`);
+        if (matches.length > 0) {
+          console.log(`[DB Raw Data - ${keyword}] 1件目:`, JSON.stringify(matches[0], null, 2));
+        }
         
         // 1つのキーワードに対して、ユーザーごとに最大のスコアを採用
         const keywordUserMax: Record<string, { similarity: number, content: string, source_type: string, metadata: any }> = {};
         matches.forEach((r: any) => {
           const userId = r.metadata?.user_id || r.source_id;
+          console.log(`    -> 抽出ID: ${userId} (metadata.user_id: ${r.metadata?.user_id}, source_id: ${r.source_id})`);
           if (!userId) return;
           const sim = r.similarity || 0;
           
@@ -186,6 +190,7 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
         .slice(0, limit || 15);
       
       console.log(`[Search] Aggregation complete. Top user: ${results[0]?.user_id.substring(0,8)} (Score: ${results[0]?.total_score.toFixed(3)})`);
+      console.log("[Final Response to Frontend]:", JSON.stringify(results.slice(0, 2), null, 2));
 
     } else {
       // 🎯 2. Keyword/Vector fallback search (High performance)

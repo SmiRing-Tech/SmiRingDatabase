@@ -24,7 +24,7 @@ export default function SearchPage() {
   const [isFocused, setIsFocused] = useState(false); // 🎯 フォーカス状態を管理
   const wrapperRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null); // 🎯 inputへの参照を追加
-  const lastExecutedQueryRef = useRef<string>(''); // 🎯 二重実行防止用
+  const lastExecutedQueryRef = useRef<number>(0); // 🎯 二重実行防止用（時間ベース）
   const navigate = useNavigate();
 
   // メンバー情報の初期取得
@@ -134,9 +134,10 @@ export default function SearchPage() {
       return;
     }
 
-    // 🎯 全く同じクエリが連続で呼ばれたら無視する
-    if (lastExecutedQueryRef.current === trimmed) return;
-    lastExecutedQueryRef.current = trimmed;
+    // 🎯 500ms以内の連打は無視する（二重実行防止）
+    const now = Date.now();
+    if (now - lastExecutedQueryRef.current < 1000) return;
+    lastExecutedQueryRef.current = now;
 
     setLastConfirmedQuery(trimmed);
     if (updateUrl) {
