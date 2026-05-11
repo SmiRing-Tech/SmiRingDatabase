@@ -118,7 +118,7 @@ router.post('/api/gallery/upload', upload.single('file'), async (req: Request, r
         // メモリと通信節約のため、リサイズ済みの largeBuffer を AI に渡す
         const aiDesc = await analyzeImageWithGemini(largeBuffer, 'image/jpeg', description);
         await supabase.from('gallery').update({ description_generated: aiDesc }).eq('id', gallery.id);
-        
+
         // 🔍 ベクトル化して検索インデックスに登録
         await queueGalleryImageIndexWork(
           gallery.id,
@@ -180,7 +180,7 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
     const galleriesWithUrls = await Promise.all((galleries || []).map(async (g) => {
       const profile = profileMap[g.user_id] || null;
       let avatarUrl = null;
-      
+
       // プロフィールのアバターURLを解決
       if (profile?.avatar_id) {
         const { data: avatar } = await supabase.from('gallery').select('storage_path').eq('id', profile.avatar_id).single();
@@ -192,7 +192,7 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
 
       let viewUrl = '';
       let thumbnailUrl = '';
-      
+
       try {
         // メイン画像 (Large)
         const command = new GetObjectCommand({
@@ -213,7 +213,7 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
       } catch (err) {
         console.error('署名付きURL生成エラー:', err);
       }
-      
+
       return {
         ...g,
         basic_profile_info: profile ? { ...profile, avatar_url: avatarUrl } : null,
@@ -521,7 +521,7 @@ router.post('/api/forms/attachments/upload', attachmentUpload.single('file'), as
           // メモリと通信節約のため、リサイズ済みの largeBuffer を AI に渡す
           const aiDesc = await analyzeImageWithGemini(largeBuffer, 'image/jpeg', `Form Attachment: ${file.originalname}`);
           await supabase.from('gallery').update({ description_generated: aiDesc }).eq('id', gallery.id);
-          
+
           // 🔍 ベクトル化して検索インデックスに登録
           await queueGalleryImageIndexWork(
             gallery.id,

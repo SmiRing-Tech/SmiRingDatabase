@@ -59,9 +59,9 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   // ロード中は何も出さない
   if (isLoading) return null; 
 
-  // 未ログインならログイン画面へ
+  // 未ログインならWelcome画面へ
   if (!session) {
-    return <Navigate to="/sign-in" replace />;
+    return <Navigate to="/" replace />;
   }
 
   return <>{children}</>;

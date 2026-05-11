@@ -3,6 +3,8 @@ import { useFeedback } from '../../context/FeedbackContext';
 import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../../config';
+import { User, Mail, Lock, Key, Eye, EyeOff, ArrowRight, Loader2 } from 'lucide-react';
+import AuthLayout from './AuthLayout';
 
 export default function SignUpPage() {
   const { showFeedback } = useFeedback();
@@ -10,38 +12,33 @@ export default function SignUpPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [signupCode, setSignupCode] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-
   const navigate = useNavigate();
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-  
+
     try {
-      // 1. まずはバックエンドでコードが正しいか確認 (門番)
       const codeRes = await fetch(`${API_BASE_URL}/api/auth/check-invitation-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: signupCode.trim() }),
       });
 
-      if (!codeRes.ok) {
-        throw new Error('コードの検証中にエラーが発生しました');
-      }
-
+      if (!codeRes.ok) throw new Error('コードの検証中にエラーが発生しました');
       const { isValid: isValidCode } = await codeRes.json();
-  
+
       if (!isValidCode) {
         showFeedback('サインアップコードが正しくありません。', { type: 'error', mode: 'banner' });
         setIsLoading(false);
         return;
       }
-  
-      // 2. コードが正しければサインアップ実行
+
       const { data, error: signUpError } = await supabase.auth.signUp({
         email: email.trim(),
-        password: password,
+        password,
         options: {
           data: {
             display_name: username.trim(),
@@ -49,9 +46,9 @@ export default function SignUpPage() {
           },
         },
       });
-  
+
       if (signUpError) throw signUpError;
-  
+
       if (data.session === null) {
         showFeedback('確認メールを送信しました！メールを確認してください。', { type: 'success', mode: 'toast' });
         navigate('/sign-in');
@@ -64,55 +61,138 @@ export default function SignUpPage() {
   };
 
   return (
-    <div className="flex min-h-screen bg-white">
-      <div className="hidden md:flex flex-1 bg-blue-100 flex-col items-center justify-center p-8">
-        <img src="/assets/images/SmiRing_logo_temp.png" alt="Logo" className="w-48 h-48 object-contain" />
-        <h1 className="mt-6 text-3xl font-bold text-blue-900">Join SmiRing DB</h1>
+    <AuthLayout variant="signup">
+      {/* Mobile title */}
+      <div className="md:hidden mb-7">
+        <h2 className="text-2xl font-black text-gray-900">Create account</h2>
+        <p className="text-gray-400 text-sm mt-1">Join the global community.</p>
       </div>
 
-      <div className="flex-1 flex flex-col items-center justify-center p-8 overflow-y-auto">
-        <div className="w-full max-w-md">
-          <div className="md:hidden text-center mb-8">
-            <h1 className="text-2xl font-bold text-blue-900">SmiRing DB</h1>
+      <form onSubmit={handleSignUp} className="space-y-4">
+        {/* Account Info Group */}
+        <div className="space-y-3">
+          <p className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em]">Account Info</p>
+
+          {/* Username */}
+          <div className="relative group">
+            <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300 group-focus-within:text-blue-500 transition-colors duration-200" />
+            <input
+              type="text"
+              value={username}
+              onChange={e => setUsername(e.target.value)}
+              required
+              placeholder="Username"
+              className="w-full pl-11 pr-4 py-3.5 bg-gray-50 border border-gray-200 rounded-xl text-sm
+                         focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-400 focus:bg-white
+                         transition-all duration-200 placeholder:text-gray-300"
+            />
           </div>
 
-          <h2 className="text-3xl font-bold text-center mb-8">Create Account</h2>
+          {/* Email */}
+          <div className="relative group">
+            <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300 group-focus-within:text-blue-500 transition-colors duration-200" />
+            <input
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              required
+              placeholder="Email address"
+              className="w-full pl-11 pr-4 py-3.5 bg-gray-50 border border-gray-200 rounded-xl text-sm
+                         focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-400 focus:bg-white
+                         transition-all duration-200 placeholder:text-gray-300"
+            />
+          </div>
 
-          <form onSubmit={handleSignUp} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
-              <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} required className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500" />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500" />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={6} required className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500" />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Sign Up Code</label>
-              <input type="text" value={signupCode} onChange={(e) => setSignupCode(e.target.value)} required className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500" />
-              <p className="text-xs text-gray-500 mt-1">管理者から配布されたコードを入力してください</p>
-            </div>
-
-            <button type="submit" disabled={isLoading} className="w-full mt-6 bg-blue-600 text-white py-3 rounded-md font-bold hover:bg-blue-700 transition disabled:opacity-50">
-              {isLoading ? 'Loading...' : 'Sign Up'}
-            </button>
-          </form>
-
-          <div className="flex justify-center mt-6 text-sm">
-            <span className="text-gray-600 mr-2">Already have an account?</span>
-            <button onClick={() => navigate('/sign-in')} className="text-blue-600 font-bold hover:underline">
-              Sign In
+          {/* Password */}
+          <div className="relative group">
+            <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300 group-focus-within:text-blue-500 transition-colors duration-200" />
+            <input
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              required
+              minLength={6}
+              placeholder="Password (6+ characters)"
+              className="w-full pl-11 pr-12 py-3.5 bg-gray-50 border border-gray-200 rounded-xl text-sm
+                         focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-400 focus:bg-white
+                         transition-all duration-200 placeholder:text-gray-300"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword(!showPassword)}
+              className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-600 transition-colors"
+            >
+              {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
         </div>
+
+        {/* Divider */}
+        <div className="flex items-center gap-3 py-1">
+          <div className="flex-1 h-px bg-gray-100" />
+          <span className="text-[10px] font-bold text-gray-300 uppercase tracking-widest">Access</span>
+          <div className="flex-1 h-px bg-gray-100" />
+        </div>
+
+        {/* Signup Code Group */}
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em]">Invitation Code</p>
+          <div className="relative group">
+            <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300 group-focus-within:text-blue-500 transition-colors duration-200" />
+            <input
+              type="text"
+              value={signupCode}
+              onChange={e => setSignupCode(e.target.value)}
+              required
+              placeholder="Enter your invite code"
+              className="w-full pl-11 pr-4 py-3.5 bg-gray-50 border border-gray-200 rounded-xl text-sm
+                         focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-400 focus:bg-white
+                         transition-all duration-200 placeholder:text-gray-300 font-mono tracking-widest"
+            />
+          </div>
+          <p className="text-[11px] text-gray-400 pl-1">
+            🔒 SmiRingは招待制です。管理者からコードを受け取ってください。
+          </p>
+        </div>
+
+        {/* Submit */}
+        <button
+          type="submit"
+          disabled={isLoading}
+          className="w-full py-3.5 rounded-xl font-bold text-white text-sm mt-2
+                     bg-gradient-to-r from-sky-300 to-sky-500
+                     hover:from-sky-400 hover:to-sky-600
+                     hover:shadow-lg hover:shadow-sky-100
+                     active:scale-[0.99]
+                     disabled:opacity-60 disabled:cursor-not-allowed disabled:shadow-none
+                     transition-all duration-200 flex items-center justify-center gap-2"
+        >
+          {isLoading ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Creating account...
+            </>
+          ) : (
+            <>
+              Create Account
+              <ArrowRight className="w-4 h-4" />
+            </>
+          )}
+        </button>
+      </form>
+
+      {/* Bottom link */}
+      <div className="mt-7 text-center">
+        <p className="text-sm text-gray-400">
+          Already have an account?{' '}
+          <button
+            onClick={() => navigate('/sign-in')}
+            className="text-sky-500 font-bold hover:text-sky-600 transition-colors"
+          >
+            Sign In
+          </button>
+        </p>
       </div>
-    </div>
+    </AuthLayout>
   );
 }
