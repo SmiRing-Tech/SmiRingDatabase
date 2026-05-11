@@ -2,6 +2,7 @@ import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
 import { pipeline } from '@xenova/transformers';
 import Groq from 'groq-sdk';
 import { KEYWORDS_EXTRACTION_PROMPT } from './prompt/keywords_extraction_prompt';
+import { image_to_text_prompt } from './prompt/image_to_text_prompt';
 
 // ローカルモデル用の変数
 let localExtractor: any = null;
@@ -313,4 +314,34 @@ export async function analyzeSearchQuery(query: string): Promise<{ target: strin
     console.error("Groq Query Analysis Error:", e);
     return { target: "person", keywords: [query] };
   }
+}
+
+// ==========================================
+// 6. Geminiでの画像解析
+// ==========================================
+export async function analyzeImageWithGemini(
+  buffer: Buffer, 
+  mimetype: string, 
+  userContext?: string
+): Promise<string[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("サーバーエラー: GEMINI_API_KEY が見つかりません");
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite" });
+
+  const contextStr = userContext && userContext.trim() !== '' ? userContext : "None";
+  const prompt = image_to_text_prompt.replace('[USER_CONTEXT_HERE]', () => contextStr);
+
+  const imageParts = [
+    {
+      inlineData: {
+        data: buffer.toString("base64"),
+        mimeType: mimetype
+      }
+    }
+  ];
+
+  const result = await model.generateContent([prompt, ...imageParts]);
+  const text = result.response.text().trim();
+  return text.split('\n').map(line => line.trim()).filter(line => line !== '');
 }

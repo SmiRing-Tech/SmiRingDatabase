@@ -17,9 +17,68 @@ import {
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
+import { useFeedback } from '../../context/FeedbackContext';
 
 export default function HomePage() {
   const navigate = useNavigate();
+  const { showFeedback, hideFeedback } = useFeedback();
+
+  useEffect(() => {
+    let timer3s: any;
+    let timer15s: any;
+    let isMounted = true;
+
+    const checkServer = async () => {
+      // 3秒経過しても応答がない場合に「起動中」を表示
+      timer3s = setTimeout(() => {
+        if (isMounted) {
+          showFeedback('サーバー起動中...。10秒程度お待ちください。', {
+            mode: 'banner',
+            type: 'info',
+            duration: 60000 // 1分間（手動で消されるか hideFeedback されるまで）
+          });
+        }
+      }, 3000);
+
+      // 15秒経過しても応答がない場合にメッセージを更新
+      timer15s = setTimeout(() => {
+        if (isMounted) {
+          showFeedback('時間がかかっています。ページを更新するか、Techチームにお問い合わせください。', {
+            mode: 'banner',
+            type: 'warning',
+            duration: 60000
+          });
+        }
+      }, 15000);
+
+      try {
+        // バックエンドが起きているか確認するための軽いリクエスト
+        await apiClient.get('/api/basic_profile_info/me');
+        
+        // 成功したらタイマーを止めて、もし通知が出ていれば消す
+        if (isMounted) {
+          clearTimeout(timer3s);
+          clearTimeout(timer15s);
+          hideFeedback();
+        }
+      } catch (err) {
+        // エラー（401等）でもレスポンスが返ってきた＝サーバーは起きている
+        if (isMounted) {
+          clearTimeout(timer3s);
+          clearTimeout(timer15s);
+          hideFeedback();
+        }
+      }
+    };
+
+    checkServer();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timer3s);
+      clearTimeout(timer15s);
+    };
+  }, [showFeedback, hideFeedback]);
 
   return (
     <div className="h-full w-full overflow-y-auto bg-white text-gray-900 scroll-smooth">

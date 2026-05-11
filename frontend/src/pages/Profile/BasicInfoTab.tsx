@@ -43,11 +43,14 @@ function ValueDisplay({ value, fieldKey }: { value: any, fieldKey?: string }) {
         const fieldDef = fieldKey ? BASIC_INFO_FIELDS[fieldKey] : null;
         const fmt = fieldDef?.dateTimeSettings?.format;
         
+        // 時間が不要な設定の場合は、時差の影響を受けないようにUTCメソッドを使用する
+        const useUTC = fmt && !fmt.hour && !fmt.minute;
+
         if (fmt) {
           const parts = [];
-          if (fmt.year) parts.push(`${d.getFullYear()}年`);
-          if (fmt.month) parts.push(`${d.getMonth() + 1}月`);
-          if (fmt.date) parts.push(`${d.getDate()}日`);
+          if (fmt.year) parts.push(`${useUTC ? d.getUTCFullYear() : d.getFullYear()}年`);
+          if (fmt.month) parts.push(`${(useUTC ? d.getUTCMonth() : d.getMonth()) + 1}月`);
+          if (fmt.date) parts.push(`${useUTC ? d.getUTCDate() : d.getDate()}日`);
           
           if (fmt.hour || fmt.minute || fmt.second) {
             const timeParts = [];
@@ -59,7 +62,7 @@ function ValueDisplay({ value, fieldKey }: { value: any, fieldKey?: string }) {
           return parts.join(' ');
         }
         
-        return d.toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' });
+        return d.toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
       } catch (e) {
         return v;
       }
@@ -244,10 +247,13 @@ export default function BasicInfoPage({ initialData, isEditable = false, onDataC
       const f = fieldDef.dateTimeSettings?.format;
       if (!f) return value;
 
+      // 時間が不要な設定の場合は、時差の影響を受けないようにUTCメソッドを使用する
+      const useUTC = !f.hour && !f.minute;
+
       let parts = [];
-      if (f.year) parts.push(`${date.getFullYear()}年`);
-      if (f.month) parts.push(`${date.getMonth() + 1}月`);
-      if (f.date) parts.push(`${date.getDate()}日`);
+      if (f.year) parts.push(`${useUTC ? date.getUTCFullYear() : date.getFullYear()}年`);
+      if (f.month) parts.push(`${(useUTC ? date.getUTCMonth() : date.getMonth()) + 1}月`);
+      if (f.date) parts.push(`${useUTC ? date.getUTCDate() : date.getDate()}日`);
       
       let timeStr = "";
       if (f.hour || f.minute) {
@@ -260,7 +266,7 @@ export default function BasicInfoPage({ initialData, isEditable = false, onDataC
         parts.push(timeStr);
       }
 
-      if (f.timezone) {
+      if (f.timezone && !useUTC) {
         // タイムゾーン名を取得 (例: JST)
         const tzName = Intl.DateTimeFormat('en-US', { timeZoneName: 'short' })
           .formatToParts(date)

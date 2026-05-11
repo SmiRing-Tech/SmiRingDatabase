@@ -3,12 +3,24 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { type Member, memberMatchesQuery, HighlightedText } from './SearchBar';
 import { apiClient } from '../../lib/apiClient';
 import { Sparkles, Send, Search, X, ChevronRight, ChevronDown } from 'lucide-react';
+import PhotoViewModal from '../../components/ui/PhotoViewModal';
 
 type AggregatedResult = { 
-  user_id: string, 
   total_score: number, 
   matched_keywords: string[],
-  matches?: any[]
+  
+  // 人・学校検索用
+  user_id?: string, 
+  matches?: any[],
+
+  // 画像検索用
+  gallery_id?: string,
+  view_url?: string,
+  thumbnail_url?: string,
+  description?: string,
+  image_type?: string,
+  visibility?: string,
+  basic_profile_info?: any
 };
 
 export default function SearchPage() {
@@ -18,10 +30,14 @@ export default function SearchPage() {
   const [members, setMembers] = useState<Member[]>([]);
   const [suggestions, setSuggestions] = useState<any[]>([]); // 🎯 Member型からany[]（または汎用型）に変更
   const [isLoading, setIsLoading] = useState(true);
-  const [vectorResults, setVectorResults] = useState<AggregatedResult[]>([]);
+  const [vectorResults, setVectorResults] = useState<{ members: AggregatedResult[], photos: any[] }>({ members: [], photos: [] });
+  const [searchTarget, setSearchTarget] = useState<string>('person'); // 🎯 'person' | 'school' | 'gallery_image' | 'unknown'
   const [isSearching, setIsSearching] = useState(false);
   const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(false);
   const [isFocused, setIsFocused] = useState(false); // 🎯 フォーカス状態を管理
+  const [activeTab, setActiveTab] = useState<'all' | 'member' | 'photo'>('all'); // 🎯 検索結果のタブ状態
+  const [selectedPhoto, setSelectedPhoto] = useState<any>(null); // 🎯 拡大表示用の写真
+  const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null); // 🎯 inputへの参照を追加
   const lastExecutedQueryRef = useRef<number>(0); // 🎯 二重実行防止用（時間ベース）
@@ -103,6 +119,9 @@ export default function SearchPage() {
           if (r.source_type === 'form_answer') {
             // フォーム回答をサジェストに追加
             combinedSuggestions.push({ ...r, type: 'form_answer' });
+          } else if (r.source_type === 'gallery_image') {
+            // 📸 画像をサジェストに追加
+            combinedSuggestions.push({ ...r, type: 'gallery_image' });
           } else {
             // プロフィール項目（人）の場合
             if (!localIds.has(uId) && !combinedSuggestions.some(s => s.id === uId)) {
@@ -129,7 +148,7 @@ export default function SearchPage() {
     const trimmed = targetQuery.trim();
     if (!trimmed) {
       setLastConfirmedQuery('');
-      setVectorResults([]);
+      setVectorResults({ members: [], photos: [] });
       setSearchParams({}, { replace: true });
       return;
     }
@@ -154,7 +173,17 @@ export default function SearchPage() {
         model: 'groq' 
       });
       const data = await res.json();
-      setVectorResults(data.results || []);
+      setVectorResults(data.results || { members: [], photos: [] });
+      setSearchTarget(data.target || 'person');
+
+      // 🎯 AIの判定に合わせて初期タブを設定
+      if (data.target === 'gallery_image') {
+        setActiveTab('photo');
+      } else if (data.target === 'person' || data.target === 'school') {
+        setActiveTab('member');
+      } else {
+        setActiveTab('all');
+      }
     } catch (err) {
       console.error('本検索エラー:', err);
     } finally {
@@ -167,7 +196,11 @@ export default function SearchPage() {
     return members.filter(m => memberMatchesQuery(m, lastConfirmedQuery));
   }, [members, lastConfirmedQuery]);
 
-  const hasNoResults = lastConfirmedQuery !== '' && filteredMembers.length === 0 && vectorResults.length === 0 && !isSearching;
+  const hasNoResults = lastConfirmedQuery !== '' && 
+    filteredMembers.length === 0 && 
+    vectorResults.members.length === 0 && 
+    vectorResults.photos.length === 0 && 
+    !isSearching;
 
   return (
     <div className="h-full w-full overflow-y-auto bg-white text-gray-900">
@@ -216,7 +249,7 @@ export default function SearchPage() {
                       setQuery('');
                       setSuggestions([]);
                       setLastConfirmedQuery('');
-                      setVectorResults([]);
+                      setVectorResults({ members: [], photos: [] });
                       setSearchParams({}, { replace: true });
                     }}
                     className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
@@ -253,19 +286,32 @@ export default function SearchPage() {
                   <>
                     {suggestions.length > 0 ? (
                       suggestions.map((s, idx) => {
-                        const isMember = s.type === 'member' || (!s.type && s.name_english);
+                        const isImage = s.type === 'gallery_image' || s.source_type === 'gallery_image';
+                        const isMember = !isImage && (s.type === 'member' || (!s.type && s.name_english));
+                        
                         const member = isMember ? s : members.find(m => m.id === (s.metadata?.user_id || s.source_id));
-                        const avatarUrl = member?.avatar_link || '/assets/images/profile_photo_empty.png';
-                        const title = isMember ? s.name_english : (s.content || "").split('\n')[0];
-                        const subTitle = isMember 
-                          ? [s.current_school, s.study_abroad_country].filter(Boolean).join(' · ')
-                          : `回答 by ${member?.name_english || '不明'}`;
+                        const avatarUrl = isImage 
+                          ? (s.thumbnail_url || s.view_url || '/assets/images/profile_photo_empty.png')
+                          : (member?.avatar_link || '/assets/images/profile_photo_empty.png');
+                        
+                        const title = isImage 
+                          ? (s.description || '画像の結果') 
+                          : (isMember ? s.name_english : (s.content || "").split('\n')[0]);
+                          
+                        const subTitle = isImage
+                          ? `画像 · ${member?.name_english || '不明'}`
+                          : (isMember 
+                              ? [s.current_school, s.study_abroad_country].filter(Boolean).join(' · ')
+                              : `回答 by ${member?.name_english || '不明'}`);
 
                         return (
                           <button
                             key={s.id || idx}
                             onClick={() => {
-                              if (s.type === 'form_answer' && s.metadata?.response_id) {
+                              if (isImage) {
+                                setSelectedPhoto({ ...s, id: s.gallery_id || s.source_id });
+                                setIsPhotoModalOpen(true);
+                              } else if (s.type === 'form_answer' && s.metadata?.response_id) {
                                 const qId = s.metadata.question_id;
                                 navigate(`/form-responses/${s.metadata.response_id}${qId ? `?questionId=${qId}` : ''}`);
                               } else {
@@ -324,62 +370,161 @@ export default function SearchPage() {
           <NoResults query={lastConfirmedQuery} />
         ) : (
           <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            
+            {/* 🎯 検索結果のタブUI（今は見た目だけ） */}
+            <div className="flex justify-center gap-3 mb-6 pt-2">
+              <button
+                onClick={() => setActiveTab('all')}
+                className={`px-6 py-2 rounded-full text-sm font-bold transition-all duration-300 ${
+                  activeTab === 'all'
+                    ? 'bg-blue-400 text-white shadow-md scale-105'
+                    : 'bg-white text-gray-500 hover:bg-gray-50 border border-gray-200'
+                }`}
+              >
+                All
+              </button>
+              <button
+                onClick={() => setActiveTab('member')}
+                className={`px-6 py-2 rounded-full text-sm font-bold transition-all duration-300 ${
+                  activeTab === 'member'
+                    ? 'bg-blue-400 text-white shadow-md scale-105'
+                    : 'bg-white text-gray-500 hover:bg-gray-50 border border-gray-200'
+                }`}
+              >
+                Member
+              </button>
+              <button
+                onClick={() => setActiveTab('photo')}
+                className={`px-6 py-2 rounded-full text-sm font-bold transition-all duration-300 ${
+                  activeTab === 'photo'
+                    ? 'bg-blue-400 text-white shadow-md scale-105'
+                    : 'bg-white text-gray-500 hover:bg-gray-50 border border-gray-200'
+                }`}
+              >
+                Photo
+              </button>
+            </div>
+
             <div className="flex items-center justify-between mb-3 border-b border-gray-100 pb-2">
               <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Results</h2>
             </div>
             
-            <div className="space-y-2">
+            <div className="space-y-6">
               {(() => {
-                const resultItems: { member: Member; keywords: string[]; matches: any[] }[] = [];
-                const localIds = new Set<string>();
+                const { members: memberResults, photos: photoResults } = vectorResults;
 
-                // 1. 部分一致の結果を追加（キーワードなし）
-                filteredMembers.forEach(m => {
-                  resultItems.push({ member: m, keywords: [], matches: [] });
-                  localIds.add(m.id);
-                });
+                // 📸 写真グリッドの描画関数
+                const renderPhotoGrid = (items: any[]) => (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    {items.map((r: any) => (
+                      <ImageResultCard 
+                        key={r.gallery_id} 
+                        result={r} 
+                        onClick={() => {
+                          const photoData = {
+                            id: r.gallery_id,
+                            view_url: r.view_url,
+                            description: r.description,
+                            user_id: r.user_id,
+                            image_type: r.image_type,
+                            visibility: r.visibility,
+                            basic_profile_info: r.basic_profile_info
+                          };
+                          setSelectedPhoto(photoData);
+                          setIsPhotoModalOpen(true);
+                        }}
+                      />
+                    ))}
+                  </div>
+                );
 
-                // 2. ベクトル検索の結果を追加・マージ
-                vectorResults.forEach(r => {
-                  const m = members.find(m => m.id === r.user_id);
-                  if (!m) {
-                    console.warn(`⚠️ プロフィールが見つからないID: ${r.user_id}`);
-                    return;
-                  }
-
-                  const existingIndex = resultItems.findIndex(item => item.member.id === r.user_id);
-                  if (existingIndex === -1) {
-                    // 新規追加
-                    resultItems.push({ 
-                      member: m, 
-                      keywords: r.matched_keywords || [], 
-                      matches: r.matches || [] 
-                    });
-                  } else {
-                    // 既に部分一致（名前など）で追加されている場合は情報を補完
-                    if (r.matched_keywords) {
-                      resultItems[existingIndex].keywords = Array.from(new Set([...resultItems[existingIndex].keywords, ...r.matched_keywords]));
+                // 👤 メンバーリストの描画関数
+                const renderMemberList = (items: any[]) => {
+                  const resultItems: { member: Member; keywords: string[]; matches: any[] }[] = [];
+                  items.forEach((r: any) => {
+                    const m = members.find(m => m.id === r.user_id);
+                    if (m) {
+                      resultItems.push({ 
+                        member: m, 
+                        keywords: r.matched_keywords || [], 
+                        matches: r.matches || [] 
+                      });
                     }
-                    if (r.matches) {
-                      resultItems[existingIndex].matches = r.matches;
-                    }
-                  }
-                });
+                  });
+                  return (
+                    <div className="space-y-2">
+                      {resultItems.map(({ member, keywords, matches }) => (
+                        <MemberCard 
+                          key={member.id} 
+                          member={member} 
+                          query={lastConfirmedQuery} 
+                          matchedKeywords={keywords}
+                          matches={matches}
+                        />
+                      ))}
+                    </div>
+                  );
+                };
 
-                return resultItems.map(({ member, keywords, matches }) => (
-                  <MemberCard 
-                    key={member.id} 
-                    member={member} 
-                    query={lastConfirmedQuery} 
-                    matchedKeywords={keywords}
-                    matches={matches}
-                  />
-                ));
+                // --- タブごとの出し分け ---
+                if (activeTab === 'photo') {
+                  return photoResults.length > 0 ? renderPhotoGrid(photoResults) : <p className="text-center text-gray-400 py-10">No photos found</p>;
+                }
+
+                if (activeTab === 'member') {
+                  return memberResults.length > 0 ? renderMemberList(memberResults) : <p className="text-center text-gray-400 py-10">No members found</p>;
+                }
+
+                // 「All」タブの場合
+                return (
+                  <div className="space-y-8">
+                    {photoResults.length > 0 && (
+                      <div>
+                        <div className="flex items-center gap-2 mb-3">
+                          <span className="text-sm font-bold text-gray-900">Photos</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">{photoResults.length}</span>
+                        </div>
+                        {renderPhotoGrid(photoResults.slice(0, 6))}
+                        {photoResults.length > 6 && (
+                          <button onClick={() => setActiveTab('photo')} className="w-full mt-4 py-2 text-xs font-bold text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
+                            Show all photos
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {memberResults.length > 0 && (
+                      <div>
+                        <div className="flex items-center gap-2 mb-3">
+                          <span className="text-sm font-bold text-gray-900">Members</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">{memberResults.length}</span>
+                        </div>
+                        {renderMemberList(memberResults)}
+                      </div>
+                    )}
+
+                    {photoResults.length === 0 && memberResults.length === 0 && (
+                      <p className="text-center text-gray-400 py-10">No results found</p>
+                    )}
+                  </div>
+                );
               })()}
             </div>
           </div>
         )}
       </div>
+
+      {/* 🖼️ 写真拡大表示用モーダル */}
+      <PhotoViewModal
+        isOpen={isPhotoModalOpen}
+        imageUrl={selectedPhoto?.view_url}
+        onClose={() => {
+          setIsPhotoModalOpen(false);
+        }}
+        description={selectedPhoto?.description}
+        isOwner={false}
+        photo={selectedPhoto}
+      />
     </div>
   );
 }
@@ -538,6 +683,38 @@ function MemberCard({ member, query, matchedKeywords = [], matches = [] }: { mem
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ImageResultCard({ result, onClick }: { result: AggregatedResult; onClick: () => void }) {
+  return (
+    <div 
+      onClick={onClick}
+      className="relative aspect-square rounded-xl overflow-hidden cursor-pointer group hover:ring-2 hover:ring-blue-500 transition-all shadow-sm bg-gray-100"
+    >
+      <img 
+        src={result.thumbnail_url || result.view_url} 
+        alt={result.description || ''} 
+        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+      />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3">
+        <p className="text-white text-[10px] font-bold truncate">
+          {result.basic_profile_info?.name_english || 'Unknown'}
+        </p>
+        {result.description && (
+          <p className="text-white/80 text-[8px] line-clamp-1 mt-0.5">
+            {result.description}
+          </p>
+        )}
+        <div className="flex flex-wrap gap-1 mt-1.5">
+          {result.matched_keywords.slice(0, 2).map((kw, i) => (
+            <span key={i} className="px-1 py-0.5 rounded bg-blue-500/80 text-white text-[7px] font-bold">
+              {kw}
+            </span>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

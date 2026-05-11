@@ -4,6 +4,8 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { supabase } from '../lib/supabase';
 import multer from 'multer';
 import sharp from 'sharp';
+import { analyzeImageWithGemini } from '../lib/ai';
+import { queueGalleryImageIndexWork, deleteSearchIndex } from '../lib/vectorIndexer';
 
 const router = Router();
 
@@ -110,18 +112,26 @@ router.post('/api/gallery/upload', upload.single('file'), async (req: Request, r
 
     res.json({ message: '写真を保存しました', gallery });
 
-    // 🤖 バックグラウンドでLLMによる画像解析を行い description を埋める
-    // TODO: 画像URLをGemini等のLLMに渡し、内容を解析してdescriptionを自動生成する
-    // 実装例:
-    // (async () => {
-    //   try {
-    //     const description = await analyzeImageWithLLM(file.buffer, file.mimetype, contextNote);
-    //     await supabase.from('gallery').update({ description }).eq('id', gallery.id);
-    //     console.log(`[AI Worker] 画像解析完了: ${gallery.id}`);
-    //   } catch (aiError) {
-    //     console.error('[AI Worker Error] 画像解析失敗:', aiError);
-    //   }
-    // })();
+    // 🤖 バックグラウンドでLLMによる画像解析を行い description_generated を埋める
+    (async () => {
+      try {
+        // メモリと通信節約のため、リサイズ済みの largeBuffer を AI に渡す
+        const aiDesc = await analyzeImageWithGemini(largeBuffer, 'image/jpeg', description);
+        await supabase.from('gallery').update({ description_generated: aiDesc }).eq('id', gallery.id);
+        
+        // 🔍 ベクトル化して検索インデックスに登録
+        await queueGalleryImageIndexWork(
+          gallery.id,
+          aiDesc,
+          gallery.visibility,
+          { user_id: user.id, image_type: gallery.image_type }
+        );
+
+        console.log(`[AI Worker] 画像解析完了: ${gallery.id}`);
+      } catch (aiError) {
+        console.error('[AI Worker Error] 画像解析失敗:', aiError);
+      }
+    })();
 
   } catch (error: any) {
     console.error('写真アップロードエラー:', error);
@@ -414,6 +424,9 @@ router.delete('/api/gallery/:id', async (req: Request, res: Response) => {
 
     if (deleteError) throw deleteError;
 
+    // 🔍 検索インデックスからも削除
+    await deleteSearchIndex('gallery_image', id as string);
+
     res.json({ message: '画像を削除しました', id });
 
   } catch (error: any) {
@@ -501,6 +514,27 @@ router.post('/api/forms/attachments/upload', attachmentUpload.single('file'), as
         mimetype: file.mimetype,
         size: file.size
       });
+
+      // 🤖 バックグラウンドでLLMによる画像解析を行い description_generated を埋める
+      (async () => {
+        try {
+          // メモリと通信節約のため、リサイズ済みの largeBuffer を AI に渡す
+          const aiDesc = await analyzeImageWithGemini(largeBuffer, 'image/jpeg', `Form Attachment: ${file.originalname}`);
+          await supabase.from('gallery').update({ description_generated: aiDesc }).eq('id', gallery.id);
+          
+          // 🔍 ベクトル化して検索インデックスに登録
+          await queueGalleryImageIndexWork(
+            gallery.id,
+            aiDesc,
+            gallery.visibility,
+            { user_id: user.id, image_type: gallery.image_type, form_id: form_id }
+          );
+
+          console.log(`[AI Worker] フォーム画像解析完了: ${gallery.id}`);
+        } catch (aiError) {
+          console.error('[AI Worker Error] フォーム画像解析失敗:', aiError);
+        }
+      })();
 
     } else {
       // 📎 画像以外は通常の添付ファイルとして処理
