@@ -6,8 +6,7 @@ import {
   User, 
   ChevronLeft, 
   Sparkles,
-  RefreshCw,
-  MessageSquare
+  RefreshCw
 } from 'lucide-react';
 
 type Message = {
@@ -159,10 +158,7 @@ export default function ChatPage() {
                 ].map((tip, i) => (
                   <button 
                     key={i}
-                    onClick={() => {
-                      setInput(tip.text);
-                      textareaRef.current?.focus();
-                    }}
+                    onClick={() => handleSend(tip.text)}
                     className="flex items-center gap-3 p-4 bg-white border border-gray-100 rounded-2xl hover:border-blue-300 hover:bg-blue-50 transition-all text-left group shadow-sm hover:shadow-md"
                   >
                     <span className="text-xl">{tip.icon}</span>

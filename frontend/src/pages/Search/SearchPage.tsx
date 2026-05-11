@@ -31,7 +31,6 @@ export default function SearchPage() {
   const [suggestions, setSuggestions] = useState<any[]>([]); // 🎯 Member型からany[]（または汎用型）に変更
   const [isLoading, setIsLoading] = useState(true);
   const [vectorResults, setVectorResults] = useState<{ members: AggregatedResult[], photos: any[] }>({ members: [], photos: [] });
-  const [searchTarget, setSearchTarget] = useState<string>('person'); // 🎯 'person' | 'school' | 'gallery_image' | 'unknown'
   const [isSearching, setIsSearching] = useState(false);
   const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(false);
   const [isFocused, setIsFocused] = useState(false); // 🎯 フォーカス状態を管理
@@ -174,7 +173,7 @@ export default function SearchPage() {
       });
       const data = await res.json();
       setVectorResults(data.results || { members: [], photos: [] });
-      setSearchTarget(data.target || 'person');
+
 
       // 🎯 AIの判定に合わせて初期タブを設定
       if (data.target === 'gallery_image') {

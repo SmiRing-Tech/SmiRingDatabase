@@ -3,7 +3,7 @@ import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../../config';
 import PhotoEditModal from './PhotoEditModal';
-import { Sparkles, FileText, ChevronDown, ChevronUp } from 'lucide-react';
+import { Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
 
 type Props = {
   isOpen: boolean;
