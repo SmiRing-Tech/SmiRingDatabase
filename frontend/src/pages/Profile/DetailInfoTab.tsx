@@ -61,7 +61,7 @@ function FormResponseRow({ response, onClick }: { response: any, onClick: () => 
 
         {/* 右側：提出日 */}
         <div className="flex-1 w-full pl-0 md:pl-2 text-gray-400 text-[11px] md:text-[12px] font-medium">
-          Submitted: {formattedDate}
+          提出日: {formattedDate}
         </div>
       </div>
 
@@ -99,15 +99,13 @@ export default function DetailInfoTab({ userId, isEditable = false }: Props) {
     fetchResponses();
   }, [userId]);
 
-  const handleRowClick = (formId: string) => {
-    if (userId) {
-      navigate(`/form-responses/${formId}/${userId}`);
-    }
+  const handleRowClick = (responseId: string) => {
+    navigate(`/form-responses/${responseId}`);
   };
 
   return (
     <div className="w-full px-4 md:px-6 py-6 pb-20">
-      <SectionTitle title="Submitted Forms" />
+      <SectionTitle title="提出済みのフォーム" />
 
       {isLoading ? (
         <div className="px-3 py-6 text-sm text-gray-400 animate-pulse">Loading responses...</div>
@@ -122,7 +120,7 @@ export default function DetailInfoTab({ userId, isEditable = false }: Props) {
             <FormResponseRow
               key={res.id}
               response={res}
-              onClick={() => handleRowClick(res.form_id)}
+              onClick={() => handleRowClick(res.id)}
             />
           ))}
         </div>

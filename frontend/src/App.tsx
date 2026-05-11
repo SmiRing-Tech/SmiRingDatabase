@@ -1,8 +1,5 @@
 import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom';
-import { useEffect, useState } from 'react';
-import { supabase } from './lib/supabase';
-import type { Session } from '@supabase/supabase-js';
-import { API_BASE_URL } from './config';
+import { useEffect } from 'react';
 
 // ページのインポート
 import SignInPage from './pages/SignIn/SignInPage';
@@ -20,51 +17,32 @@ import FormListPage from './pages/Form/FormList/FormListPage';
 import FormAnswerPage from './pages/Form/Answer/FormAnswerPage';
 import FormResponseDetailPage from './pages/Form/Response/FormResponseDetailPage';
 import SearchPage from './pages/Search/SearchPage';
+import ChatPage from './pages/Search/ChatPage';
+import { FeedbackProvider } from './context/FeedbackContext';
+import FeedbackSystem from './components/ui/FeedbackSystem';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { apiClient } from './lib/apiClient';
 
 // ==========================================
 // ログイン判定ガード (Flutterの redirect 処理に相当)
 // ==========================================
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
-  const [session, setSession] = useState<Session | null | undefined>(undefined);
+  const { session, isLoading } = useAuth();
 
-  useEffect(() => {
-    // 1. 現在のログイン状態を一度チェック
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-    });
-
-    // 2. 状態変化（ログイン・ログアウト）をリアルタイムで監視
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
-  // タイムゾーン同期ロジック
+  // タイムゾーン同期ロジック (セッションがある時だけ動かす)
   useEffect(() => {
     if (session) {
       const syncTimezone = async () => {
         try {
           const browserTZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
           
-          // 現在のプロフィールを取得
-          const response = await fetch(`${API_BASE_URL}/api/basic_profile_info/me`, {
-            headers: { 'Authorization': `Bearer ${session.access_token}` }
-          });
+          // apiClient を使って自動認証＆エラー復旧
+          const response = await apiClient.get('/api/basic_profile_info/me');
           
           if (response.ok) {
             const profile = await response.json();
-            // 不一致の場合のみバックグラウンドで更新
             if (profile.timezone !== browserTZ) {
-              await fetch(`${API_BASE_URL}/api/basic_profile_info/me`, {
-                method: 'PATCH',
-                headers: { 
-                  'Authorization': `Bearer ${session.access_token}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ timezone: browserTZ })
-              });
+              await apiClient.patch('/api/basic_profile_info/me', { timezone: browserTZ });
               console.log(`[Timezone Sync] Updated to ${browserTZ}`);
             }
           }
@@ -73,17 +51,16 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
         }
       };
       
-      // ユーザーの邪魔をしないよう少し遅らせて実行
       const timer = setTimeout(syncTimezone, 2000);
       return () => clearTimeout(timer);
     }
   }, [session]);
 
-  // ロード中は何も出さない（またはスプラッシュ画面）
-  if (session === undefined) return null; 
+  // ロード中は何も出さない
+  if (isLoading) return null; 
 
   // 未ログインならログイン画面へ
-  if (session === null) {
+  if (!session) {
     return <Navigate to="/sign-in" replace />;
   }
 
@@ -118,13 +95,21 @@ const router = createBrowserRouter([
       { path: '/form-editor/:id', element: <FormEditorPage /> },
       { path: '/form-preview/:id', element: <FormAnswerPage /> },
       { path: '/form-answer/:id', element: <FormAnswerPage /> },
-      { path: '/form-responses/:formId/:userId', element: <FormResponseDetailPage /> },
+      { path: '/form-responses/:responseId', element: <FormResponseDetailPage /> },
       { path: '/search', element: <SearchPage /> },
+      { path: '/search/chat', element: <ChatPage /> },
     ],
   },
 ]);
 
 // アプリの起点
 export default function App() {
-  return <RouterProvider router={router} />;
+  return (
+    <AuthProvider>
+      <FeedbackProvider>
+        <FeedbackSystem />
+        <RouterProvider router={router} />
+      </FeedbackProvider>
+    </AuthProvider>
+  );
 }

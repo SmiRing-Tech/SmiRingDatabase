@@ -722,13 +722,14 @@ function FileResponseView({ question, responses, indexMap, isAnonymous }: {
                   const isImage = file.type?.startsWith('image/');
                   const isPdf = file.type?.includes('pdf');
                   const fileUrl = file.url || '';
+                  const thumbUrl = file.thumbnailUrl || fileUrl;
 
                   return (
                     <div key={fIdx} className="group bg-white border border-gray-100 rounded-xl overflow-hidden shadow-sm hover:shadow-md hover:border-blue-100 transition-all">
                       {(isImage || isPdf) ? (
                         <div className="aspect-video bg-gray-50 relative overflow-hidden flex items-center justify-center">
                           {isImage ? (
-                            <img src={fileUrl} className="w-full h-full object-cover" alt={file.name} />
+                            <img src={thumbUrl} className="w-full h-full object-cover" alt={file.name} />
                           ) : (
                             <PdfPreview url={fileUrl} />
                           )}

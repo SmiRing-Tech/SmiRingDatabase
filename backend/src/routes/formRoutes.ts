@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase';
 import { resolveAvatarUrl, getSignedFileUrl } from '../lib/r2';
 import { getLocalEmbedding, getGeminiEmbedding, answerToText } from '../lib/ai';
+import { queueIndexWork, deleteSearchIndexByMetadata } from '../lib/vectorIndexer';
 
 const router = Router();
 
@@ -50,6 +51,8 @@ router.get('/api/forms/:id', async (req: Request, res: Response) => {
         gridCols: q.options?.gridCols || [],
         gridInputType: q.options?.gridInputType || 'radio',
         shortTextValidation: q.options?.validation || { enabled: false },
+        checkboxValidation: q.options?.checkboxValidation || { enabled: false },
+        shortTextMultiple: q.options?.shortTextMultiple || { enabled: false },
         dateTimeSettings: q.options?.dateTimeSettings || null,
         dropdownSettings: q.options?.dropdownSettings || null,
         fileUploadSettings: q.options?.fileUploadSettings || null,
@@ -340,7 +343,7 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
         .order('created_at', { ascending: false })
         .limit(1)
         .single();
-      
+
       if (existing) {
         finalResponseId = existing.id;
       }
@@ -396,11 +399,9 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
 
     res.json({ message: "回答を受け付けました！ありがとうございます。" });
 
-    // バックグラウンドでベクトル化とインデックス保存（ユーザーを待たせない）
+    // バックグラウンドでベクトル化とインデックス保存
     (async () => {
       try {
-        console.log(`[AI Indexer] 回答(response_id: ${submittedResponseId})のインデックス化を開始...`);
-
         // フォームタイトルと質問一覧を並列取得
         const [formRes, qLinksRes] = await Promise.all([
           supabase.from('forms').select('title').eq('id', formId).single(),
@@ -421,12 +422,10 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
 
         // 再提出時: このユーザーのこのフォームの古いインデックスを削除
         if (!allowMultiple) {
-          await supabase
-            .from('unified_search_index')
-            .delete()
-            .eq('source_type', 'form_answer')
-            .eq('metadata->>user_id', user_id)
-            .eq('metadata->>form_id', formId);
+          await deleteSearchIndexByMetadata('form_answer', { 
+            user_id: String(user_id), 
+            form_id: String(formId) 
+          });
         }
 
         // 質問ごとに個別にベクトル化して保存
@@ -438,29 +437,16 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
             const text = answerToText([q], answers);
             if (!text) return;
 
-            const [localVector, geminiVector] = await Promise.all([
-              getLocalEmbedding(text),
-              getGeminiEmbedding(text),
-            ]);
-
-            const { error: indexError } = await supabase
-              .from('unified_search_index')
-              .insert({
-                source_type: 'form_answer',
-                source_id: savedAnswer.id,
-                content: text,
-                embedding_local: localVector,
-                embedding_gemini: geminiVector,
-                metadata: { user_id, form_id: formId, form_title: formTitle, question_id: q.id },
-              });
-
-            if (indexError) throw indexError;
+            await queueIndexWork({
+              source_type: 'form_answer',
+              source_id: savedAnswer.id,
+              content: text,
+              metadata: { user_id, form_id: formId, form_title: formTitle, question_id: q.id, response_id: submittedResponseId },
+            });
           })
         );
-
-        console.log(`[AI Indexer] ✅ ${savedAnswers.length}件のインデックス保存完了 (response_id: ${submittedResponseId})`);
       } catch (err) {
-        console.error('[AI Indexer] ❌ インデックス保存エラー:', err);
+        console.error('[AI Indexer] ❌ Failed to start indexing:', err);
       }
     })();
 
@@ -548,18 +534,91 @@ router.get('/api/assigned-forms', async (req: Request, res: Response) => {
     const { data: { user }, error: authError } = await supabase.auth.getUser(token);
     if (authError || !user) throw authError;
 
-    const { data, error } = await supabase
+    // 1. 自分にアサインされたフォームを取得
+    const { data: forms, error: formError } = await supabase
       .from('forms')
       .select('id, title, due_date, status, publish_settings')
       .eq('status', 'published')
       .is('deleted_at', null)
       .contains('publish_settings', { assigned_user_ids: [user.id] });
 
+    if (formError) throw formError;
+
+    // 2. それらのフォームに対する自分の回答状況を取得
+    const formIds = (forms || []).map(f => f.id);
+    let responsesData: any[] = [];
+    if (formIds.length > 0) {
+      const { data } = await supabase
+        .from('form_responses')
+        .select('form_id, status')
+        .in('form_id', formIds)
+        .eq('user_id', user.id);
+      responsesData = data || [];
+    }
+
+    // 3. マージして返す
+    const merged = (forms || []).map(form => {
+      const myResponse = responsesData.find(r => r.form_id === form.id);
+      return {
+        ...form,
+        is_submitted: myResponse?.status === 'submitted',
+        response_status: myResponse?.status || null
+      };
+    });
+
+    res.json(merged);
+
+  } catch (error: any) {
+    console.error('アサインフォーム取得エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// 📋 特定のフォームに対する自分の回答を取得する API
+// ==========================================
+router.get('/api/forms/:id/my-responses', async (req: Request, res: Response) => {
+  const { id: formId } = req.params;
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
+
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !user) throw authError;
+
+    const { data, error } = await supabase
+      .from('form_responses')
+      .select('*')
+      .eq('form_id', formId)
+      .eq('user_id', user.id)
+      .order('updated_at', { ascending: false });
+
     if (error) throw error;
     res.json(data);
 
   } catch (error: any) {
-    console.error('アサインフォーム取得エラー:', error);
+    console.error('マイ回答取得エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// 📊 フォームの回答数を取得する API
+// ==========================================
+router.get('/api/forms/:id/responses/count', async (req: Request, res: Response) => {
+  const { id: formId } = req.params;
+
+  try {
+    const { count, error } = await supabase
+      .from('form_responses')
+      .select('*', { count: 'exact', head: true })
+      .eq('form_id', formId)
+      .eq('status', 'submitted');
+
+    if (error) throw error;
+    res.json({ count: count || 0 });
+  } catch (error: any) {
+    console.error('回答数取得エラー:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -607,14 +666,15 @@ router.get('/api/forms/:id/responses', async (req: Request, res: Response) => {
     const result = await Promise.all(responses.map(async r => {
       const isAnon = r.is_anonymous;
       const profile = isAnon ? null : profileMap.get(r.user_id);
-      
+
       const content = { ...(r.content || {}) };
       // ファイルパスを署名付きURLに変換
       for (const qId of fileQuestionIds) {
         if (Array.isArray(content[qId])) {
           content[qId] = await Promise.all(content[qId].map(async (file: any) => ({
             ...file,
-            url: await getSignedFileUrl(file.path)
+            url: await getSignedFileUrl(file.path),
+            thumbnailUrl: file.thumbnailPath ? await getSignedFileUrl(file.thumbnailPath) : null
           })));
         }
       }
@@ -640,60 +700,78 @@ router.get('/api/forms/:id/responses', async (req: Request, res: Response) => {
 });
 
 // ==========================================
-// 📋 特定ユーザーの回答詳細を取得する API
+// 📋 回答IDから詳細を取得する API
 // ==========================================
-router.get('/api/forms/:id/responses/:userId', async (req: Request, res: Response) => {
-  const { id: formId, userId } = req.params;
+router.get('/api/form-responses/:responseId', async (req: Request, res: Response) => {
+  const { responseId } = req.params;
 
   try {
+    // 1. 回答本体を取得
     const { data: response, error: responseError } = await supabase
       .from('form_responses')
-      .select('id, content, status, submitted_at')
-      .eq('form_id', formId)
-      .eq('user_id', userId)
-      .eq('status', 'submitted')
+      .select('id, form_id, user_id, content, status, submitted_at, is_anonymous')
+      .eq('id', responseId)
       .single();
 
     if (responseError || !response) {
       return res.status(404).json({ error: '回答が見つかりません' });
     }
 
+    const { form_id, user_id, is_anonymous } = response;
+
+    // 2. フォーム情報を取得
+    const { data: form } = await supabase
+      .from('forms')
+      .select('*')
+      .eq('id', form_id)
+      .single();
+
+    // 3. 質問一覧を取得
     const { data: qLinks, error: qError } = await supabase
       .from('form_questions')
       .select('order_index, is_required, questions(id, title, description, question_type, options)')
-      .eq('form_id', formId)
+      .eq('form_id', form_id)
       .order('order_index', { ascending: true });
 
     if (qError) throw qError;
 
-    // 回答詳細のファイルパスも解決
+    // 4. ファイルパスの解決
     const resolvedContent = { ...(response.content || {}) };
     for (const q of (qLinks || [])) {
       const question = q.questions as any;
       if (question.question_type === 'file_upload' && Array.isArray(resolvedContent[question.id])) {
         resolvedContent[question.id] = await Promise.all(resolvedContent[question.id].map(async (file: any) => ({
           ...file,
-          url: await getSignedFileUrl(file.path)
+          url: await getSignedFileUrl(file.path),
+          thumbnailUrl: file.thumbnailPath ? await getSignedFileUrl(file.thumbnailPath) : null
         })));
       }
     }
 
-    const { data: profile } = await supabase
-      .from('basic_profile_info')
-      .select('id, name_english, name_kanji, avatar_id')
-      .eq('id', userId)
-      .single();
-
-    const avatarUrl = await resolveAvatarUrl(profile?.avatar_id || null);
+    // 5. プロフィール情報の取得
+    let profile = null;
+    let avatarUrl = null;
+    if (!is_anonymous && user_id) {
+      const { data: profileData } = await supabase
+        .from('basic_profile_info')
+        .select('id, name_english, name_kanji, avatar_id')
+        .eq('id', user_id)
+        .single();
+      profile = profileData;
+      avatarUrl = await resolveAvatarUrl(profile?.avatar_id || null);
+    }
 
     res.json({
       response_id: response.id,
+      form_id: form_id,
+      form_title: form?.title || '無題のフォーム',
+      form_description: form?.description || '',
       submitted_at: response.submitted_at,
       user: {
-        id: userId,
-        name_english: profile?.name_english || '不明なユーザー',
-        name_kanji: profile?.name_kanji || '',
-        avatar_link: avatarUrl,
+        id: user_id,
+        name_english: is_anonymous ? '匿名ユーザー' : (profile?.name_english || '不明なユーザー'),
+        name_kanji: is_anonymous ? '' : (profile?.name_kanji || ''),
+        avatar_link: is_anonymous ? null : avatarUrl,
       },
       questions: (qLinks || []).map(link => {
         const q = link.questions as any;
@@ -711,6 +789,8 @@ router.get('/api/forms/:id/responses/:userId', async (req: Request, res: Respons
           dateTimeSettings: q.options?.dateTimeSettings || null,
           dropdownSettings: q.options?.dropdownSettings || null,
           fileUploadSettings: q.options?.fileUploadSettings || null,
+          checkboxValidation: q.options?.checkboxValidation || { enabled: false },
+          shortTextMultiple: q.options?.shortTextMultiple || { enabled: false },
           answer: resolvedContent[q.id] ?? null,
         };
       }),

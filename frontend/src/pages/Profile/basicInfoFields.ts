@@ -9,7 +9,7 @@ const defaultDateTimeSettings = {
   is24h: true
 };
 
-// 生年月日などは時間不要
+// 誕生日などは時間不要
 const birthdayDateTimeSettings = {
   format: { 
     year: true, month: true, date: true, 
@@ -30,7 +30,7 @@ const defaultFileUploadSettings = {
 export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   name_english: {
     id: 'name_english',
-    title: 'Name (English)',
+    title: '名前（英語）',
     description: '',
     type: 'short_text',
     options: [],
@@ -48,7 +48,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   name_kanji: {
     id: 'name_kanji',
-    title: 'Name (Kanji)',
+    title: '名前（漢字）',
     description: '',
     type: 'short_text',
     options: [],
@@ -66,7 +66,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   birthday: {
     id: 'birthday',
-    title: 'Birthday',
+    title: '誕生日',
     description: '',
     type: 'date_time',
     options: [],
@@ -84,7 +84,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   hometown: {
     id: 'hometown',
-    title: 'Hometown',
+    title: '出身地',
     description: '',
     type: 'dropdown',
     options: [
@@ -161,7 +161,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   english_school: {
     id: 'english_school',
-    title: 'English School',
+    title: '語学学校',
     description: '',
     type: 'short_text',
     options: [],
@@ -179,7 +179,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   study_abroad_type: {
     id: 'study_abroad_type',
-    title: 'Study Abroad Type',
+    title: '留学形態',
     description: '',
     type: 'radio',
     allowCustomAnswer: true,
@@ -201,7 +201,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   study_abroad_country: {
     id: 'study_abroad_country',
-    title: 'Study Abroad Country',
+    title: '留学先（国）',
     description: '',
     type: 'short_text',
     options: [],
@@ -219,7 +219,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   study_abroad_city: {
     id: 'study_abroad_city',
-    title: 'Study Abroad City',
+    title: '留学先（都市）',
     description: '',
     type: 'short_text',
     options: [],
@@ -237,7 +237,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   grade_level: {
     id: 'grade_level',
-    title: 'Grade Level',
+    title: '学年',
     description: '',
     type: 'radio',
     allowCustomAnswer: true,
@@ -267,7 +267,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   study_abroad_history: {
     id: 'study_abroad_history',
-    title: 'Study Abroad History',
+    title: '留学歴',
     description: '',
     type: 'short_text',
     options: [],
@@ -285,7 +285,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   current_school: {
     id: 'current_school',
-    title: 'Current School',
+    title: '現在の学校',
     description: '',
     type: 'short_text',
     options: [],
@@ -303,7 +303,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   school_history: {
     id: 'school_history',
-    title: 'School History',
+    title: '学歴',
     description: '',
     type: 'short_text',
     options: [],
@@ -321,7 +321,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   majors: {
     id: 'majors',
-    title: 'Majors',
+    title: '専攻',
     description: '',
     type: 'short_text',
     options: [],
@@ -339,7 +339,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   minors: {
     id: 'minors',
-    title: 'Minors',
+    title: '副専攻',
     description: '',
     type: 'short_text',
     options: [],
@@ -357,7 +357,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   major_history: {
     id: 'major_history',
-    title: 'Major History',
+    title: '専攻歴',
     description: '',
     type: 'short_text',
     options: [],
@@ -375,7 +375,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   personality: {
     id: 'personality',
-    title: 'Personality',
+    title: '自分の強み・特徴',
     description: '',
     type: 'checkbox',
     allowCustomAnswer: true,
@@ -409,7 +409,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   important_values: {
     id: 'important_values',
-    title: 'Important Values',
+    title: '大切にしている価値観',
     description: '',
     type: 'checkbox',
     allowCustomAnswer: true,
@@ -448,7 +448,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   future_image: {
     id: 'future_image',
-    title: 'Future Image',
+    title: '将来の展望',
     description: '',
     type: 'checkbox',
     allowCustomAnswer: true,
@@ -488,7 +488,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   smiring_department: {
     id: 'smiring_department',
-    title: 'SmiRing Department',
+    title: 'SmiRing所属部署',
     description: '',
     type: 'checkbox',
     allowCustomAnswer: true,
@@ -523,7 +523,7 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
   },
   smiring_join_date: {
     id: 'smiring_join_date',
-    title: 'Join Date',
+    title: '加入時期',
     description: '',
     type: 'date_time',
     options: [],

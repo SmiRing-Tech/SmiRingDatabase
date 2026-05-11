@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronLeft } from 'lucide-react';
 import FormAnswerUI from '../Answer/components/FormAnswerUI';
-import { API_BASE_URL } from '../../../config';
+import { apiClient } from '../../../lib/apiClient';
 
 export default function FormResponseDetailPage() {
-  const { formId, userId } = useParams();
+  const { responseId } = useParams();
   const navigate = useNavigate();
 
   const [isLoading, setIsLoading] = useState(true);
@@ -16,62 +16,71 @@ export default function FormResponseDetailPage() {
   const [questions, setQuestions] = useState<any[]>([]);
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [readonlyInfo, setReadonlyInfo] = useState<{ displayName: string, submittedAt: string, avatarLink: string | null } | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+
+  // 🎯 特定の質問へスクロールするロジック
+  useEffect(() => {
+    const qId = searchParams.get('questionId');
+    if (!isLoading && qId) {
+      // レンダリング完了を少し待ってから実行
+      const timer = setTimeout(() => {
+        const el = document.getElementById(`question-${qId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          // 視覚的なフィードバック（一瞬青く光らせる）
+          el.classList.add('ring-4', 'ring-blue-400', 'ring-opacity-50', 'rounded-xl', 'transition-all', 'duration-1000');
+          setTimeout(() => {
+            el.classList.remove('ring-4', 'ring-blue-400', 'ring-opacity-50');
+          }, 2000);
+        }
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [isLoading, searchParams]);
 
   useEffect(() => {
     const fetchDetail = async () => {
-      if (!formId || !userId) return;
+      if (!responseId) return;
       setIsLoading(true);
       setError(null);
       
       try {
-        // 1. フォーム自体の情報を取得
-        const formRes = await fetch(`${API_BASE_URL}/api/forms/${formId}`);
-        if (!formRes.ok) throw new Error('フォーム情報の取得に失敗しました');
-        const formData = await formRes.json();
-        setFormTitle(formData.title || '無題のフォーム');
-        setFormDescription(formData.description || '');
+        const res = await apiClient.get(`/api/form-responses/${responseId}`);
+        if (!res.ok) {
+           if (res.status === 404) {
+             throw new Error('回答が見つかりませんでした');
+           }
+           throw new Error('回答の詳細取得に失敗しました');
+        }
+        const data = await res.json();
+        
+        setFormTitle(data.form_title);
+        setFormDescription(data.form_description);
+        setUserId(data.user?.id || null);
 
-        // 質問データのマッピング (FormAnswerUIが期待する形に変換)
-        const mappedQuestions = (formData.questions || []).map((q: any) => ({
+        // 質問データのマッピング
+        const mappedQuestions = (data.questions || []).map((q: any) => ({
           ...q,
-          options: Array.isArray(q.options) 
-            ? q.options.map((c: any) => typeof c === 'string' ? { id: crypto.randomUUID(), text: c } : c)
-            : [],
-          gridRows: Array.isArray(q.gridRows)
-            ? q.gridRows.map((r: any) => typeof r === 'string' ? { id: crypto.randomUUID(), text: r } : r)
-            : [],
-          gridCols: Array.isArray(q.gridCols)
-            ? q.gridCols.map((c: any) => typeof c === 'string' ? { id: crypto.randomUUID(), text: c } : c)
-            : []
+          // バックエンドのキー名をフロントエンドの期待（isRequired）に合わせる
+          isRequired: q.is_required,
         }));
         setQuestions(mappedQuestions);
 
-        // 2. 回答詳細情報を取得
-        const detailRes = await fetch(`${API_BASE_URL}/api/forms/${formId}/responses/${userId}`);
-        if (!detailRes.ok) {
-           if (detailRes.status === 404) {
-             throw new Error('回答が見つかりませんでした');
-           }
-           throw new Error('回答の取得に失敗しました');
-        }
-        const detailData = await detailRes.json();
-        
-        // answers マップを構築
+        // 回答データの抽出
         const answersMap: Record<string, any> = {};
-        if (detailData.questions && Array.isArray(detailData.questions)) {
-          detailData.questions.forEach((q: any) => {
-            if (q.answer !== undefined && q.answer !== null) {
-              answersMap[q.id] = q.answer;
-            }
-          });
-        }
+        mappedQuestions.forEach((q: any) => {
+          if (q.answer !== undefined && q.answer !== null) {
+            answersMap[q.id] = q.answer;
+          }
+        });
         setAnswers(answersMap);
 
-        // 閲覧情報（アバター等）をセット
+        // 閲覧情報
         setReadonlyInfo({
-          displayName: detailData.user?.name_english || detailData.user?.name_kanji || '不明なユーザー',
-          submittedAt: detailData.submitted_at,
-          avatarLink: detailData.user?.avatar_link || null,
+          displayName: data.user?.name_english || data.user?.name_kanji || '不明なユーザー',
+          submittedAt: data.submitted_at,
+          avatarLink: data.user?.avatar_link || null,
         });
 
       } catch (err: any) {
@@ -82,7 +91,7 @@ export default function FormResponseDetailPage() {
     };
 
     fetchDetail();
-  }, [formId, userId]);
+  }, [responseId]);
 
   const handleBack = () => {
     // 履歴がある場合は戻る

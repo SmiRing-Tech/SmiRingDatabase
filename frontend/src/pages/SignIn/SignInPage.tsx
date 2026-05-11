@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
+import { useFeedback } from '../../context/FeedbackContext';
 import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
 
 export default function SignInPage() {
+  const { showFeedback } = useFeedback();
   const [email, setEmail] = useState(() => localStorage.getItem('saved_email') ?? '');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -25,7 +27,7 @@ export default function SignInPage() {
       localStorage.setItem('saved_email', email.trim());
       navigate('/home');
     } catch (error: any) {
-      alert(`ログインエラー: ${error.message}`);
+      showFeedback(`ログインエラー: ${error.message}`, { type: 'error', mode: 'banner' });
     } finally {
       setIsLoading(false);
     }

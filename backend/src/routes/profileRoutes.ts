@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase';
-import { resolveAvatarUrl } from '../lib/r2';
+import { resolveAvatarUrl, getSignedFileUrl } from '../lib/r2';
+import { answerToText } from '../lib/ai';
+import { queueIndexWork } from '../lib/vectorIndexer';
 
 const router = Router();
 
@@ -17,10 +19,30 @@ router.get('/api/basic_profile_info', async (_req: Request, res: Response) => {
 
     if (error) throw error;
 
-    // 各ユーザーの avatar_id を元に表示用URLを生成
+    const profiles = data || [];
+
+    // ✅ 最適化: 全 avatar_id をまとめて1回のDBクエリで取得（N回 → 1回）
+    const avatarIds = profiles.map(p => p.avatar_id).filter(Boolean);
+    
+    let avatarPathMap: Record<string, string> = {};
+    if (avatarIds.length > 0) {
+      const { data: avatarItems } = await supabase
+        .from('gallery')
+        .select('id, thumbnail_path, storage_path')
+        .in('id', avatarIds);
+      
+      if (avatarItems) {
+        for (const item of avatarItems) {
+          avatarPathMap[item.id] = item.thumbnail_path || item.storage_path;
+        }
+      }
+    }
+
+    // 取得したパスから署名付きURLを並列生成
     const enriched = await Promise.all(
-      (data || []).map(async (profile) => {
-        const avatarUrl = await resolveAvatarUrl(profile.avatar_id);
+      profiles.map(async (profile) => {
+        const key = profile.avatar_id ? avatarPathMap[profile.avatar_id] : null;
+        const avatarUrl = key ? await getSignedFileUrl(key) : null;
         return { ...profile, avatar_link: avatarUrl };
       })
     );
@@ -31,6 +53,7 @@ router.get('/api/basic_profile_info', async (_req: Request, res: Response) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 
 // 自分のプロフィール情報を取得
 router.get('/api/basic_profile_info/me', async (req: Request, res: Response) => {
@@ -72,8 +95,8 @@ router.patch('/api/basic_profile_info/me', async (req: Request, res: Response) =
     const { data: { user }, error: authError } = await supabase.auth.getUser(token);
     if (authError || !user) throw authError;
 
-    // Body から更新したいフィールドのみ受け取る
-    const updates = req.body;
+    // Body から更新したいフィールドのみ受け取り、メタデータを分離
+    const { _ai_metadata, ...updates } = req.body;
 
     // 更新日時をセット
     updates.updated_at = new Date().toISOString();
@@ -90,6 +113,47 @@ router.patch('/api/basic_profile_info/me', async (req: Request, res: Response) =
     // レスポンスにも avatar_link を付与して返す
     const avatarUrl = await resolveAvatarUrl(data.avatar_id);
     res.json({ ...data, avatar_link: avatarUrl });
+
+    // 🤖 バックグラウンドでAIベクトル化を実行
+    (async () => {
+      try {
+        const user_id = user.id;
+        
+        if (_ai_metadata) {
+          // フロントから届いたヒント（型情報）を使って、既存の answerToText で一貫した文章を作る
+          const { label, type, options, formattedValue } = _ai_metadata;
+          const field_key = _ai_metadata.field_key || Object.keys(updates)[0];
+          const value = updates[field_key];
+
+          const q = { id: field_key, title: label, type: type, options: options, formattedValue: formattedValue };
+          const text = answerToText([q], { [field_key]: value });
+
+          if (text) {
+            await queueIndexWork({
+              source_type: 'basic_profile',
+              source_id: user_id,
+              content: text,
+              metadata: { user_id, field_key, label }
+            });
+          }
+        } else {
+          // フォールバック: メタデータがない場合は単純な変換
+          for (const [key, value] of Object.entries(updates)) {
+            if (['updated_at', 'timezone', 'avatar_id'].includes(key)) continue;
+            
+            const text = `${key}: ${Array.isArray(value) ? value.join(', ') : value}`;
+            await queueIndexWork({
+              source_type: 'basic_profile',
+              source_id: user_id,
+              content: text,
+              metadata: { user_id, field_key: key }
+            });
+          }
+        }
+      } catch (err) {
+        console.error('[AI Indexer] ❌ Profile indexing failed:', err);
+      }
+    })();
 
   } catch (error: any) {
     console.error('プロフィール更新エラー:', error);

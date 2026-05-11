@@ -3,6 +3,7 @@ import { Mail, Lock, Shield, Bell, Globe, Trash2, ChevronRight, Download } from 
 import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../../config';
+import { useFeedback } from '../../context/FeedbackContext';
 
 // ─── 共通コンポーネント ────────────────────────────────
 function SectionCard({ title, icon, children }: {
@@ -43,7 +44,7 @@ function SettingRow({ label, description, action, danger }: {
 function ComingSoonBadge() {
   return (
     <span className="text-xs font-bold bg-amber-100 text-amber-600 border border-amber-200 px-2 py-0.5 rounded-full">
-      Coming Soon
+      準備中
     </span>
   );
 }
@@ -60,14 +61,29 @@ function FeedbackMsg({ msg }: { msg: { type: 'success' | 'error'; text: string }
 // ─── メインコンポーネント ─────────────────────────────
 export default function AccountSettingTab({ onBack }: { onBack: () => void }) {
   const navigate = useNavigate();
-
-  // --- 現在のメールアドレス ---
+  const { showFeedback } = useFeedback();
   const [currentEmail, setCurrentEmail] = useState('');
+
+  // 1. マウント時にセッション取得 & URLパラメータによる更新完了検知
   useEffect(() => {
+    // セッション取得
     supabase.auth.getSession().then(({ data: { session } }) => {
       setCurrentEmail(session?.user?.email ?? '');
     });
-  }, []);
+
+    // メール更新完了の検知
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('email_updated') === 'true') {
+      showFeedback('メールアドレスを更新しました！', {
+        mode: 'splash',
+        type: 'success',
+        emoji: '🎉'
+      });
+      // URLからパラメータを削除（リロード時に再度表示されないように）
+      const newUrl = window.location.origin + window.location.pathname;
+      window.history.replaceState({}, document.title, newUrl);
+    }
+  }, [showFeedback]);
 
   // --- メールアドレス変更 ---
   const [isEditingEmail, setIsEditingEmail] = useState(false);
@@ -80,7 +96,14 @@ export default function AccountSettingTab({ onBack }: { onBack: () => void }) {
     setEmailLoading(true);
     setEmailMsg(null);
     try {
-      const { error } = await supabase.auth.updateUser({ email: newEmail });
+      // 戻り先URLにフラグを付与
+      const redirectUrl = new URL(window.location.origin + window.location.pathname);
+      redirectUrl.searchParams.set('email_updated', 'true');
+
+      const { error } = await supabase.auth.updateUser(
+        { email: newEmail },
+        { emailRedirectTo: redirectUrl.toString() }
+      );
       if (error) throw error;
       setEmailMsg({ type: 'success', text: `${newEmail} に確認メールを送信しました。メール内のリンクを踏むと変更が完了します。` });
       setNewEmail('');
@@ -284,7 +307,7 @@ export default function AccountSettingTab({ onBack }: { onBack: () => void }) {
         <div className="bg-white rounded-xl border border-red-200 shadow-sm overflow-hidden">
           <div className="flex items-center gap-3 px-5 py-4 border-b border-red-100 bg-red-50/60">
             <Trash2 className="w-4 h-4 text-red-500" />
-            <h3 className="font-bold text-red-600 text-sm">Danger Zone</h3>
+            <h3 className="font-bold text-red-600 text-sm">危険な操作</h3>
           </div>
           <div className="px-5 py-5 space-y-4">
             <div>

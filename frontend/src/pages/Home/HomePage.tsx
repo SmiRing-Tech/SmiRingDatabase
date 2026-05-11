@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../context/AuthContext';
+import { apiClient } from '../../lib/apiClient';
 import HomeSearchBar from '../Search/SearchBar';
 import PhotoViewModal from '../../components/ui/PhotoViewModal';
 import { 
@@ -16,10 +17,78 @@ import {
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
-import { API_BASE_URL } from '../../config';
+import { useFeedback } from '../../context/FeedbackContext';
 
 export default function HomePage() {
   const navigate = useNavigate();
+  const { showFeedback, hideFeedback } = useFeedback();
+
+  useEffect(() => {
+    let timer3s: any;
+    let timer15s: any;
+    let isMounted = true;
+    let retryTimeout: any;
+
+    const checkServer = async () => {
+      // 3秒経過しても応答がない場合に「起動中」を表示
+      timer3s = setTimeout(() => {
+        if (isMounted) {
+          showFeedback('サーバー起動中...。10秒程度お待ちください。', {
+            mode: 'banner',
+            type: 'info',
+            duration: 60000 // 1分間（手動で消されるか hideFeedback されるまで）
+          });
+        }
+      }, 3000);
+
+      // 15秒経過しても応答がない場合にメッセージを更新
+      timer15s = setTimeout(() => {
+        if (isMounted) {
+          showFeedback('時間がかかっています。ページを更新するか、Techチームにお問い合わせください。', {
+            mode: 'banner',
+            type: 'warning',
+            duration: 60000
+          });
+        }
+      }, 15000);
+
+      const ping = async () => {
+        if (!isMounted) return;
+        try {
+          // バックエンドが起きているか確認するための軽いリクエスト
+          const res = await apiClient.get('/api/basic_profile_info/me');
+          
+          // 502/503/504系など、サーバーがまだ起きていない場合はエラーとみなしてリトライ
+          if (res.status >= 500) {
+            throw new Error(`Server not ready: ${res.status}`);
+          }
+          
+          // 成功(2xx) や 認証エラー(401/403) ならサーバーは起きている
+          if (isMounted) {
+            clearTimeout(timer3s);
+            clearTimeout(timer15s);
+            hideFeedback();
+          }
+        } catch (err) {
+          // ネットワークエラーや500番台エラーの時は、数秒後にリトライ（タイマーは止めない）
+          if (isMounted) {
+            retryTimeout = setTimeout(ping, 2000);
+          }
+        }
+      };
+
+      ping();
+    };
+
+    checkServer();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timer3s);
+      clearTimeout(timer15s);
+      clearTimeout(retryTimeout);
+    };
+  }, [showFeedback, hideFeedback]);
 
   return (
     <div className="h-full w-full overflow-y-auto bg-white text-gray-900 scroll-smooth">
@@ -103,7 +172,7 @@ function ProfilesSection({ onClickMore }: { onClickMore: () => void }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/basic_profile_info`)
+    apiClient.get('/api/basic_profile_info')
       .then(r => r.json())
       .then((data: any[]) => {
         const sorted = [...data].sort((a, b) =>
@@ -163,18 +232,14 @@ function PhotoGallerySection({ onClickMore }: { onClickMore: () => void }) {
   const [isLoading, setIsLoading] = useState(true);
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState<any | null>(null);
+  const { user } = useAuth();
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   const fetchPhotos = async () => {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-      if (!token) return;
-      setCurrentUserId(session.user.id);
+      if (user) setCurrentUserId(user.id);
 
-      const response = await fetch(`${API_BASE_URL}/api/gallery`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const response = await apiClient.get('/api/gallery');
       if (response.ok) {
         const data = await response.json();
         setPhotos(data);
@@ -280,32 +345,14 @@ function MiniCalendar() {
   useEffect(() => {
     const fetchDueDates = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const userId = session?.user?.id;
-        const token = session?.access_token;
-        if (!token || !userId) return;
-
-        const response = await fetch(`${API_BASE_URL}/api/assigned-forms`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const response = await apiClient.get('/api/assigned-forms');
         if (!response.ok) return;
 
         const formsData = await response.json();
-        const formIds = formsData.map((f: any) => f.id);
-        if (formIds.length === 0) return;
-
-        const { data: responsesData } = await supabase
-          .from('form_responses')
-          .select('form_id, status')
-          .in('form_id', formIds)
-          .eq('user_id', userId);
-
-        const submittedIds = new Set(
-          (responsesData ?? []).filter(r => r.status === 'submitted').map(r => r.form_id)
-        );
-
+        
+        // バックエンドで判定済みの is_submitted を使用
         const dueDates = formsData
-          .filter((f: any) => f.due_date && !submittedIds.has(f.id))
+          .filter((f: any) => f.due_date && !f.is_submitted)
           .map((f: any) => f.due_date as string);
 
         setUnansweredDueDates(dueDates);
@@ -417,13 +464,7 @@ function UserProfileCard() {
   useEffect(() => {
     const fetchMyProfile = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const token = session?.access_token;
-        if (!token) return;
-
-        const response = await fetch(`${API_BASE_URL}/api/basic_profile_info/me`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const response = await apiClient.get('/api/basic_profile_info/me');
 
         if (response.ok) {
           const data = await response.json();
@@ -486,13 +527,7 @@ function MyRecentForms() {
   useEffect(() => {
     const fetchRecentForms = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const token = session?.access_token;
-        if (!token) return;
-
-        const response = await fetch(`${API_BASE_URL}/api/my-forms`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const response = await apiClient.get('/api/my-forms');
 
         if (response.ok) {
           const data = await response.json();
@@ -560,34 +595,12 @@ function AssignedFormsTimeline() {
   useEffect(() => {
     const fetchAssignedForms = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const userId = session?.user?.id;
-        const token = session?.access_token;
-        if (!token || !userId) return;
-
-        const response = await fetch(`${API_BASE_URL}/api/assigned-forms`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const response = await apiClient.get('/api/assigned-forms');
 
         if (response.ok) {
           const formsData = await response.json();
-          const formIds = formsData.map((f: any) => f.id);
 
-          const { data: responsesData } = await supabase
-            .from('form_responses')
-            .select('form_id, status')
-            .in('form_id', formIds)
-            .eq('user_id', userId);
-
-          const mergedData = formsData.map((form: any) => {
-            const myResponse = responsesData?.find(r => r.form_id === form.id);
-            return {
-              ...form,
-              isSubmitted: myResponse?.status === 'submitted'
-            };
-          });
-
-          const sorted = mergedData.sort((a: any, b: any) => {
+          const sorted = formsData.sort((a: any, b: any) => {
             if (!a.due_date) return 1;
             if (!b.due_date) return -1;
             return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
@@ -630,7 +643,7 @@ function AssignedFormsTimeline() {
     <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
       <div className="flex flex-col space-y-4">
         {assignedForms.map((form, index) => {
-          const isSubmitted = form.isSubmitted;
+          const isSubmitted = form.is_submitted;
           const isOverdue = !isSubmitted && form.due_date && new Date(form.due_date) < new Date();
           const isSoon = !isSubmitted && form.due_date && (new Date(form.due_date).getTime() - new Date().getTime()) / (1000 * 3600 * 24) <= 3;
 
