@@ -168,7 +168,7 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
 
         const { data: galleries } = await supabase
           .from('gallery')
-          .select('id, storage_path, thumbnail_path, description, user_id, image_type, visibility')
+          .select('id, storage_path, thumbnail_path, description, description_generated, user_id, image_type, visibility')
           .in('id', topGalleryIds);
 
         const photoUserIds = [...new Set((galleries || []).map(g => g.user_id))];
@@ -200,6 +200,7 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
           const score = imageScores[g.id];
           return {
             gallery_id: g.id, view_url, thumbnail_url, description: g.description,
+            description_generated: g.description_generated,
             user_id: g.user_id, image_type: g.image_type, visibility: g.visibility,
             basic_profile_info: profile ? { id: profile.id, name_english: profile.name_english, name_kanji: profile.name_kanji, avatar_url: avatarUrl } : null,
             total_score: score?.total_score || 0, matched_keywords: score?.matched_keywords || [],

@@ -425,6 +425,7 @@ export default function SearchPage() {
                             id: r.gallery_id,
                             view_url: r.view_url,
                             description: r.description,
+                            description_generated: r.description_generated,
                             user_id: r.user_id,
                             image_type: r.image_type,
                             visibility: r.visibility,

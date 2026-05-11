@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase';
-import { resolveAvatarUrl } from '../lib/r2';
+import { resolveAvatarUrl, getSignedFileUrl } from '../lib/r2';
 import { answerToText } from '../lib/ai';
 import { queueIndexWork } from '../lib/vectorIndexer';
 
@@ -19,10 +19,30 @@ router.get('/api/basic_profile_info', async (_req: Request, res: Response) => {
 
     if (error) throw error;
 
-    // 各ユーザーの avatar_id を元に表示用URLを生成
+    const profiles = data || [];
+
+    // ✅ 最適化: 全 avatar_id をまとめて1回のDBクエリで取得（N回 → 1回）
+    const avatarIds = profiles.map(p => p.avatar_id).filter(Boolean);
+    
+    let avatarPathMap: Record<string, string> = {};
+    if (avatarIds.length > 0) {
+      const { data: avatarItems } = await supabase
+        .from('gallery')
+        .select('id, thumbnail_path, storage_path')
+        .in('id', avatarIds);
+      
+      if (avatarItems) {
+        for (const item of avatarItems) {
+          avatarPathMap[item.id] = item.thumbnail_path || item.storage_path;
+        }
+      }
+    }
+
+    // 取得したパスから署名付きURLを並列生成
     const enriched = await Promise.all(
-      (data || []).map(async (profile) => {
-        const avatarUrl = await resolveAvatarUrl(profile.avatar_id);
+      profiles.map(async (profile) => {
+        const key = profile.avatar_id ? avatarPathMap[profile.avatar_id] : null;
+        const avatarUrl = key ? await getSignedFileUrl(key) : null;
         return { ...profile, avatar_link: avatarUrl };
       })
     );
@@ -33,6 +53,7 @@ router.get('/api/basic_profile_info', async (_req: Request, res: Response) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 
 // 自分のプロフィール情報を取得
 router.get('/api/basic_profile_info/me', async (req: Request, res: Response) => {

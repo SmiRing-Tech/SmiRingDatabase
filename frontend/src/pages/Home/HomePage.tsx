@@ -27,6 +27,7 @@ export default function HomePage() {
     let timer3s: any;
     let timer15s: any;
     let isMounted = true;
+    let retryTimeout: any;
 
     const checkServer = async () => {
       // 3秒経過しても応答がない場合に「起動中」を表示
@@ -51,24 +52,32 @@ export default function HomePage() {
         }
       }, 15000);
 
-      try {
-        // バックエンドが起きているか確認するための軽いリクエスト
-        await apiClient.get('/api/basic_profile_info/me');
-        
-        // 成功したらタイマーを止めて、もし通知が出ていれば消す
-        if (isMounted) {
-          clearTimeout(timer3s);
-          clearTimeout(timer15s);
-          hideFeedback();
+      const ping = async () => {
+        if (!isMounted) return;
+        try {
+          // バックエンドが起きているか確認するための軽いリクエスト
+          const res = await apiClient.get('/api/basic_profile_info/me');
+          
+          // 502/503/504系など、サーバーがまだ起きていない場合はエラーとみなしてリトライ
+          if (res.status >= 500) {
+            throw new Error(`Server not ready: ${res.status}`);
+          }
+          
+          // 成功(2xx) や 認証エラー(401/403) ならサーバーは起きている
+          if (isMounted) {
+            clearTimeout(timer3s);
+            clearTimeout(timer15s);
+            hideFeedback();
+          }
+        } catch (err) {
+          // ネットワークエラーや500番台エラーの時は、数秒後にリトライ（タイマーは止めない）
+          if (isMounted) {
+            retryTimeout = setTimeout(ping, 2000);
+          }
         }
-      } catch (err) {
-        // エラー（401等）でもレスポンスが返ってきた＝サーバーは起きている
-        if (isMounted) {
-          clearTimeout(timer3s);
-          clearTimeout(timer15s);
-          hideFeedback();
-        }
-      }
+      };
+
+      ping();
     };
 
     checkServer();
@@ -77,6 +86,7 @@ export default function HomePage() {
       isMounted = false;
       clearTimeout(timer3s);
       clearTimeout(timer15s);
+      clearTimeout(retryTimeout);
     };
   }, [showFeedback, hideFeedback]);
 
