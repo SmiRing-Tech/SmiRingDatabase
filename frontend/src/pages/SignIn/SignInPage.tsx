@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
 
 export default function SignInPage() {
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(() => localStorage.getItem('saved_email') ?? '');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -21,7 +21,8 @@ export default function SignInPage() {
       });
   
       if (error) throw error;
-      
+
+      localStorage.setItem('saved_email', email.trim());
       navigate('/home');
     } catch (error: any) {
       alert(`ログインエラー: ${error.message}`);

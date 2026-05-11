@@ -1,11 +1,22 @@
 import { useState } from 'react';
 import { Outlet, useNavigate, Link } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
+import { useInactivityLogout } from '../../hooks/useInactivityLogout';
+import { 
+  Menu, 
+  X, 
+  Home, 
+  Users, 
+  Image as ImageIcon, 
+  FileText, 
+  User, 
+  LogOut 
+} from 'lucide-react';
 
 export default function MainLayout() {
-  // メニューの開閉状態を管理するState
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const navigate = useNavigate();
+  useInactivityLogout();
 
   const handleLogout = async () => {
     try {
