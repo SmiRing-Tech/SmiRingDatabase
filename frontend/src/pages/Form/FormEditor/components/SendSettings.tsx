@@ -115,7 +115,7 @@ export default function SendSettings({
 
   const [hasDeadline, setHasDeadline] = useState(initialValues.hasDeadline);
 
-  // --- 🌟 修正：Dateオブジェクトの安全な初期化関数 ---
+  // --- 🌟 修正：Dateオブジェクトの安全な初期化関数 ----
   const getSafeInitialDate = () => {
     if (!initialValues.hasDeadline || !initialValues.date) {
       // 期限未設定時は今日の23:59をデフォルトにしておく
