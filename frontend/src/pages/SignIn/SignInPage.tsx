@@ -34,8 +34,8 @@ export default function SignInPage() {
     <AuthLayout variant="signin">
       {/* Mobile title */}
       <div className="md:hidden mb-7">
-        <h2 className="text-2xl font-black text-gray-900">Welcome back</h2>
-        <p className="text-gray-400 text-sm mt-1">Your global community is waiting.</p>
+        <h2 className="text-2xl font-black text-gray-900">Welcome back!</h2>
+        <p className="text-gray-400 text-sm mt-1">あなたの留学生活を、鮮明に。</p>
       </div>
 
       <form onSubmit={handleSignIn} className="space-y-4">

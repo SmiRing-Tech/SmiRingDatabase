@@ -65,7 +65,7 @@ export default function SignUpPage() {
       {/* Mobile title */}
       <div className="md:hidden mb-7">
         <h2 className="text-2xl font-black text-gray-900">Create account</h2>
-        <p className="text-gray-400 text-sm mt-1">Join the global community.</p>
+        <p className="text-gray-400 text-sm mt-1">ようこそ、SmiRingDatabaseへ！</p>
       </div>
 
       <form onSubmit={handleSignUp} className="space-y-4">
@@ -151,7 +151,7 @@ export default function SignUpPage() {
             />
           </div>
           <p className="text-[11px] text-gray-400 pl-1">
-            🔒 SmiRingは招待制です。管理者からコードを受け取ってください。
+            🔒 SmiRingDatabaseは招待制です。<br />管理者からコードを受け取ってください。
           </p>
         </div>
 

@@ -1,6 +1,7 @@
 import { useRef, useMemo, useEffect } from 'react';
 import { UploadCloud, X, Paperclip, AlertCircle, CheckCircle2, FileWarning, FileText } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
+import heic2any from 'heic2any';
 
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -38,7 +39,7 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 const ACCEPT_TYPES: Record<string, string> = {
-  image: 'image/*',
+  image: 'image/*,.heic,.heif',
   pdf: '.pdf,application/pdf',
   doc: '.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   spreadsheet: '.xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -112,8 +113,32 @@ export default function FileUploadField({ settings, value, onChange, readOnly }:
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
+    const rawFiles = Array.from(e.target.files || []);
+    if (rawFiles.length === 0) return;
+
+    // 🌟 HEIC 変換処理を先行して行う
+    const files = await Promise.all(rawFiles.map(async (file) => {
+      const isHeic = file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif') || file.type === 'image/heic' || file.type === 'image/heif';
+      
+      if (isHeic) {
+        try {
+          console.log(`[HEIC] Converting ${file.name}...`);
+          const resultBlob = await heic2any({
+            blob: file,
+            toType: 'image/jpeg',
+            quality: 0.8
+          });
+          
+          const blob = Array.isArray(resultBlob) ? resultBlob[0] : resultBlob;
+          const newName = file.name.replace(/\.(heic|heif)$/i, '.jpg');
+          return new File([blob], newName, { type: 'image/jpeg' });
+        } catch (err) {
+          console.error('[HEIC Error] Conversion failed, falling back to original:', err);
+          return file;
+        }
+      }
+      return file;
+    }));
 
     const newItems: FileItem[] = [...currentItems];
 

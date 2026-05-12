@@ -14,7 +14,7 @@ export default function WelcomePage() {
     // 1900ms → 'exit' (fade out)
     // 2400ms → navigate to next destination
     const t1 = setTimeout(() => setPhase('visible'), 100);
-    const t2 = setTimeout(() => setPhase('exit'), 1900);
+    const t2 = setTimeout(() => setPhase('exit'), 2400);
     
     const t3 = setTimeout(() => {
       if (session) {
@@ -22,7 +22,7 @@ export default function WelcomePage() {
       } else {
         navigate('/sign-in');
       }
-    }, 2400);
+    }, 2900);
 
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
   }, [navigate, session]);
@@ -67,7 +67,8 @@ export default function WelcomePage() {
             isVisible ? 'opacity-100' : 'opacity-0'
           }`}
         >
-          Archive Experiences, All In One Place
+          Archive Experiences, <br/>
+          All In One Place
         </p>
       </div>
 

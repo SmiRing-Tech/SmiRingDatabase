@@ -34,7 +34,7 @@ export default function ForgotPasswordPage() {
       {/* Mobile title */}
       <div className="md:hidden mb-7">
         <h2 className="text-2xl font-black text-gray-900">Reset password</h2>
-        <p className="text-gray-400 text-sm mt-1">We'll send you a reset link.</p>
+        <p className="text-gray-400 text-sm mt-1">パスワードを再設定しましょう。</p>
       </div>
 
       {isSent ? (

@@ -9,20 +9,20 @@ type Props = {
 
 const variantConfig = {
   signin: {
-    panelTitle: 'Welcome back.',
-    panelSub: 'Your global community is waiting.',
+    panelTitle: 'Welcome back!',
+    panelSub: 'あなたの留学生活を、鮮明に。',
   },
   signup: {
-    panelTitle: 'Join us.',
-    panelSub: 'Start connecting with challengers worldwide.',
+    panelTitle: 'Create Account',
+    panelSub: 'ようこそ、SmiRingDatabaseへ！',
   },
   forgot: {
-    panelTitle: 'No worries.',
-    panelSub: "We'll get you back in no time.",
+    panelTitle: 'Reset Password',
+    panelSub: 'パスワードを再設定しましょう！',
   },
   reset: {
-    panelTitle: 'Almost there.',
-    panelSub: 'Set a new password to regain access.',
+    panelTitle: 'Almost there',
+    panelSub: '新しいパスワードを設定しましょう！',
   },
 };
 
