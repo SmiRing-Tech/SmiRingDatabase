@@ -1,7 +1,7 @@
 import { useRef, useMemo, useEffect } from 'react';
 import { UploadCloud, X, Paperclip, AlertCircle, CheckCircle2, FileWarning, FileText } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
-import heic2any from 'heic2any';
+import { convertHeicToJpeg, isHeicFile } from '../../../../lib/heicConverter';
 
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -116,29 +116,8 @@ export default function FileUploadField({ settings, value, onChange, readOnly }:
     const rawFiles = Array.from(e.target.files || []);
     if (rawFiles.length === 0) return;
 
-    // 🌟 HEIC 変換処理を先行して行う
-    const files = await Promise.all(rawFiles.map(async (file) => {
-      const isHeic = file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif') || file.type === 'image/heic' || file.type === 'image/heif';
-      
-      if (isHeic) {
-        try {
-          console.log(`[HEIC] Converting ${file.name}...`);
-          const resultBlob = await heic2any({
-            blob: file,
-            toType: 'image/jpeg',
-            quality: 0.8
-          });
-          
-          const blob = Array.isArray(resultBlob) ? resultBlob[0] : resultBlob;
-          const newName = file.name.replace(/\.(heic|heif)$/i, '.jpg');
-          return new File([blob], newName, { type: 'image/jpeg' });
-        } catch (err) {
-          console.error('[HEIC Error] Conversion failed, falling back to original:', err);
-          return file;
-        }
-      }
-      return file;
-    }));
+    // 🌟 HEIC 変換処理（heic2any → Canvas フォールバック）
+    const files = await Promise.all(rawFiles.map(f => isHeicFile(f) ? convertHeicToJpeg(f) : f));
 
     const newItems: FileItem[] = [...currentItems];
 

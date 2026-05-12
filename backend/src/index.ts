@@ -9,6 +9,7 @@ import formRoutes from './routes/formRoutes';
 import aiRoutes from './routes/aiRoutes';
 import storageRoutes from './routes/storageRoutes';
 import authRoutes from './routes/authRoutes';
+import workerRoutes from './routes/workerRoutes';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -33,6 +34,7 @@ app.use(formRoutes);    // 📖 フォーム系
 app.use(aiRoutes);      // 🧠 AI系
 app.use(storageRoutes); // ☁️ ストレージ（R2）系
 app.use(authRoutes);    // 🔐 認証系
+app.use(workerRoutes);  // 🤖 ワーカー系
 
 // ==========================================
 // サーバー起動

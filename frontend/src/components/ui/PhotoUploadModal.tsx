@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
 import imageCompression from 'browser-image-compression';
-import heic2any from 'heic2any';
+import { convertHeicToJpeg, isHeicFile } from '../../lib/heicConverter';
 import { supabase } from '../../lib/supabase';
 import { API_BASE_URL } from '../../config';
 import { CustomDropdown, type DropdownOption } from './CustomDropdown';
@@ -116,10 +116,10 @@ export default function PhotoUploadModal({ isOpen, mode, onClose, onSuccess }: P
 
   // ファイル追加 → 即時圧縮開始
   const addFiles = useCallback(async (files: FileList | File[]) => {
-    let fileArray = Array.from(files).filter(f => {
+    const fileArray = Array.from(files).filter(f => {
       const type = f.type.toLowerCase();
       const name = f.name.toLowerCase();
-      return type.startsWith('image/') || name.endsWith('.heic') || name.endsWith('.heif');
+      return type.startsWith('image/') || isHeicFile(f) || name.endsWith('.heic') || name.endsWith('.heif');
     });
     
     if (fileArray.length === 0) return;
@@ -127,29 +127,8 @@ export default function PhotoUploadModal({ isOpen, mode, onClose, onSuccess }: P
     // アバターモードは1枚のみ
     const initialToProcess = isAvatarMode ? [fileArray[0]] : fileArray;
 
-    // 🌟 HEIC 変換処理
-    const toProcess = await Promise.all(initialToProcess.map(async (file) => {
-      const isHeic = file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif') || file.type === 'image/heic' || file.type === 'image/heif';
-      
-      if (isHeic) {
-        try {
-          console.log(`[HEIC] Converting ${file.name}...`);
-          const resultBlob = await heic2any({
-            blob: file,
-            toType: 'image/jpeg',
-            quality: 0.8
-          });
-          
-          const blob = Array.isArray(resultBlob) ? resultBlob[0] : resultBlob;
-          const newName = file.name.replace(/\.(heic|heif)$/i, '.jpg');
-          return new File([blob], newName, { type: 'image/jpeg' });
-        } catch (err) {
-          console.error('[HEIC Error] Conversion failed, falling back to original:', err);
-          return file;
-        }
-      }
-      return file;
-    }));
+    // 🌟 HEIC 変換処理（heic2any → Canvas フォールバック）
+    const toProcess = await Promise.all(initialToProcess.map(convertHeicToJpeg));
 
     // 新しいアイテムの個別設定は一括設定の値で初期化
     const pendingItems = await Promise.all(toProcess.map(async (file) => {
