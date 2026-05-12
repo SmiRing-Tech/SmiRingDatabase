@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import { pipeline } from '@xenova/transformers';
 import Groq from 'groq-sdk';
 import { KEYWORDS_EXTRACTION_PROMPT } from './prompt/keywords_extraction_prompt';
@@ -37,21 +37,42 @@ export async function getLocalEmbedding(text: string, isQuery: boolean = true): 
 }
 
 // ==========================================
+// Vertex AI クライアント取得ヘルパー
+// ==========================================
+function getVertexClient() {
+  const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+  const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
+  if (!projectId) {
+    throw new Error("サーバーエラー: GOOGLE_CLOUD_PROJECT が見つかりません。環境変数をご確認ください。");
+  }
+  return new GoogleGenAI({ vertexai: true, project: projectId, location });
+}
+
+// ==========================================
 // 3. Geminiでのベクトル化 (768次元に圧縮！)
 // ==========================================
 export async function getGeminiEmbedding(text: string, isQuery: boolean = false): Promise<number[]> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("サーバーエラー: GEMINI_API_KEY が見つかりません");
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: "gemini-embedding-001" });
+  const client = getVertexClient();
   
-  const result = await model.embedContent({
-    content: { role: "user", parts: [{ text }] }, 
-    taskType: isQuery ? TaskType.RETRIEVAL_QUERY : TaskType.RETRIEVAL_DOCUMENT,
-    outputDimensionality: 768,
-  } as any );
+  const result = await client.models.embedContent({
+    model: "text-embedding-004", // Vertex AI 推奨の埋め込みモデル
+    contents: text,
+    config: {
+      taskType: isQuery ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT",
+      outputDimensionality: 768,
+    }
+  });
   
-  return result.embedding.values;
+  if (!result.embeddings || result.embeddings.length === 0) {
+    throw new Error("Embedding response is empty");
+  }
+  
+  const values = result.embeddings[0].values;
+  if (!values) {
+    throw new Error("Embedding values are missing in response");
+  }
+  
+  return values;
 }
 
 // ==========================================
@@ -275,14 +296,12 @@ export function answerToText(
 // 4. Gemini(LLM)での回答生成 (RAGの仕上げ用)
 // ==========================================
 export async function generateChatResponse(prompt: string): Promise<string> {
-  // 爆速・低コストの Flash モデルを使用
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("サーバーエラー: GEMINI_API_KEY が見つかりません");
-  const genAI = new GoogleGenerativeAI(apiKey);
-  // モデル名を最新の安定版に変更
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-  const result = await model.generateContent(prompt);
-  return result.response.text();
+  const client = getVertexClient();
+  const result = await client.models.generateContent({
+    model: "gemini-1.5-flash",
+    contents: prompt
+  });
+  return result.text || "";
 }
 
 // ==========================================
@@ -324,24 +343,24 @@ export async function analyzeImageWithGemini(
   mimetype: string, 
   userContext?: string
 ): Promise<string[]> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("サーバーエラー: GEMINI_API_KEY が見つかりません");
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite" });
+  const client = getVertexClient();
 
   const contextStr = userContext && userContext.trim() !== '' ? userContext : "None";
   const prompt = image_to_text_prompt.replace('[USER_CONTEXT_HERE]', () => contextStr);
 
-  const imageParts = [
-    {
-      inlineData: {
-        data: buffer.toString("base64"),
-        mimeType: mimetype
+  const result = await client.models.generateContent({
+    model: "gemini-1.5-flash", 
+    contents: [
+      { text: prompt },
+      {
+        inlineData: {
+          data: buffer.toString("base64"),
+          mimeType: mimetype
+        }
       }
-    }
-  ];
-
-  const result = await model.generateContent([prompt, ...imageParts]);
-  const text = result.response.text().trim();
+    ]
+  });
+  
+  const text = (result.text || "").trim();
   return text.split('\n').map(line => line.trim()).filter(line => line !== '');
 }
