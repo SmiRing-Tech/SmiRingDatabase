@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
 import imageCompression from 'browser-image-compression';
+import { convertHeicToJpeg, isHeicFile } from '../../lib/heicConverter';
 import { supabase } from '../../lib/supabase';
 import { API_BASE_URL } from '../../config';
 import { CustomDropdown, type DropdownOption } from './CustomDropdown';
@@ -115,11 +116,19 @@ export default function PhotoUploadModal({ isOpen, mode, onClose, onSuccess }: P
 
   // ファイル追加 → 即時圧縮開始
   const addFiles = useCallback(async (files: FileList | File[]) => {
-    const fileArray = Array.from(files).filter(f => f.type.startsWith('image/'));
+    const fileArray = Array.from(files).filter(f => {
+      const type = f.type.toLowerCase();
+      const name = f.name.toLowerCase();
+      return type.startsWith('image/') || isHeicFile(f) || name.endsWith('.heic') || name.endsWith('.heif');
+    });
+    
     if (fileArray.length === 0) return;
 
     // アバターモードは1枚のみ
-    const toProcess = isAvatarMode ? [fileArray[0]] : fileArray;
+    const initialToProcess = isAvatarMode ? [fileArray[0]] : fileArray;
+
+    // 🌟 HEIC 変換処理（heic2any → Canvas フォールバック）
+    const toProcess = await Promise.all(initialToProcess.map(convertHeicToJpeg));
 
     // 新しいアイテムの個別設定は一括設定の値で初期化
     const pendingItems = await Promise.all(toProcess.map(async (file) => {

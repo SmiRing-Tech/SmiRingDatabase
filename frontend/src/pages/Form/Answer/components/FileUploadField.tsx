@@ -1,6 +1,7 @@
 import { useRef, useMemo, useEffect } from 'react';
 import { UploadCloud, X, Paperclip, AlertCircle, CheckCircle2, FileWarning, FileText } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
+import { convertHeicToJpeg, isHeicFile } from '../../../../lib/heicConverter';
 
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -38,7 +39,7 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 const ACCEPT_TYPES: Record<string, string> = {
-  image: 'image/*',
+  image: 'image/*,.heic,.heif',
   pdf: '.pdf,application/pdf',
   doc: '.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   spreadsheet: '.xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -112,8 +113,11 @@ export default function FileUploadField({ settings, value, onChange, readOnly }:
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
+    const rawFiles = Array.from(e.target.files || []);
+    if (rawFiles.length === 0) return;
+
+    // 🌟 HEIC 変換処理（heic2any → Canvas フォールバック）
+    const files = await Promise.all(rawFiles.map(f => isHeicFile(f) ? convertHeicToJpeg(f) : f));
 
     const newItems: FileItem[] = [...currentItems];
 

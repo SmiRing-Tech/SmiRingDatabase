@@ -28,6 +28,7 @@ export default function HomePage() {
     let timer15s: any;
     let isMounted = true;
     let retryTimeout: any;
+    let wasServerDown = false; // 🌟 サーバーが落ちていたかどうかのフラグ
 
     const checkServer = async () => {
       // 3秒経過しても応答がない場合に「起動中」を表示
@@ -36,7 +37,7 @@ export default function HomePage() {
           showFeedback('サーバー起動中...。10秒程度お待ちください。', {
             mode: 'banner',
             type: 'info',
-            duration: 60000 // 1分間（手動で消されるか hideFeedback されるまで）
+            duration: 60000
           });
         }
       }, 3000);
@@ -55,22 +56,25 @@ export default function HomePage() {
       const ping = async () => {
         if (!isMounted) return;
         try {
-          // バックエンドが起きているか確認するための軽いリクエスト
           const res = await apiClient.get('/api/basic_profile_info/me');
           
-          // 502/503/504系など、サーバーがまだ起きていない場合はエラーとみなしてリトライ
           if (res.status >= 500) {
             throw new Error(`Server not ready: ${res.status}`);
           }
           
-          // 成功(2xx) や 認証エラー(401/403) ならサーバーは起きている
           if (isMounted) {
             clearTimeout(timer3s);
             clearTimeout(timer15s);
             hideFeedback();
+            
+            // 🌟 サーバーが一度でも落ちていた場合のみ、復帰イベントを発火！
+            if (wasServerDown) {
+              console.log('[HealthCheck] Server recovered. Dispatching refetch event...');
+              window.dispatchEvent(new CustomEvent('server-ready'));
+            }
           }
         } catch (err) {
-          // ネットワークエラーや500番台エラーの時は、数秒後にリトライ（タイマーは止めない）
+          wasServerDown = true; // 🌟 エラーを検知したのでフラグを立てる
           if (isMounted) {
             retryTimeout = setTimeout(ping, 2000);
           }
@@ -171,7 +175,8 @@ function ProfilesSection({ onClickMore }: { onClickMore: () => void }) {
   const [members, setMembers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
+  const fetchMembers = () => {
+    setIsLoading(true);
     apiClient.get('/api/basic_profile_info')
       .then(r => r.json())
       .then((data: any[]) => {
@@ -182,6 +187,12 @@ function ProfilesSection({ onClickMore }: { onClickMore: () => void }) {
       })
       .catch(console.error)
       .finally(() => setIsLoading(false));
+  };
+
+  useEffect(() => {
+    fetchMembers();
+    window.addEventListener('server-ready', fetchMembers);
+    return () => window.removeEventListener('server-ready', fetchMembers);
   }, []);
 
   return (
@@ -237,6 +248,7 @@ function PhotoGallerySection({ onClickMore }: { onClickMore: () => void }) {
 
   const fetchPhotos = async () => {
     try {
+      setIsLoading(true);
       if (user) setCurrentUserId(user.id);
 
       const response = await apiClient.get('/api/gallery');
@@ -253,6 +265,8 @@ function PhotoGallerySection({ onClickMore }: { onClickMore: () => void }) {
 
   useEffect(() => {
     fetchPhotos();
+    window.addEventListener('server-ready', fetchPhotos);
+    return () => window.removeEventListener('server-ready', fetchPhotos);
   }, []);
 
   return (
@@ -342,25 +356,28 @@ function MiniCalendar() {
   const [isSelectingMonth, setIsSelectingMonth] = useState(false);
   const [unansweredDueDates, setUnansweredDueDates] = useState<string[]>([]);
 
+  const fetchDueDates = async () => {
+    try {
+      const response = await apiClient.get('/api/assigned-forms');
+      if (!response.ok) return;
+
+      const formsData = await response.json();
+      
+      // バックエンドで判定済みの is_submitted を使用
+      const dueDates = formsData
+        .filter((f: any) => f.due_date && !f.is_submitted)
+        .map((f: any) => f.due_date as string);
+
+      setUnansweredDueDates(dueDates);
+    } catch (e) {
+      console.error('カレンダー用期限の取得に失敗:', e);
+    }
+  };
+
   useEffect(() => {
-    const fetchDueDates = async () => {
-      try {
-        const response = await apiClient.get('/api/assigned-forms');
-        if (!response.ok) return;
-
-        const formsData = await response.json();
-        
-        // バックエンドで判定済みの is_submitted を使用
-        const dueDates = formsData
-          .filter((f: any) => f.due_date && !f.is_submitted)
-          .map((f: any) => f.due_date as string);
-
-        setUnansweredDueDates(dueDates);
-      } catch (e) {
-        console.error('カレンダー用期限の取得に失敗:', e);
-      }
-    };
     fetchDueDates();
+    window.addEventListener('server-ready', fetchDueDates);
+    return () => window.removeEventListener('server-ready', fetchDueDates);
   }, []);
 
   const year = currentDate.getFullYear();
@@ -461,23 +478,26 @@ function UserProfileCard() {
   const [profileData, setProfileData] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    const fetchMyProfile = async () => {
-      try {
-        const response = await apiClient.get('/api/basic_profile_info/me');
+  const fetchMyProfile = async () => {
+    try {
+      setIsLoading(true);
+      const response = await apiClient.get('/api/basic_profile_info/me');
 
-        if (response.ok) {
-          const data = await response.json();
-          setProfileData(data);
-        }
-      } catch (error) {
-        console.error('プロフィールの取得に失敗しました:', error);
-      } finally {
-        setIsLoading(false);
+      if (response.ok) {
+        const data = await response.json();
+        setProfileData(data);
       }
-    };
+    } catch (error) {
+      console.error('プロフィールの取得に失敗しました:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
+  useEffect(() => {
     fetchMyProfile();
+    window.addEventListener('server-ready', fetchMyProfile);
+    return () => window.removeEventListener('server-ready', fetchMyProfile);
   }, []);
 
   if (isLoading) {
@@ -524,22 +544,26 @@ function MyRecentForms() {
   const [recentForms, setRecentForms] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    const fetchRecentForms = async () => {
-      try {
-        const response = await apiClient.get('/api/my-forms');
+  const fetchRecentForms = async () => {
+    try {
+      setIsLoading(true);
+      const response = await apiClient.get('/api/my-forms');
 
-        if (response.ok) {
-          const data = await response.json();
-          setRecentForms(data.slice(0, 3));
-        }
-      } catch (error) {
-        console.error('フォームの取得に失敗しました:', error);
-      } finally {
-        setIsLoading(false);
+      if (response.ok) {
+        const data = await response.json();
+        setRecentForms(data.slice(0, 3));
       }
-    };
+    } catch (error) {
+      console.error('フォームの取得に失敗しました:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
     fetchRecentForms();
+    window.addEventListener('server-ready', fetchRecentForms);
+    return () => window.removeEventListener('server-ready', fetchRecentForms);
   }, []);
 
   if (isLoading) {
@@ -592,29 +616,33 @@ function AssignedFormsTimeline() {
   const [assignedForms, setAssignedForms] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    const fetchAssignedForms = async () => {
-      try {
-        const response = await apiClient.get('/api/assigned-forms');
+  const fetchAssignedForms = async () => {
+    try {
+      setIsLoading(true);
+      const response = await apiClient.get('/api/assigned-forms');
 
-        if (response.ok) {
-          const formsData = await response.json();
+      if (response.ok) {
+        const formsData = await response.json();
 
-          const sorted = formsData.sort((a: any, b: any) => {
-            if (!a.due_date) return 1;
-            if (!b.due_date) return -1;
-            return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
-          });
+        const sorted = formsData.sort((a: any, b: any) => {
+          if (!a.due_date) return 1;
+          if (!b.due_date) return -1;
+          return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
+        });
 
-          setAssignedForms(sorted);
-        }
-      } catch (error) {
-        console.error('アサインフォームの取得に失敗:', error);
-      } finally {
-        setIsLoading(false);
+        setAssignedForms(sorted);
       }
-    };
+    } catch (error) {
+      console.error('アサインフォームの取得に失敗:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
     fetchAssignedForms();
+    window.addEventListener('server-ready', fetchAssignedForms);
+    return () => window.removeEventListener('server-ready', fetchAssignedForms);
   }, []);
 
   const handleFormClick = (id: string) => {

@@ -17,60 +17,52 @@ export interface IndexingParams {
 export async function queueIndexWork(params: IndexingParams) {
   const { source_type, source_id, content, metadata } = params;
 
-  // 🤖 非同期で実行 (呼び出し元を待たせない)
-  (async () => {
-    try {
-      console.log(`[VectorIndexer] Indexing ${source_type} (ID: ${source_id})...`);
+  try {
+    console.log(`[VectorIndexer] Indexing ${source_type} (ID: ${source_id})...`);
 
-      // 1. ベクトル生成 (ローカル & Gemini)
-      const [localVector, geminiVector] = await Promise.all([
-        getLocalEmbedding(content, false), // 文書用
-        getGeminiEmbedding(content, false), // 文書用
-      ]);
+    // 1. ベクトル生成 (ローカル & Gemini)
+    const [localVector, geminiVector] = await Promise.all([
+      getLocalEmbedding(content, false), // 文書用
+      getGeminiEmbedding(content, false), // 文書用
+    ]);
 
-      // 2. インデックス保存 (Upsert)
-      // source_type と source_id の組み合わせで一意になるように管理する
-      // ※ DBに一意制約がない場合は、まず削除してから挿入する
-      
-      // まず既存の同じソースのデータを削除
-      // プロフィールの場合は field_key も考慮して、その項目だけを上書きするようにする
-      let deleteQuery = supabase
-        .from('unified_search_index')
-        .delete()
-        .eq('source_type', source_type)
-        .eq('source_id', source_id);
-      
-      if (metadata && metadata.field_key) {
-        deleteQuery = deleteQuery.eq('metadata->>field_key', metadata.field_key);
-      }
-
-      const { error: deleteError } = await deleteQuery;
-
-      if (deleteError) {
-        console.warn(`[VectorIndexer] Warning: Delete old index failed:`, deleteError);
-      }
-
-      // 新規挿入
-      const { error: insertError } = await supabase
-        .from('unified_search_index')
-        .insert({
-          source_type,
-          source_id,
-          content,
-          embedding_local: localVector,
-          embedding_gemini: geminiVector,
-          visibility: params.visibility || 'organization',
-          metadata
-        });
-
-      if (insertError) throw insertError;
-
-      console.log(`[VectorIndexer] ✅ Successfully indexed ${source_type} (ID: ${source_id})`);
-
-    } catch (error) {
-      console.error(`[VectorIndexer] ❌ Failed to index ${source_type}:`, error);
+    // 2. インデックス保存 (Upsert)
+    let deleteQuery = supabase
+      .from('unified_search_index')
+      .delete()
+      .eq('source_type', source_type)
+      .eq('source_id', source_id);
+    
+    if (metadata && metadata.field_key) {
+      deleteQuery = deleteQuery.eq('metadata->>field_key', metadata.field_key);
     }
-  })();
+
+    const { error: deleteError } = await deleteQuery;
+
+    if (deleteError) {
+      console.warn(`[VectorIndexer] Warning: Delete old index failed:`, deleteError);
+    }
+
+    // 新規挿入
+    const { error: insertError } = await supabase
+      .from('unified_search_index')
+      .insert({
+        source_type,
+        source_id,
+        content,
+        embedding_local: localVector,
+        embedding_gemini: geminiVector,
+        visibility: params.visibility || 'organization',
+        metadata
+      });
+
+    if (insertError) throw insertError;
+
+    console.log(`[VectorIndexer] ✅ Successfully indexed ${source_type} (ID: ${source_id})`);
+
+  } catch (error) {
+    console.error(`[VectorIndexer] ❌ Failed to index ${source_type}:`, error);
+  }
 }
 
 /**
@@ -116,55 +108,52 @@ export async function queueGalleryImageIndexWork(
   visibility: string,
   metadata: Record<string, any>
 ) {
-  // バックグラウンドで実行
-  (async () => {
-    try {
-      console.log(`[VectorIndexer] Indexing gallery_image (ID: ${galleryId}) with ${descriptions.length} lines...`);
+  try {
+    console.log(`[VectorIndexer] Indexing gallery_image (ID: ${galleryId}) with ${descriptions.length} lines...`);
 
-      // 1. 古いインデックスの一括削除
-      const { error: deleteError } = await supabase
-        .from('unified_search_index')
-        .delete()
-        .eq('source_type', 'gallery_image')
-        .eq('source_id', galleryId);
+    // 1. 古いインデックスの一括削除
+    const { error: deleteError } = await supabase
+      .from('unified_search_index')
+      .delete()
+      .eq('source_type', 'gallery_image')
+      .eq('source_id', galleryId);
 
-      if (deleteError) {
-        console.warn(`[VectorIndexer] Warning: Delete old gallery image index failed:`, deleteError);
-      }
-
-      // 2. 各行ごとにベクトル生成とインデックス挿入
-      for (let i = 0; i < descriptions.length; i++) {
-        const line = descriptions[i];
-        if (!line.trim()) continue;
-
-        const [localVector, geminiVector] = await Promise.all([
-          getLocalEmbedding(line, false),
-          getGeminiEmbedding(line, false),
-        ]);
-
-        const lineMetadata = { ...metadata, line_index: i };
-
-        const { error: insertError } = await supabase
-          .from('unified_search_index')
-          .insert({
-            source_type: 'gallery_image',
-            source_id: galleryId,
-            content: line,
-            embedding_local: localVector,
-            embedding_gemini: geminiVector,
-            visibility: visibility || 'organization',
-            metadata: lineMetadata
-          });
-
-        if (insertError) {
-          console.error(`[VectorIndexer] Failed to insert index for line ${i}:`, insertError);
-        }
-      }
-
-      console.log(`[VectorIndexer] ✅ Successfully indexed gallery_image (ID: ${galleryId})`);
-
-    } catch (error) {
-      console.error(`[VectorIndexer] ❌ Failed to index gallery_image (ID: ${galleryId}):`, error);
+    if (deleteError) {
+      console.warn(`[VectorIndexer] Warning: Delete old gallery image index failed:`, deleteError);
     }
-  })();
+
+    // 2. 各行ごとにベクトル生成とインデックス挿入
+    for (let i = 0; i < descriptions.length; i++) {
+      const line = descriptions[i];
+      if (!line.trim()) continue;
+
+      const [localVector, geminiVector] = await Promise.all([
+        getLocalEmbedding(line, false),
+        getGeminiEmbedding(line, false),
+      ]);
+
+      const lineMetadata = { ...metadata, line_index: i };
+
+      const { error: insertError } = await supabase
+        .from('unified_search_index')
+        .insert({
+          source_type: 'gallery_image',
+          source_id: galleryId,
+          content: line,
+          embedding_local: localVector,
+          embedding_gemini: geminiVector,
+          visibility: visibility || 'organization',
+          metadata: lineMetadata
+        });
+
+      if (insertError) {
+        console.error(`[VectorIndexer] Failed to insert index for line ${i}:`, insertError);
+      }
+    }
+
+    console.log(`[VectorIndexer] ✅ Successfully indexed gallery_image (ID: ${galleryId})`);
+
+  } catch (error) {
+    console.error(`[VectorIndexer] ❌ Failed to index gallery_image (ID: ${galleryId}):`, error);
+  }
 }

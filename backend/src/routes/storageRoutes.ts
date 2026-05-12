@@ -7,6 +7,28 @@ import sharp from 'sharp';
 import { analyzeImageWithGemini } from '../lib/ai';
 import { queueGalleryImageIndexWork, deleteSearchIndex } from '../lib/vectorIndexer';
 
+const heicConvert = require('heic-convert');
+
+async function ensureJpegBuffer(buffer: Buffer, mimetype: string, originalname: string): Promise<Buffer> {
+  const isHeic = mimetype === 'image/heic' || mimetype === 'image/heif' || originalname.toLowerCase().endsWith('.heic') || originalname.toLowerCase().endsWith('.heif');
+  if (isHeic) {
+    console.log(`[Backend HEIC] Converting ${originalname}...`);
+    try {
+      const outputBuffer = await heicConvert({
+        buffer: buffer,
+        format: 'JPEG',
+        quality: 1 // Highest quality for intermediate buffer
+      });
+      console.log(`[Backend HEIC] ✅ Successfully converted ${originalname}`);
+      return Buffer.from(outputBuffer);
+    } catch (err) {
+      console.error(`[Backend HEIC Error] Conversion failed for ${originalname}:`, err);
+      return buffer;
+    }
+  }
+  return buffer;
+}
+
 const router = Router();
 
 // ==========================================
@@ -60,18 +82,21 @@ router.post('/api/gallery/upload', upload.single('file'), async (req: Request, r
     const { image_type, visibility, description } = req.body;
     const file = req.file;
 
+    // 🌟 バックエンドでの HEIC フォールバック変換
+    const processedBuffer = await ensureJpegBuffer(file.buffer, file.mimetype, file.originalname);
+
     // ファイル名を一意にする
     const timestamp = Date.now();
     const largeKey = `gallery/large/${user.id}/${timestamp}.jpg`;
     const thumbKey = `gallery/thumbnails/${user.id}/${timestamp}.webp`;
 
     // Step 1: ラージ画像 (1920px) & サムネイル (400px) 生成
-    const largeBuffer = await sharp(file.buffer)
+    const largeBuffer = await sharp(processedBuffer)
       .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 80, progressive: true })
       .toBuffer();
 
-    const thumbBuffer = await sharp(file.buffer)
+    const thumbBuffer = await sharp(processedBuffer)
       .resize(400, 400, { fit: 'inside' })
       .webp({ quality: 80 })
       .toBuffer();
@@ -112,26 +137,10 @@ router.post('/api/gallery/upload', upload.single('file'), async (req: Request, r
 
     res.json({ message: '写真を保存しました', gallery });
 
-    // 🤖 バックグラウンドでLLMによる画像解析を行い description_generated を埋める
-    (async () => {
-      try {
-        // メモリと通信節約のため、リサイズ済みの largeBuffer を AI に渡す
-        const aiDesc = await analyzeImageWithGemini(largeBuffer, 'image/jpeg', description);
-        await supabase.from('gallery').update({ description_generated: aiDesc }).eq('id', gallery.id);
-        
-        // 🔍 ベクトル化して検索インデックスに登録
-        await queueGalleryImageIndexWork(
-          gallery.id,
-          aiDesc,
-          gallery.visibility,
-          { user_id: user.id, image_type: gallery.image_type }
-        );
+    res.json({ message: '写真を保存しました', gallery });
 
-        console.log(`[AI Worker] 画像解析完了: ${gallery.id}`);
-      } catch (aiError) {
-        console.error('[AI Worker Error] 画像解析失敗:', aiError);
-      }
-    })();
+    // 🤖 AI処理とベクトルインデックス登録は Supabase Webhook 経由で
+    // workerRoutes.ts (/api/worker/process-gallery) がバックグラウンドで実行します。
 
   } catch (error: any) {
     console.error('写真アップロードエラー:', error);
@@ -180,7 +189,7 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
     const galleriesWithUrls = await Promise.all((galleries || []).map(async (g) => {
       const profile = profileMap[g.user_id] || null;
       let avatarUrl = null;
-      
+
       // プロフィールのアバターURLを解決
       if (profile?.avatar_id) {
         const { data: avatar } = await supabase.from('gallery').select('storage_path').eq('id', profile.avatar_id).single();
@@ -192,7 +201,7 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
 
       let viewUrl = '';
       let thumbnailUrl = '';
-      
+
       try {
         // メイン画像 (Large)
         const command = new GetObjectCommand({
@@ -213,7 +222,7 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
       } catch (err) {
         console.error('署名付きURL生成エラー:', err);
       }
-      
+
       return {
         ...g,
         basic_profile_info: profile ? { ...profile, avatar_url: avatarUrl } : null,
@@ -453,20 +462,26 @@ router.post('/api/forms/attachments/upload', attachmentUpload.single('file'), as
 
     const file = req.file;
     const timestamp = Date.now();
-    const isImage = file.mimetype.startsWith('image/');
+    
+    // HEICの場合、ブラウザによってはmimetypeが空やapplication/octet-streamになることがあるため拡張子も見る
+    const isHeic = file.mimetype === 'image/heic' || file.mimetype === 'image/heif' || file.originalname.toLowerCase().endsWith('.heic') || file.originalname.toLowerCase().endsWith('.heif');
+    const isImage = file.mimetype.startsWith('image/') || isHeic;
 
     if (isImage) {
       // 🖼️ 画像の場合はギャラリーとして処理
+      // 🌟 バックエンドでの HEIC フォールバック変換
+      const processedBuffer = await ensureJpegBuffer(file.buffer, file.mimetype, file.originalname);
+
       const largeKey = `gallery/large/${user.id}/${timestamp}.jpg`;
       const thumbKey = `gallery/thumbnails/${user.id}/${timestamp}.webp`;
 
       // Step 1: ラージ画像 (1920px) & サムネイル (400px) 生成
-      const largeBuffer = await sharp(file.buffer)
+      const largeBuffer = await sharp(processedBuffer)
         .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
         .jpeg({ quality: 80, progressive: true })
         .toBuffer();
 
-      const thumbBuffer = await sharp(file.buffer)
+      const thumbBuffer = await sharp(processedBuffer)
         .resize(400, 400, { fit: 'inside' })
         .webp({ quality: 80 })
         .toBuffer();
@@ -515,26 +530,8 @@ router.post('/api/forms/attachments/upload', attachmentUpload.single('file'), as
         size: file.size
       });
 
-      // 🤖 バックグラウンドでLLMによる画像解析を行い description_generated を埋める
-      (async () => {
-        try {
-          // メモリと通信節約のため、リサイズ済みの largeBuffer を AI に渡す
-          const aiDesc = await analyzeImageWithGemini(largeBuffer, 'image/jpeg', `Form Attachment: ${file.originalname}`);
-          await supabase.from('gallery').update({ description_generated: aiDesc }).eq('id', gallery.id);
-          
-          // 🔍 ベクトル化して検索インデックスに登録
-          await queueGalleryImageIndexWork(
-            gallery.id,
-            aiDesc,
-            gallery.visibility,
-            { user_id: user.id, image_type: gallery.image_type, form_id: form_id }
-          );
-
-          console.log(`[AI Worker] フォーム画像解析完了: ${gallery.id}`);
-        } catch (aiError) {
-          console.error('[AI Worker Error] フォーム画像解析失敗:', aiError);
-        }
-      })();
+      // 🤖 AI処理とベクトルインデックス登録は Supabase Webhook 経由で
+      // workerRoutes.ts (/api/worker/process-gallery) がバックグラウンドで実行します。
 
     } else {
       // 📎 画像以外は通常の添付ファイルとして処理
