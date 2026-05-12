@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useFeedback } from '../../../context/FeedbackContext';
 import { useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom';
 import QuestionBox from './components/QuestionBox';
-import { FileText, Eye, Send, Globe, AlertTriangle } from 'lucide-react';
+import { FileText, Eye, Send, Globe, AlertTriangle, Users, X } from 'lucide-react';
 import SendSettings from './components/SendSettings';
 import { supabase } from '../../../lib/supabase';
 import { DragDropContext, Droppable, Draggable, type DropResult } from '@hello-pangea/dnd';
@@ -135,6 +135,29 @@ export default function FormEditorPage() {
   const [responseCount, setResponseCount] = useState<number | null>(null);
   // 公開済フォームで致命的エラーがあり自動保存を一時停止しているかどうか
   const [saveBlocked, setSaveBlocked] = useState(false);
+
+  // 未回答者/回答済みモーダル
+  const [respondentsModal, setRespondentsModal] = useState(false);
+  const [respondentsTab, setRespondentsTab] = useState<'non' | 'done'>('non');
+  const [nonRespondents, setNonRespondents] = useState<any[]>([]);
+  const [respondents, setRespondents] = useState<any[]>([]);
+  const [isRespondentsLoading, setIsRespondentsLoading] = useState(false);
+
+  const openRespondentsModal = async (tab: 'non' | 'done') => {
+    setRespondentsTab(tab);
+    setRespondentsModal(true);
+    setIsRespondentsLoading(true);
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) { setIsRespondentsLoading(false); return; }
+    const [nonRes, doneRes] = await Promise.all([
+      fetch(`${API_BASE_URL}/api/forms/${formId}/non-respondents`, { headers: { 'Authorization': `Bearer ${token}` } }),
+      fetch(`${API_BASE_URL}/api/forms/${formId}/responses`, { headers: { 'Authorization': `Bearer ${token}` } }),
+    ]);
+    setNonRespondents(await nonRes.json());
+    setRespondents(await doneRes.json());
+    setIsRespondentsLoading(false);
+  };
   // 質問自体の並べ替え中かどうか
   const [isSortingQuestions, setIsSortingQuestions] = useState(false);
   const [sortingQuestionId, setSortingQuestionId] = useState<string | null>(null);
@@ -733,6 +756,16 @@ export default function FormEditorPage() {
                 <Eye className="w-5 h-5" />
               </button>
 
+              {formStatus === 'published' && (
+                <button
+                  onClick={() => openRespondentsModal('non')}
+                  className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
+                  title="未回答者 / 回答済み"
+                >
+                  <Users className="w-5 h-5" />
+                </button>
+              )}
+
               <button
                 onClick={() => {
                   const hasErrors = handleShowErrors();
@@ -769,15 +802,104 @@ export default function FormEditorPage() {
   );
 
   // ==========================================
+  // 未回答者 / 回答済みモーダル
+  // ==========================================
+
+  const respondentsModalJSX = respondentsModal && (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setRespondentsModal(false)}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[70vh] flex flex-col" onClick={e => e.stopPropagation()}>
+
+        {/* ヘッダー */}
+        <div className="flex items-center justify-between p-5 border-b border-gray-100">
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+            <button
+              onClick={() => setRespondentsTab('non')}
+              className={`px-4 py-1.5 rounded-md text-sm font-bold transition-colors ${respondentsTab === 'non' ? 'bg-white shadow text-orange-600' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              未回答者 {!isRespondentsLoading && `(${nonRespondents.length})`}
+            </button>
+            <button
+              onClick={() => setRespondentsTab('done')}
+              className={`px-4 py-1.5 rounded-md text-sm font-bold transition-colors ${respondentsTab === 'done' ? 'bg-white shadow text-green-600' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              回答済み {!isRespondentsLoading && `(${respondents.length})`}
+            </button>
+          </div>
+          <button onClick={() => setRespondentsModal(false)} className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* リスト */}
+        <div className="overflow-y-auto flex-1 p-4">
+          {isRespondentsLoading ? (
+            <div className="space-y-3 animate-pulse">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-gray-200 flex-shrink-0" />
+                  <div className="space-y-1.5 flex-1">
+                    <div className="h-3.5 bg-gray-200 rounded w-1/2" />
+                    <div className="h-3 bg-gray-100 rounded w-1/3" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : respondentsTab === 'non' ? (
+            nonRespondents.length === 0 ? (
+              <div className="py-10 text-center text-gray-400 text-sm">全員が回答済みです 🎉</div>
+            ) : (
+              <ul className="space-y-1">
+                {nonRespondents.map((m: any) => (
+                  <li key={m.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-gray-50">
+                    <div className="w-9 h-9 rounded-full overflow-hidden bg-blue-100 flex-shrink-0 flex items-center justify-center text-blue-700 font-bold text-sm">
+                      {m.avatar_link ? <img src={m.avatar_link} className="w-full h-full object-cover" alt="" /> : m.name_english?.charAt(0)}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-gray-800">{m.name_english}</p>
+                      {m.name_kanji && <p className="text-xs text-gray-400">{m.name_kanji}</p>}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )
+          ) : (
+            respondents.length === 0 ? (
+              <div className="py-10 text-center text-gray-400 text-sm">まだ回答がありません</div>
+            ) : (
+              <ul className="space-y-1">
+                {respondents.map((r: any) => (
+                  <li key={r.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-gray-50">
+                    <div className="w-9 h-9 rounded-full overflow-hidden bg-green-100 flex-shrink-0 flex items-center justify-center text-green-700 font-bold text-sm">
+                      {r.is_anonymous ? '?' : r.avatar_link ? <img src={r.avatar_link} className="w-full h-full object-cover" alt="" /> : r.name_english?.charAt(0)}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-gray-800">{r.is_anonymous ? '匿名' : r.name_english}</p>
+                      {!r.is_anonymous && r.name_kanji && <p className="text-xs text-gray-400">{r.name_kanji}</p>}
+                      {r.submitted_at && <p className="text-xs text-gray-400">{new Date(r.submitted_at).toLocaleDateString()}</p>}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  // ==========================================
   // 回答閲覧モード
   // ==========================================
 
   if (isResponsesMode) {
     return (
-      <div className="h-full w-full bg-gray-50 flex flex-col overflow-hidden animate-in fade-in duration-200">
-        {toolbar}
-        <FormResponsesView formId={formId} />
-      </div>
+      <>
+        <div className="h-full w-full bg-gray-50 flex flex-col overflow-hidden animate-in fade-in duration-200">
+          {toolbar}
+          <FormResponsesView formId={formId} />
+        </div>
+        {respondentsModalJSX}
+      </>
     );
   }
 
@@ -908,6 +1030,7 @@ export default function FormEditorPage() {
 
         </div>
       </DragDropContext>
+      {respondentsModalJSX}
     </div>
   );
 }

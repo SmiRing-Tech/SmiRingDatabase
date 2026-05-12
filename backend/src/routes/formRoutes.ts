@@ -801,4 +801,61 @@ router.get('/api/form-responses/:responseId', async (req: Request, res: Response
   }
 });
 
+// ==========================================
+// 👥 未回答者一覧を取得する API
+// ==========================================
+router.get('/api/forms/:id/non-respondents', async (req: Request, res: Response) => {
+  const { id: formId } = req.params;
+
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
+
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !user) return res.status(401).json({ error: '認証失敗' });
+
+    // フォームの assigned_user_ids を取得
+    const { data: form, error: formError } = await supabase
+      .from('forms')
+      .select('publish_settings, created_by')
+      .eq('id', formId)
+      .single();
+
+    if (formError || !form) return res.status(404).json({ error: 'フォームが見つかりません' });
+    if (form.created_by !== user.id) return res.status(403).json({ error: '権限がありません' });
+
+    const assignedIds: string[] = form.publish_settings?.assigned_user_ids || [];
+    if (assignedIds.length === 0) return res.json([]);
+
+    // 提出済みの user_id を取得
+    const { data: submitted } = await supabase
+      .from('form_responses')
+      .select('user_id')
+      .eq('form_id', formId)
+      .eq('status', 'submitted');
+
+    const submittedIds = new Set((submitted || []).map((r: any) => r.user_id));
+
+    // 未回答者 = assigned - submitted
+    const nonRespondentIds = assignedIds.filter(id => !submittedIds.has(id));
+    if (nonRespondentIds.length === 0) return res.json([]);
+
+    // プロフィール情報を取得
+    const { data: profiles } = await supabase
+      .from('basic_profile_info')
+      .select('id, name_english, name_kanji, avatar_id')
+      .in('id', nonRespondentIds);
+
+    const result = await Promise.all((profiles || []).map(async (p: any) => {
+      const avatarUrl = await resolveAvatarUrl(p.avatar_id);
+      return { id: p.id, name_english: p.name_english, name_kanji: p.name_kanji, avatar_link: avatarUrl };
+    }));
+
+    res.json(result);
+  } catch (error: any) {
+    console.error('未回答者取得エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;
