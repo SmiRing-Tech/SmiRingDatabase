@@ -255,10 +255,18 @@ export default function MembersPage() {
 // ==========================================
 // 💳 縦型プロフィールカードコンポーネント (2:1比率)
 // ==========================================
+const SIX_MONTHS_MS = 6 * 30 * 24 * 60 * 60 * 1000;
+
+function isActive(lastLoginAt: string | null): boolean {
+  if (!lastLoginAt) return false;
+  return Date.now() - new Date(lastLoginAt).getTime() < SIX_MONTHS_MS;
+}
+
 function VerticalMemberCard({ member }: { member: any }) {
   const nameEnglish = member.name_english || 'No Name';
   const nameKanji = member.name_kanji || '';
   const avatarUrl = member.avatar_link || '/assets/images/profile_photo_empty.png';
+  const active = isActive(member.last_login_at);
 
   // 専攻を配列化（バッジ表示用）
   const majorsArray = member.majors
@@ -285,9 +293,15 @@ function VerticalMemberCard({ member }: { member: any }) {
 
       {/* 下部: 情報エリア (内容に応じて伸びる) */}
       <div className="flex-1 p-4 md:p-5 flex flex-col bg-white">
-        <h3 className="font-bold text-gray-900 text-base md:text-lg leading-tight line-clamp-2 group-hover:text-blue-600 transition-colors">
-          {nameEnglish}
-        </h3>
+        <div className="flex items-start gap-2 flex-wrap">
+          <h3 className="font-bold text-gray-900 text-base md:text-lg leading-tight line-clamp-2 group-hover:text-blue-600 transition-colors">
+            {nameEnglish}
+          </h3>
+          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold mt-0.5 flex-shrink-0 ${active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-green-500' : 'bg-gray-400'}`} />
+            {active ? 'Active' : 'Non-active'}
+          </span>
+        </div>
         {nameKanji && (
           <p className="text-xs md:text-sm text-gray-400 mt-1 line-clamp-1">{nameKanji}</p>
         )}

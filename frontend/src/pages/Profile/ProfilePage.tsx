@@ -177,9 +177,21 @@ export default function ProfilePage() {
           )}
         </div>
 
-        <h2 className="text-3xl mt-5 md:text-4xl font-bold mb-6 md:mb-10 truncate">
+        <h2 className="text-3xl mt-5 md:text-4xl font-bold mb-2 truncate">
           {profileData?.name_english ?? '名前未設定'}
         </h2>
+
+        {/* Active / Non-active バッジ */}
+        {(() => {
+          const active = profileData?.last_login_at &&
+            Date.now() - new Date(profileData.last_login_at).getTime() < 6 * 30 * 24 * 60 * 60 * 1000;
+          return (
+            <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold mb-6 md:mb-10 ${active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+              <span className={`w-2 h-2 rounded-full ${active ? 'bg-green-500' : 'bg-gray-400'}`} />
+              {active ? 'Active' : 'Non-active'}
+            </div>
+          );
+        })()}
 
         {/* 2. 写真一覧 (Photos)
              - 自分：公開設定に関わらず全て表示

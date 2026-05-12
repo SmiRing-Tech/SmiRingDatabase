@@ -3,6 +3,7 @@ import { useFeedback } from '../../context/FeedbackContext';
 import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
+import { API_BASE_URL } from '../../config';
 
 export default function SignInPage() {
   const { showFeedback } = useFeedback();
@@ -17,14 +18,22 @@ export default function SignInPage() {
     setIsLoading(true);
   
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password: password,
       });
-  
+
       if (error) throw error;
 
       localStorage.setItem('saved_email', email.trim());
+
+      if (data.session?.access_token) {
+        fetch(`${API_BASE_URL}/api/auth/update-last-login`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${data.session.access_token}` },
+        }).catch(console.error);
+      }
+
       navigate('/home');
     } catch (error: any) {
       showFeedback(`ログインエラー: ${error.message}`, { type: 'error', mode: 'banner' });

@@ -572,12 +572,17 @@ function NoResults({ query }: { query: string }) {
   );
 }
 
+const SIX_MONTHS_MS = 6 * 30 * 24 * 60 * 60 * 1000;
+
 function MemberCard({ member, query, matchedKeywords = [], matches = [] }: { member: Member; query: string; matchedKeywords?: string[]; matches?: any[] }) {
   const navigate = useNavigate();
   const [isExpanded, setIsExpanded] = useState(false);
   const avatarUrl = member.avatar_link || '/assets/images/profile_photo_empty.png';
   const majorsText = Array.isArray(member.majors) ? member.majors.join(', ') : member.majors;
   const subText = [member.current_school, member.study_abroad_country, majorsText].filter(Boolean).join(' · ');
+  const active = member.last_login_at
+    ? Date.now() - new Date(member.last_login_at).getTime() < SIX_MONTHS_MS
+    : false;
 
   return (
     <div className="flex flex-col gap-1 rounded-xl border border-gray-100 hover:border-blue-200 hover:bg-blue-50/30 transition-all shadow-sm overflow-hidden group bg-white">
@@ -602,20 +607,26 @@ function MemberCard({ member, query, matchedKeywords = [], matches = [] }: { mem
           }}
         />
         <div className="flex-1 overflow-hidden">
-          <p 
-            className="font-bold text-gray-900 group-hover:text-blue-700 transition-colors truncate"
+          <div
+            className="flex items-center gap-2 flex-wrap"
             onClick={(e) => {
               e.stopPropagation();
               navigate(`/members/${member.id}`);
             }}
           >
-            <HighlightedText text={member.name_english || '(No Name)'} query={query} />
-            {member.name_kanji && (
-              <span className="ml-2 text-sm font-normal text-gray-500">
-                <HighlightedText text={member.name_kanji} query={query} />
-              </span>
-            )}
-          </p>
+            <p className="font-bold text-gray-900 group-hover:text-blue-700 transition-colors truncate">
+              <HighlightedText text={member.name_english || '(No Name)'} query={query} />
+              {member.name_kanji && (
+                <span className="ml-2 text-sm font-normal text-gray-500">
+                  <HighlightedText text={member.name_kanji} query={query} />
+                </span>
+              )}
+            </p>
+            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold flex-shrink-0 ${active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-green-500' : 'bg-gray-400'}`} />
+              {active ? 'Active' : 'Non-active'}
+            </span>
+          </div>
           <p className="text-xs text-gray-500 truncate mb-1">
             <HighlightedText text={subText} query={query} />
           </p>

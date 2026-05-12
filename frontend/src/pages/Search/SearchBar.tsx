@@ -26,6 +26,7 @@ export type Member = {
   smiring_department: string;
   smiring_join_date: string;
   avatar_link: string;
+  last_login_at: string | null;
 };
 
 export function memberMatchesQuery(m: Member, q: string): boolean {

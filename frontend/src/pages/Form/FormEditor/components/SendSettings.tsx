@@ -2,8 +2,39 @@ import { useState, useEffect, useMemo } from 'react';
 import { ArrowLeft, Send, Search, Users, Square, X, Settings } from 'lucide-react';
 import { API_BASE_URL } from '../../../../config';
 import { SmartDateTimePicker } from '../../../../components/ui/SmartDateTimePicker';
+import countries from 'i18n-iso-countries';
+import jaLocale from 'i18n-iso-countries/langs/ja.json';
+import enLocale from 'i18n-iso-countries/langs/en.json';
+import { BASIC_INFO_FIELDS } from '../../../Profile/basicInfoFields';
 
-type Member = { id: string; name_english: string; role?: string; avatar_link?: string; };
+countries.registerLocale(jaLocale);
+countries.registerLocale(enLocale);
+
+const SIX_MONTHS_MS = 6 * 30 * 24 * 60 * 60 * 1000;
+const deptOptions = BASIC_INFO_FIELDS.smiring_department.options;
+
+function normalizeCountry(raw: string | undefined | null): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim().replace(/^the\s+/i, '');
+  const code = countries.getAlpha2Code(trimmed, 'ja') ?? countries.getAlpha2Code(trimmed, 'en');
+  return code ? (countries.getName(code, 'en') ?? raw.trim()) : raw.trim();
+}
+
+function normalizeDepartments(raw: any): string[] {
+  if (!raw) return [];
+  const arr = Array.isArray(raw) ? raw : [raw];
+  return arr.map(v => deptOptions.find(o => o.id === v || o.text === v)?.text ?? null)
+            .filter((v): v is string => !!v);
+}
+
+type Member = {
+  id: string;
+  name_english: string;
+  avatar_link?: string;
+  study_abroad_country?: string;
+  smiring_department?: any;
+  last_login_at?: string | null;
+};
 
 type Props = {
   onBackToEdit: () => void;
@@ -37,6 +68,9 @@ export default function SendSettings({
 }: Props) {
   const [members, setMembers] = useState<Member[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterCountry, setFilterCountry] = useState('');
+  const [filterDepartment, setFilterDepartment] = useState('');
+  const [filterActive, setFilterActive] = useState<'all' | 'active' | 'non-active'>('all');
 
   // --- 🌟 初期値の正規化 (比較用) ---
   const initialValues = useMemo(() => {
@@ -122,9 +156,35 @@ export default function SendSettings({
   // 🌟 メンバーを「選択済み」と「未選択」に分離
   const selectedMembers = members.filter(m => selectedUserIds.includes(m.id));
   const unselectedMembers = members.filter(m => !selectedUserIds.includes(m.id));
-  const filteredUnselected = unselectedMembers.filter(m =>
-    (m.name_english || '').toLowerCase().includes(searchQuery.toLowerCase())
-  );
+
+  // フィルター選択肢（動的生成）
+  const availableCountries = useMemo(() =>
+    [...new Set(
+      members.map(m => normalizeCountry(m.study_abroad_country)).filter(Boolean) as string[]
+    )].sort()
+  , [members]);
+
+  const availableDepartments = useMemo(() =>
+    [...new Set(members.flatMap(m => normalizeDepartments(m.smiring_department)))].sort()
+  , [members]);
+
+  const filteredUnselected = unselectedMembers.filter(m => {
+    const matchesSearch = (m.name_english || '').toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesCountry = !filterCountry || normalizeCountry(m.study_abroad_country) === filterCountry;
+    const matchesDept = !filterDepartment || normalizeDepartments(m.smiring_department).includes(filterDepartment);
+    const active = m.last_login_at
+      ? Date.now() - new Date(m.last_login_at).getTime() < SIX_MONTHS_MS
+      : false;
+    const matchesActive =
+      filterActive === 'active' ? active :
+      filterActive === 'non-active' ? !active : true;
+    return matchesSearch && matchesCountry && matchesDept && matchesActive;
+  });
+
+  const addAllFiltered = () => {
+    const ids = filteredUnselected.map(m => m.id);
+    setSelectedUserIds(prev => [...new Set([...prev, ...ids])]);
+  };
 
   const toggleUser = (userId: string) => {
     setSelectedUserIds(prev => prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]);
@@ -181,15 +241,69 @@ export default function SendSettings({
 
         {/* --- 未選択メンバーの検索とリスト (下部) --- */}
         <div className="space-y-3">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              placeholder="メンバーを検索して追加..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-sm"
-            />
+
+          {/* フィルター行 */}
+          <div className="flex flex-wrap gap-2">
+            {/* 国 */}
+            <select
+              value={filterCountry}
+              onChange={(e) => setFilterCountry(e.target.value)}
+              className="flex-1 min-w-[120px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs font-medium text-gray-700 outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
+            >
+              <option value="">🌏 国 (全て)</option>
+              {availableCountries.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+
+            {/* 部署 */}
+            <select
+              value={filterDepartment}
+              onChange={(e) => setFilterDepartment(e.target.value)}
+              className="flex-1 min-w-[120px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs font-medium text-gray-700 outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
+            >
+              <option value="">🏢 部署 (全て)</option>
+              {availableDepartments.map(d => (
+                <option key={d} value={d}>{d}</option>
+              ))}
+            </select>
+
+            {/* Active / Non-active トグル */}
+            <div className="flex rounded-lg border border-gray-200 overflow-hidden text-xs font-bold">
+              {(['all', 'active', 'non-active'] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setFilterActive(v)}
+                  className={`px-3 py-2 transition-colors ${filterActive === v ? 'bg-blue-600 text-white' : 'bg-gray-50 text-gray-500 hover:bg-gray-100'}`}
+                >
+                  {v === 'all' ? '全員' : v === 'active' ? 'Active' : 'Non-active'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 検索バー + 全員に追加 */}
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input
+                type="text"
+                placeholder="メンバーを検索して追加..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-sm"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={addAllFiltered}
+              disabled={filteredUnselected.length === 0}
+              className="px-4 py-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 text-xs font-bold rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap flex items-center gap-1.5"
+            >
+              <Users className="w-4 h-4" />
+              全員に追加
+            </button>
           </div>
 
           <div className="border border-gray-200 rounded-xl overflow-hidden bg-white h-48 overflow-y-auto shadow-inner">
@@ -201,19 +315,28 @@ export default function SendSettings({
               <div className="p-8 text-center text-gray-400 text-sm">見つかりませんでした</div>
             ) : (
               <div className="divide-y divide-gray-100">
-                {filteredUnselected.map(member => (
-                  <label key={member.id} className="flex items-center gap-4 p-3 cursor-pointer transition-colors hover:bg-gray-50">
-                    <button type="button" onClick={() => toggleUser(member.id)} className="flex-shrink-0 focus:outline-none">
-                      <Square className="w-5 h-5 text-gray-300" />
-                    </button>
-                    <div className="flex items-center gap-3 flex-1">
-                      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-xs overflow-hidden">
-                        {member.avatar_link ? <img src={member.avatar_link} className="w-full h-full object-cover" alt="" /> : member.name_english?.charAt(0)}
+                {filteredUnselected.map(member => {
+                  const active = member.last_login_at
+                    ? Date.now() - new Date(member.last_login_at).getTime() < SIX_MONTHS_MS
+                    : false;
+                  return (
+                    <label key={member.id} className="flex items-center gap-4 p-3 cursor-pointer transition-colors hover:bg-gray-50">
+                      <button type="button" onClick={() => toggleUser(member.id)} className="flex-shrink-0 focus:outline-none">
+                        <Square className="w-5 h-5 text-gray-300" />
+                      </button>
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-xs overflow-hidden flex-shrink-0">
+                          {member.avatar_link ? <img src={member.avatar_link} className="w-full h-full object-cover" alt="" /> : member.name_english?.charAt(0)}
+                        </div>
+                        <span className="text-sm font-medium text-gray-700 truncate">{member.name_english}</span>
+                        <span className={`ml-auto flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-green-500' : 'bg-gray-400'}`} />
+                          {active ? 'Active' : 'Non-active'}
+                        </span>
                       </div>
-                      <span className="text-sm font-medium text-gray-700">{member.name_english}</span>
-                    </div>
-                  </label>
-                ))}
+                    </label>
+                  );
+                })}
               </div>
             )}
           </div>
