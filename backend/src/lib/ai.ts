@@ -40,39 +40,66 @@ export async function getLocalEmbedding(text: string, isQuery: boolean = true): 
 // ==========================================
 // Vertex AI クライアント取得ヘルパー
 // ==========================================
-function getVertexClient() {
+const vertexClients = new Map<string, GoogleGenAI>();
+
+function getVertexClient(location: 'us-central1' | 'global') {
   const projectId = process.env.GOOGLE_CLOUD_PROJECT;
-  const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
+
   if (!projectId) {
     throw new Error("サーバーエラー: GOOGLE_CLOUD_PROJECT が見つかりません。環境変数をご確認ください。");
   }
-  return new GoogleGenAI({ vertexai: true, project: projectId, location });
+
+  const cacheKey = `${projectId}:${location}`;
+
+  if (!vertexClients.has(cacheKey)) {
+    vertexClients.set(
+      cacheKey,
+      new GoogleGenAI({
+        vertexai: true,
+        project: projectId,
+        location,
+      })
+    );
+  }
+
+  return vertexClients.get(cacheKey)!;
 }
+
+const GEMINI_EMBEDDING_LOCATION = 'us-central1' as const;
+const GEMINI_IMAGE_LOCATION = 'global' as const;
+const GEMINI_CHAT_LOCATION = 'us-central1' as const;
+
+const GEMINI_EMBEDDING_MODEL = 'gemini-embedding-001';
+const GEMINI_IMAGE_MODEL = 'gemini-3.1-flash-lite';
+const GEMINI_CHAT_MODEL = 'gemini-2.5-flash';
 
 // ==========================================
 // 3. Geminiでのベクトル化 (768次元に圧縮！)
 // ==========================================
-export async function getGeminiEmbedding(text: string, isQuery: boolean = false): Promise<number[]> {
-  const client = getVertexClient();
-  
+export async function getGeminiEmbedding(
+  text: string,
+  isQuery: boolean = false
+): Promise<number[]> {
+  const client = getVertexClient(GEMINI_EMBEDDING_LOCATION);
+
   const result = await client.models.embedContent({
-    model: "gemini-embedding-001",
+    model: GEMINI_EMBEDDING_MODEL,
     contents: text,
     config: {
       taskType: isQuery ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT",
       outputDimensionality: 768,
     }
   });
-  
+
   if (!result.embeddings || result.embeddings.length === 0) {
     throw new Error("Embedding response is empty");
   }
-  
+
   const values = result.embeddings[0].values;
   if (!values) {
     throw new Error("Embedding values are missing in response");
   }
-  
+
   return values;
 }
 
@@ -297,11 +324,13 @@ export function answerToText(
 // 4. Gemini(LLM)での回答生成 (RAGの仕上げ用)
 // ==========================================
 export async function generateChatResponse(prompt: string): Promise<string> {
-  const client = getVertexClient();
+  const client = getVertexClient(GEMINI_CHAT_LOCATION);
+
   const result = await client.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: GEMINI_CHAT_MODEL,
     contents: prompt
   });
+
   return result.text || "";
 }
 
@@ -363,17 +392,17 @@ export async function analyzeSearchQuery(
 // 6. Geminiでの画像解析
 // ==========================================
 export async function analyzeImageWithGemini(
-  buffer: Buffer, 
-  mimetype: string, 
+  buffer: Buffer,
+  mimetype: string,
   userContext?: string
 ): Promise<string[]> {
-  const client = getVertexClient();
+  const client = getVertexClient(GEMINI_IMAGE_LOCATION);
 
   const contextStr = userContext && userContext.trim() !== '' ? userContext : "None";
   const prompt = image_to_text_prompt.replace('[USER_CONTEXT_HERE]', () => contextStr);
 
   const result = await client.models.generateContent({
-    model: "gemini-3.1-flash-lite", 
+    model: GEMINI_IMAGE_MODEL,
     contents: [
       { text: prompt },
       {
@@ -384,7 +413,7 @@ export async function analyzeImageWithGemini(
       }
     ]
   });
-  
+
   const text = (result.text || "").trim();
   return text.split('\n').map(line => line.trim()).filter(line => line !== '');
 }
