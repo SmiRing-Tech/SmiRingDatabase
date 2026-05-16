@@ -68,6 +68,7 @@ export type QuestionData = {
     maxFiles: number;
     maxSizeMB: number;
     allowedTypes: string[];
+    autoGallery?: boolean;
   };
 };
 
@@ -101,7 +102,8 @@ const createDefaultQuestion = (): QuestionData => ({
   fileUploadSettings: {
     maxFiles: 1,
     maxSizeMB: 10,
-    allowedTypes: ['image', 'pdf']
+    allowedTypes: ['image', 'pdf'],
+    autoGallery: true
   }
 });
 

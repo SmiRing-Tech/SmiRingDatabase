@@ -455,7 +455,7 @@ router.post('/api/forms/attachments/upload', attachmentUpload.single('file'), as
 
     if (!req.file) return res.status(400).json({ error: 'ファイルがありません' });
 
-    const { form_id } = req.body;
+    const { form_id, auto_gallery } = req.body;
     if (!form_id) return res.status(400).json({ error: 'form_id が指定されていません' });
 
     const file = req.file;
@@ -500,6 +500,18 @@ router.post('/api/forms/attachments/upload', attachmentUpload.single('file'), as
         Body: thumbBuffer,
         ContentType: 'image/webp',
       }));
+
+      // 🌟 auto_gallery が 'false' の場合は、galleryテーブルへの登録をスキップ！
+      if (auto_gallery === 'false') {
+        return res.json({
+          message: 'ファイルをアップロードしました（ギャラリー除外）',
+          path: largeKey,
+          thumbnailPath: thumbKey,
+          filename: file.originalname,
+          mimetype: file.mimetype,
+          size: file.size
+        });
+      }
 
       // Step 3: galleryテーブルへ登録（組織内公開）
       const { data: gallery, error: insertError } = await supabase

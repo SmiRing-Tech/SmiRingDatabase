@@ -38,7 +38,7 @@ export default function QuestionMenu({ currentType, isActive, onChangeType, onDe
     (['radio', 'checkbox', 'dropdown'].includes(question.type) && question.allowCustomAnswer) ||
     (question.type === 'checkbox' && question.checkboxValidation?.enabled) ||
     (question.type === 'short_text' && (question.shortTextValidation?.enabled || question.shortTextMultiple?.enabled)) ||
-    (question.type === 'file_upload'); // ファイルアップロードは常に設定項目があるためON扱い
+    (question.type === 'file_upload' && question.fileUploadSettings?.autoGallery === false); // デフォルト(ON)から変更されたらドットをつける
 
   // 🌟 PC用（右側に浮かぶ）とスマホ用（下部に固定）の共通・個別クラス
   const visibilityClass = isActive 

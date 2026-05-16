@@ -15,6 +15,7 @@ import GalleryPage from './pages/Gallery/GalleryPage';
 import FormEditorPage from './pages/Form/FormEditor/FormEditorPage';
 import FormListPage from './pages/Form/FormList/FormListPage';
 import FormAnswerPage from './pages/Form/Answer/FormAnswerPage';
+import FeedbackPage from './pages/Form/Answer/FeedbackPage';
 import FormResponseDetailPage from './pages/Form/Response/FormResponseDetailPage';
 import SearchPage from './pages/Search/SearchPage';
 import ChatPage from './pages/Search/ChatPage';
@@ -95,6 +96,7 @@ const router = createBrowserRouter([
       { path: '/form-editor/:id', element: <FormEditorPage /> },
       { path: '/form-preview/:id', element: <FormAnswerPage /> },
       { path: '/form-answer/:id', element: <FormAnswerPage /> },
+      { path: '/feedback', element: <FeedbackPage /> },
       { path: '/form-responses/:responseId', element: <FormResponseDetailPage /> },
       { path: '/search', element: <SearchPage /> },
       { path: '/search/chat', element: <ChatPage /> },

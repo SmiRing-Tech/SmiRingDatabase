@@ -135,6 +135,7 @@ export default function FormAnswerUI({
               const formData = new FormData();
               formData.append('file', item.file);
               formData.append('form_id', formId || '');
+              formData.append('auto_gallery', q.fileUploadSettings?.autoGallery !== false ? 'true' : 'false');
 
               const res = await fetch(`${API_BASE_URL}/api/forms/attachments/upload`, {
                 method: 'POST',

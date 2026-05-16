@@ -634,6 +634,17 @@ export default function QuestionSettingsModal({ question, onChange, onClose }: P
                       />
                     </div>
 
+                    <SectionHeader label="システム連携" />
+                    <SettingRow
+                      label="画像をGalleryに自動アップロードする"
+                      description="アップロードされた画像が自動的にギャラリーに追加され、AIによる解析対象になります。"
+                    >
+                      <Toggle
+                        checked={question.fileUploadSettings?.autoGallery !== false}
+                        onChange={v => onChange({ fileUploadSettings: { ...question.fileUploadSettings, autoGallery: v } })}
+                      />
+                    </SettingRow>
+
                     <SectionHeader label="許可するファイル形式" />
                     <div className="grid grid-cols-2 gap-3">
                       {[

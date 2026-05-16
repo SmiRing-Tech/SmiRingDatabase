@@ -10,7 +10,8 @@ import {
   Image as ImageIcon, 
   FileText, 
   User, 
-  LogOut 
+  LogOut,
+  MessageSquare 
 } from 'lucide-react';
 
 export default function MainLayout() {
@@ -54,6 +55,20 @@ export default function MainLayout() {
           </div>
           SmiRing Database
         </Link>
+
+        {/* スペーサー */}
+        <div className="flex-1" />
+
+        {/* 右側アイコン群 */}
+        <div className="flex items-center gap-2">
+          <Link
+            to="/feedback"
+            className="p-2.5 text-sky-600 hover:bg-sky-100/50 rounded-xl transition-all duration-200 active:scale-95"
+            title="フィードバックを送る"
+          >
+            <MessageSquare className="w-5 h-5" />
+          </Link>
+        </div>
       </header>
 
       {/* --- 2. ボディ --- */}
@@ -114,6 +129,19 @@ export default function MainLayout() {
               {item.label}
             </Link>
           ))}
+
+          {/* 区切り線 */}
+          <div className="border-t border-slate-100 my-2 mx-2" />
+
+          {/* フィードバックリンク */}
+          <Link 
+            to="/feedback" 
+            onClick={() => setIsDrawerOpen(false)} 
+            className="flex items-center gap-3.5 px-4 py-3.5 rounded-2xl text-slate-600 font-bold text-sm hover:bg-sky-50 hover:text-sky-600 transition-all duration-200 group"
+          >
+            <MessageSquare className="w-5 h-5 text-slate-300 group-hover:text-sky-500 transition-colors" />
+            Feedback
+          </Link>
         </nav>
 
         {/* ログアウトボタン */}
