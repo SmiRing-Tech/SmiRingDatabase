@@ -142,23 +142,35 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
       const textResults: any[] = [];
       const vectorResponses: any[] = [];
 
+      // キーワードごとの目標件数（閾値）を計算: 最低5件、または上限をキーワード数で均等割り
+      const targetLimit = limit || 15;
+      const keywordThreshold = Math.max(5, Math.ceil(targetLimit / Math.max(1, keywordGroups.length)));
+      console.log(`[Search] キーワードごとの目標件数(閾値): ${keywordThreshold}件 (全${keywordGroups.length}キーワード)`);
+
       // 各キーワードグループごとに3ステップのパイプラインを並列実行
       await Promise.all(keywordGroups.map(async (group) => {
         const { original_keyword, expanded_keywords } = group;
 
         if (!original_keyword || typeof original_keyword !== 'string' || original_keyword.trim().length === 0) return;
 
+        let keywordResultCount = 0;
+
         // ステップ1: 元のキーワードでLike検索
         const res1 = await supabase
           .from('unified_search_index')
           .select('id, source_type, source_id, content, metadata, visibility')
           .ilike('content', `%${original_keyword}%`)
-          .limit(limit || 15);
+          .limit(targetLimit);
 
         if (res1.data && res1.data.length > 0) {
-          console.log(`[Search] ステップ1成功 (元ワードヒット): ${original_keyword}`);
+          console.log(`[Search] キーワード「${original_keyword}」: ステップ1成功 (元ワードヒット ${res1.data.length}件)`);
           res1.data.forEach((t: any) => textResults.push({ ...t, similarity: 0.99, matched_keyword: original_keyword }));
-          return; // ここで完了（類義語とベクトル検索をスキップ）
+          keywordResultCount += res1.data.length;
+        }
+
+        if (keywordResultCount >= keywordThreshold) {
+          console.log(`[Search] キーワード「${original_keyword}」: 閾値(${keywordThreshold})に達したため完了`);
+          return;
         }
 
         // ステップ2: 類義語でLike検索（一括OR検索）
@@ -169,27 +181,37 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
             .from('unified_search_index')
             .select('id, source_type, source_id, content, metadata, visibility')
             .or(orConditions)
-            .limit(limit || 15);
+            .limit(targetLimit);
 
           if (res2.data && res2.data.length > 0) {
-            console.log(`[Search] ステップ2成功 (類語ヒット): ${original_keyword} (used: ${validExpanded.length} words)`);
-            // 💡 UI表示を統一するため、matched_keywordには「元のキーワード」をセットする
+            console.log(`[Search] キーワード「${original_keyword}」: ステップ2成功 (類語ヒット ${res2.data.length}件, used: ${validExpanded.length} words)`);
             res2.data.forEach((t: any) => textResults.push({ ...t, similarity: 0.95, matched_keyword: original_keyword }));
-            return; // ここで完了（ベクトル検索をスキップ）
+            keywordResultCount += res2.data.length;
           }
         }
 
+        if (keywordResultCount >= keywordThreshold) {
+          console.log(`[Search] キーワード「${original_keyword}」: ステップ2で閾値(${keywordThreshold})に達したため完了`);
+          return; // ここで完了（ベクトル検索をスキップ）
+        }
+
         // ステップ3: 最後の手段として、元のキーワードをGeminiでベクトル化して意味検索
-        console.log(`[Search] ステップ3実行 (ベクトルへフォールバック): ${original_keyword}`);
+        console.log(`[Search] キーワード「${original_keyword}」: 件数不足(${keywordResultCount}/${keywordThreshold})のため、ステップ3(ベクトル検索)へフォールバック`);
         try {
+          console.time(`[Search] Gemini Embedding: ${original_keyword}`);
           const emb = await getGeminiEmbedding(original_keyword, true);
+          console.timeEnd(`[Search] Gemini Embedding: ${original_keyword}`);
+
+          console.time(`[Search] Supabase RPC: ${original_keyword}`);
           const res3 = await supabase.rpc('search_gemini_vectors', {
             query_embedding: emb,
             match_threshold: 0.6, // 📸 少し緩めてヒットしやすくする
-            match_count: limit || 15
+            match_count: targetLimit
           });
+          console.timeEnd(`[Search] Supabase RPC: ${original_keyword}`);
 
           if (res3.data && res3.data.length > 0) {
+            console.log(`[Search] キーワード「${original_keyword}」: ステップ3成功 (ベクトルヒット ${res3.data.length}件)`);
             vectorResponses.push({ data: res3.data.map((r: any) => ({ ...r, matched_keyword: original_keyword })) });
           }
         } catch (err) {
@@ -203,7 +225,7 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
       const allMergedResults = [...vectorResults, ...textResults];
 
       // --- 📸 1. 画像検索結果の集計 ---
-      const imageScores: Record<string, { total_score: number, matched_keywords: string[], matches: any[] }> = {};
+      const imageScores: Record<string, { total_score: number, keyword_scores: Record<string, number>, matched_keywords: string[], matches: any[] }> = {};
       
       allMergedResults.forEach((r: any) => {
         if (r.source_type !== 'gallery_image') return;
@@ -211,13 +233,18 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
         if (!galleryId) return;
 
         if (!imageScores[galleryId]) {
-          imageScores[galleryId] = { total_score: 0, matched_keywords: [], matches: [] };
+          imageScores[galleryId] = { total_score: 0, keyword_scores: {}, matched_keywords: [], matches: [] };
         }
 
         const sim = r.similarity || 0;
         const matchedKw = r.matched_keyword || query; // ベクトル検索の場合は元のクエリ等
 
-        imageScores[galleryId].total_score = Math.max(imageScores[galleryId].total_score, sim);
+        // キーワードごとの最高スコアを更新
+        const currentMax = imageScores[galleryId].keyword_scores[matchedKw] || 0;
+        if (sim > currentMax) {
+          imageScores[galleryId].keyword_scores[matchedKw] = sim;
+        }
+
         if (!imageScores[galleryId].matched_keywords.includes(matchedKw)) {
           imageScores[galleryId].matched_keywords.push(matchedKw);
         }
@@ -228,6 +255,11 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
           source_type: r.source_type,
           metadata: r.metadata
         });
+      });
+
+      // 最後にキーワードごとの最高スコアを合計して total_score とする
+      Object.values(imageScores).forEach(item => {
+        item.total_score = Object.values(item.keyword_scores).reduce((sum, score) => sum + score, 0);
       });
 
         const topGalleryIds = Object.entries(imageScores)
@@ -280,7 +312,7 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
         photos.sort((a, b) => b.total_score - a.total_score);
 
         // --- 👤 2. 人・学校検索結果の集計 ---
-        const userScores: Record<string, { total_score: number, matched_keywords: string[], matches: any[] }> = {};
+        const userScores: Record<string, { total_score: number, keyword_scores: Record<string, number>, matched_keywords: string[], matches: any[] }> = {};
         
         allMergedResults.forEach((r: any) => {
           if (r.source_type === 'gallery_image') return;
@@ -288,13 +320,18 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
           if (!userId) return;
 
           if (!userScores[userId]) {
-            userScores[userId] = { total_score: 0, matched_keywords: [], matches: [] };
+            userScores[userId] = { total_score: 0, keyword_scores: {}, matched_keywords: [], matches: [] };
           }
 
           const sim = r.similarity || 0;
           const matchedKw = r.matched_keyword || query;
 
-          userScores[userId].total_score = Math.max(userScores[userId].total_score, sim);
+          // キーワードごとの最高スコアを更新
+          const currentMax = userScores[userId].keyword_scores[matchedKw] || 0;
+          if (sim > currentMax) {
+            userScores[userId].keyword_scores[matchedKw] = sim;
+          }
+
           if (!userScores[userId].matched_keywords.includes(matchedKw)) {
             userScores[userId].matched_keywords.push(matchedKw);
           }
@@ -305,6 +342,11 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
             source_type: r.source_type,
             metadata: r.metadata
           });
+        });
+
+        // 最後にキーワードごとの最高スコアを合計して total_score とする
+        Object.values(userScores).forEach(item => {
+          item.total_score = Object.values(item.keyword_scores).reduce((sum, score) => sum + score, 0);
         });
 
         const members = Object.entries(userScores)

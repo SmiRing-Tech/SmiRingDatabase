@@ -373,7 +373,7 @@ export async function analyzeImageWithGemini(
   const prompt = image_to_text_prompt.replace('[USER_CONTEXT_HERE]', () => contextStr);
 
   const result = await client.models.generateContent({
-    model: "gemini-1.5-flash", 
+    model: "gemini-3.1-flash-lite", 
     contents: [
       { text: prompt },
       {

@@ -137,8 +137,6 @@ router.post('/api/gallery/upload', upload.single('file'), async (req: Request, r
 
     res.json({ message: '写真を保存しました', gallery });
 
-    res.json({ message: '写真を保存しました', gallery });
-
     // 🤖 AI処理とベクトルインデックス登録は Supabase Webhook 経由で
     // workerRoutes.ts (/api/worker/process-gallery) がバックグラウンドで実行します。
 
