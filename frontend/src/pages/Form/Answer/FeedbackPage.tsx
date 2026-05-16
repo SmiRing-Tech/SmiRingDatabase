@@ -3,7 +3,6 @@ import FormAnswerUI from './components/FormAnswerUI';
 import { API_BASE_URL } from '../../../config';
 import { useFeedback } from '../../../context/FeedbackContext';
 import { supabase } from '../../../lib/supabase';
-import type { QuestionData } from '../FormEditor/FormEditorPage';
 
 const FORM_ID = 'd39c8fee-ec64-474b-bcc9-b7725607ec67';
 

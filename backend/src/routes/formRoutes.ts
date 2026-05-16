@@ -402,6 +402,18 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
     // バックグラウンドでベクトル化とインデックス保存
     (async () => {
       try {
+        // フィードバックフォームの場合はベクトル化をスキップ
+        if (formId === 'd39c8fee-ec64-474b-bcc9-b7725607ec67') {
+          console.log(`[AI Indexer] Skipping feedback form: ${formId}`);
+          return;
+        }
+
+        // 匿名回答のフォームの場合もベクトル化をスキップ
+        if (isAnonymous) {
+          console.log(`[AI Indexer] Skipping anonymous form: ${formId}`);
+          return;
+        }
+
         // フォームタイトルと質問一覧を並列取得
         const [formRes, qLinksRes] = await Promise.all([
           supabase.from('forms').select('title').eq('id', formId).single(),
