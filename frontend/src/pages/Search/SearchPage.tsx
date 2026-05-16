@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { type Member, memberMatchesQuery, HighlightedText } from './SearchBar';
+import HomeSearchBar, { type Member, memberMatchesQuery, HighlightedText } from './SearchBar';
 import { apiClient } from '../../lib/apiClient';
-import { Sparkles, Send, Search, X, ChevronRight, ChevronDown } from 'lucide-react';
+import { Search, Send, X, ChevronRight, ChevronDown } from 'lucide-react';
 import PhotoViewModal from '../../components/ui/PhotoViewModal';
 
 type AggregatedResult = { 
@@ -23,24 +23,21 @@ type AggregatedResult = {
   basic_profile_info?: any
 };
 
+type SearchMode = 'smart' | 'keyword' | 'deep';
+
 export default function SearchPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [query, setQuery] = useState(() => searchParams.get('q') ?? '');
   const [lastConfirmedQuery, setLastConfirmedQuery] = useState(() => searchParams.get('q') ?? '');
   const [members, setMembers] = useState<Member[]>([]);
-  const [suggestions, setSuggestions] = useState<any[]>([]); // 🎯 Member型からany[]（または汎用型）に変更
   const [isLoading, setIsLoading] = useState(true);
   const [vectorResults, setVectorResults] = useState<{ members: AggregatedResult[], photos: any[] }>({ members: [], photos: [] });
   const [isSearching, setIsSearching] = useState(false);
-  const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(false);
-  const [isFocused, setIsFocused] = useState(false); // 🎯 フォーカス状態を管理
+  const [isFinalSearching, setIsFinalSearching] = useState(false); // 🚀 確定検索中かどうかのフラグ
   const [activeTab, setActiveTab] = useState<'all' | 'member' | 'photo'>('all'); // 🎯 検索結果のタブ状態
   const [selectedPhoto, setSelectedPhoto] = useState<any>(null); // 🎯 拡大表示用の写真
   const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(false);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null); // 🎯 inputへの参照を追加
+  const [searchMode, setSearchMode] = useState<SearchMode>(() => (searchParams.get('mode') as SearchMode) ?? 'smart'); // 🚀 検索モード
   const lastExecutedQueryRef = useRef<number>(0); // 🎯 二重実行防止用（時間ベース）
-  const navigate = useNavigate();
 
   // メンバー情報の初期取得
   useEffect(() => {
@@ -51,99 +48,20 @@ export default function SearchPage() {
       .finally(() => setIsLoading(false));
   }, []);
 
-  // 🎯 初回マウント時、または遷移時にフォーカスを強制的に外す
-  useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.blur();
-    }
-  }, [lastConfirmedQuery]); 
-
   // URLのクエリパラメータが変わったら state に反映
   useEffect(() => {
     const q = searchParams.get('q') ?? '';
-    setQuery(q);
+    const m = searchParams.get('mode') as SearchMode;
     setLastConfirmedQuery(q);
+    if (m) setSearchMode(m);
+    
     if (q) {
-      handleConfirmSearch(q, false);
+      handleConfirmSearch(q, false, m || searchMode);
     }
   }, [searchParams]);
 
-  // クリック外でのサジェスト閉じ
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
-        setIsSuggestionsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  // 🔍 サジェスト用ハイブリッド検索 (300ms デバウンス)
-  useEffect(() => {
-    const trimmed = query.trim();
-    if (!trimmed) {
-      setSuggestions([]);
-      return;
-    }
-
-    if (trimmed === lastConfirmedQuery) {
-      return;
-    }
-
-    const timer = setTimeout(async () => {
-      setIsSearching(true);
-      const localMatches = members.filter(m => memberMatchesQuery(m, trimmed));
-      
-      if (localMatches.length >= 6) {
-        setSuggestions(localMatches.slice(0, 6));
-        setIsSearching(false);
-        setIsSuggestionsOpen(true);
-        return;
-      }
-
-      try {
-        const res = await apiClient.post('/api/search/instant', { query: trimmed });
-        const data = await res.json();
-        
-        // 🎯 スコア0.75以上のものを候補として採用（少し広めに）
-        const highScores = (data.results || []).filter((r: any) => (r.similarity || 0) >= 0.75);
-        
-        const localIds = new Set(localMatches.map(m => m.id));
-        const combinedSuggestions: any[] = localMatches.map(m => ({ ...m, type: 'member' }));
-        
-        for (const r of highScores) {
-          const uId = r.metadata?.user_id || r.source_id;
-          
-          if (r.source_type === 'form_answer') {
-            // フォーム回答をサジェストに追加
-            combinedSuggestions.push({ ...r, type: 'form_answer' });
-          } else if (r.source_type === 'gallery_image') {
-            // 📸 画像をサジェストに追加
-            combinedSuggestions.push({ ...r, type: 'gallery_image' });
-          } else {
-            // プロフィール項目（人）の場合
-            if (!localIds.has(uId) && !combinedSuggestions.some(s => s.id === uId)) {
-              const m = members.find(m => m.id === uId);
-              if (m) combinedSuggestions.push({ ...m, type: 'member' });
-            }
-          }
-        }
-        
-        setSuggestions(combinedSuggestions.slice(0, 8));
-        setIsSuggestionsOpen(true);
-      } catch (err) {
-        setSuggestions(localMatches.slice(0, 6));
-      } finally {
-        setIsSearching(false);
-      }
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [query, members]);
-
   // 🚀 本検索 (確定処理)
-  const handleConfirmSearch = async (targetQuery: string, updateUrl = true) => {
+  const handleConfirmSearch = async (targetQuery: string, updateUrl = true, overrideMode?: SearchMode) => {
     const trimmed = targetQuery.trim();
     if (!trimmed) {
       setLastConfirmedQuery('');
@@ -152,28 +70,31 @@ export default function SearchPage() {
       return;
     }
 
-    // 🎯 1000ms以内の連打は無視する（二重実行防止）
+    const modeToUse = overrideMode || searchMode;
+
+    // 🎯 500ms以内の連打は無視する（二重実行防止）
     const now = Date.now();
-    if (now - lastExecutedQueryRef.current < 1000) return;
+    if (now - lastExecutedQueryRef.current < 500) return;
     lastExecutedQueryRef.current = now;
 
     setLastConfirmedQuery(trimmed);
     if (updateUrl) {
-      setSearchParams({ q: trimmed }, { replace: true });
+      setSearchParams({ q: trimmed, mode: modeToUse }, { replace: true });
     }
     
-    setIsSuggestionsOpen(false);
+    setVectorResults({ members: [], photos: [] });
+    setIsFinalSearching(true); // 🚀 確定検索開始！
     setIsSearching(true);
 
     try {
       const res = await apiClient.post('/api/search/instant', { 
         query: trimmed, 
         limit: 15, 
-        model: 'groq' 
+        model: modeToUse === 'keyword' ? 'local' : 'groq', // 🚀 モードに応じてモデルを切り替え
+        searchMode: modeToUse // 🚀 詳細なモードをバックエンドに伝える
       });
       const data = await res.json();
       setVectorResults(data.results || { members: [], photos: [] });
-
 
       // 🎯 AIの判定に合わせて初期タブを設定
       if (data.target === 'gallery_image') {
@@ -186,6 +107,7 @@ export default function SearchPage() {
     } catch (err) {
       console.error('本検索エラー:', err);
     } finally {
+      setIsFinalSearching(false); // 🚀 確定検索終了
       setIsSearching(false);
     }
   };
@@ -205,163 +127,12 @@ export default function SearchPage() {
     <div className="h-full w-full overflow-y-auto bg-white text-gray-900">
       <div className="max-w-3xl mx-auto px-4 py-8">
 
-        {/* ---- 検索バー ---- */}
-        <div className="mb-6 relative z-50" ref={wrapperRef}>
-          <h1 className="text-2xl font-bold mb-4 text-gray-900">Search</h1>
-          <div className="relative group">
-            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-              <Search className="h-5 w-5 text-gray-400" />
-            </div>
-            <input
-              ref={inputRef}
-              type="text"
-              autoComplete="off"
-              value={query}
-              onChange={e => {
-                setQuery(e.target.value);
-                setIsSuggestionsOpen(true);
-              }}
-              onFocus={() => {
-                setIsFocused(true);
-                if (query.trim().length > 0 && suggestions.length > 0) {
-                  setIsSuggestionsOpen(true);
-                }
-              }}
-              onBlur={() => {
-                // 🎯 サジェスト内のクリックを先に反応させるため、少しだけ遅らせて閉じる
-                setTimeout(() => setIsFocused(false), 200);
-              }}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                  handleConfirmSearch(query);
-                }
-              }}
-              placeholder="名前、大学、専攻、国などで検索..."
-              className="w-full pl-11 pr-12 py-3.5 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none shadow-sm transition-all text-sm"
-            />
-            
-            <div className="absolute inset-y-0 right-0 flex items-center pr-3 gap-2">
-              {query && (
-                <>
-                  <button
-                    onClick={() => {
-                      setQuery('');
-                      setSuggestions([]);
-                      setLastConfirmedQuery('');
-                      setVectorResults({ members: [], photos: [] });
-                      setSearchParams({}, { replace: true });
-                    }}
-                    className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                  <div className="w-[1px] h-4 bg-gray-200" />
-                </>
-              )}
-              <button
-                onClick={() => navigate('/search/chat', { state: { q: query.trim() } })}
-                className="p-1 text-blue-500 hover:text-blue-700 transition-all hover:scale-110"
-                title="AIに相談する"
-              >
-                {isSearching ? (
-                  <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <Sparkles className="h-5 w-5" />
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* 🎯 サジェストドロップダウン: フォーカスあり ＋ 文字あり なら絶対出す */}
-          {isFocused && query.trim().length > 0 && (
-            <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-              <div className="p-2 space-y-1">
-                {isSearching ? (
-                  <div className="p-4 text-center text-sm text-gray-400 font-bold flex items-center justify-center gap-2">
-                    <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
-                    検索中...
-                  </div>
-                ) : (
-                  <>
-                    {suggestions.length > 0 ? (
-                      suggestions.map((s, idx) => {
-                        const isImage = s.type === 'gallery_image' || s.source_type === 'gallery_image';
-                        const isMember = !isImage && (s.type === 'member' || (!s.type && s.name_english));
-                        
-                        const member = isMember ? s : members.find(m => m.id === (s.metadata?.user_id || s.source_id));
-                        const avatarUrl = isImage 
-                          ? (s.thumbnail_url || s.view_url || '/assets/images/profile_photo_empty.png')
-                          : (member?.avatar_link || '/assets/images/profile_photo_empty.png');
-                        
-                        const title = isImage 
-                          ? (s.description || '画像の結果') 
-                          : (isMember ? s.name_english : (s.content || "").split('\n')[0]);
-                          
-                        const subTitle = isImage
-                          ? `画像 · ${member?.name_english || '不明'}`
-                          : (isMember 
-                              ? [s.current_school, s.study_abroad_country].filter(Boolean).join(' · ')
-                              : `回答 by ${member?.name_english || '不明'}`);
-
-                        return (
-                          <button
-                            key={s.id || idx}
-                            onClick={() => {
-                              if (isImage) {
-                                setSelectedPhoto({ ...s, id: s.gallery_id || s.source_id });
-                                setIsPhotoModalOpen(true);
-                              } else if (s.type === 'form_answer' && s.metadata?.response_id) {
-                                const qId = s.metadata.question_id;
-                                navigate(`/form-responses/${s.metadata.response_id}${qId ? `?questionId=${qId}` : ''}`);
-                              } else {
-                                navigate(`/members/${member?.id || s.id}`);
-                              }
-                            }}
-                            className="w-full flex items-center gap-3 p-2 hover:bg-blue-50 rounded-xl transition-all group text-left"
-                          >
-                            <img 
-                              src={avatarUrl} 
-                              alt="" 
-                              className="w-10 h-10 rounded-lg object-cover border border-gray-100 flex-shrink-0" 
-                            />
-                            <div className="flex-1 overflow-hidden">
-                              <p className="font-bold text-sm text-gray-900 group-hover:text-blue-600 transition-colors truncate">
-                                {title}
-                              </p>
-                              <p className="text-[10px] text-gray-500 truncate">
-                                {subTitle}
-                              </p>
-                            </div>
-                          </button>
-                        );
-                      })
-                    ) : (
-                      <button 
-                        onClick={() => handleConfirmSearch(query)}
-                        className="w-full p-4 text-center text-sm text-gray-500 font-bold hover:bg-gray-50 rounded-xl transition-colors flex flex-col items-center gap-1"
-                      >
-                        <span>「{query}」</span>
-                        <span className="text-blue-500">エンターキーで詳細検索</span>
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-              <div className="bg-gray-50 p-2 border-t border-gray-100">
-                <button
-                  onClick={() => handleConfirmSearch(query)}
-                  className="w-full text-center py-2 text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center justify-center gap-2"
-                >
-                  「{query}」のすべての結果を表示
-                  <kbd className="px-1.5 py-0.5 rounded border border-blue-200 bg-white text-[10px] font-sans">Enter</kbd>
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+        {/* ---- 検索バー & モードチップ ---- */}
+        <h1 className="text-2xl font-bold mb-4 text-gray-900 font-outfit">Search</h1>
+        <HomeSearchBar />
 
         {/* ---- 検索結果 ---- */}
-        {isLoading || (isSearching && !isSuggestionsOpen) ? (
+        {isLoading || isFinalSearching || isSearching ? (
           <LoadingSkeleton />
         ) : lastConfirmedQuery === '' ? (
           <EmptyState />
@@ -428,7 +199,8 @@ export default function SearchPage() {
                             user_id: r.user_id,
                             image_type: r.image_type,
                             visibility: r.visibility,
-                            basic_profile_info: r.basic_profile_info
+                            basic_profile_info: r.basic_profile_info,
+                            matches: r.matches // 🌟 マッチ詳細を渡す
                           };
                           setSelectedPhoto(photoData);
                           setIsPhotoModalOpen(true);
@@ -468,11 +240,11 @@ export default function SearchPage() {
 
                 // --- タブごとの出し分け ---
                 if (activeTab === 'photo') {
-                  return photoResults.length > 0 ? renderPhotoGrid(photoResults) : <p className="text-center text-gray-400 py-10">No photos found</p>;
+                  return photoResults.length > 0 ? renderPhotoGrid(photoResults) : !isSearching && <p className="text-center text-gray-400 py-10">No photos found</p>;
                 }
 
                 if (activeTab === 'member') {
-                  return memberResults.length > 0 ? renderMemberList(memberResults) : <p className="text-center text-gray-400 py-10">No members found</p>;
+                  return memberResults.length > 0 ? renderMemberList(memberResults) : !isSearching && <p className="text-center text-gray-400 py-10">No members found</p>;
                 }
 
                 // 「All」タブの場合
@@ -503,7 +275,7 @@ export default function SearchPage() {
                       </div>
                     )}
 
-                    {photoResults.length === 0 && memberResults.length === 0 && (
+                    {photoResults.length === 0 && memberResults.length === 0 && !isSearching && (
                       <p className="text-center text-gray-400 py-10">No results found</p>
                     )}
                   </div>
@@ -634,7 +406,7 @@ function MemberCard({ member, query, matchedKeywords = [], matches = [] }: { mem
           {/* 🎯 AIがマッチしたと判断したキーワードのバッジ */}
           {matchedKeywords && matchedKeywords.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-1.5">
-              {matchedKeywords.map((kw, i) => (
+              {(matchedKeywords || []).map((kw, i) => (
                 <span key={i} className="px-1.5 py-0.5 rounded border border-blue-100 bg-blue-50 text-[10px] font-bold text-blue-600">
                   {kw}
                 </span>
@@ -719,7 +491,7 @@ function ImageResultCard({ result, onClick }: { result: AggregatedResult; onClic
           </p>
         )}
         <div className="flex flex-wrap gap-1 mt-1.5">
-          {result.matched_keywords.slice(0, 2).map((kw, i) => (
+          {(result.matched_keywords || []).slice(0, 2).map((kw, i) => (
             <span key={i} className="px-1 py-0.5 rounded bg-blue-500/80 text-white text-[7px] font-bold">
               {kw}
             </span>

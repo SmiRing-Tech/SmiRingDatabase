@@ -3,7 +3,7 @@ import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../../config';
 import PhotoEditModal from './PhotoEditModal';
-import { Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
+import { Sparkles, ChevronDown, ChevronUp, Search } from 'lucide-react';
 
 type Props = {
   isOpen: boolean;
@@ -24,6 +24,13 @@ type Props = {
       name_english: string | null;
       avatar_url?: string | null;
     } | null;
+    matches?: {
+      keyword: string;
+      score: number;
+      content: string;
+      source_type: string;
+      metadata: any;
+    }[] | null;
   } | null;
   onPhotoUpdated?: () => void;
   onPhotoDeleted?: () => void;
@@ -216,6 +223,35 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
               <span className="text-sm font-bold text-gray-700 leading-none group-hover/tile:text-blue-600 transition-colors">
                 {photo.basic_profile_info.name_english || photo.basic_profile_info.name_kanji || 'Unknown'}
               </span>
+            </div>
+          </div>
+        )}
+        
+        {/* 🔍 検索マッチ情報 (検索から遷移してきた場合のみ表示) */}
+        {photo?.matches && photo.matches.length > 0 && (
+          <div className="mt-4 w-full max-w-2xl bg-blue-50/80 backdrop-blur-md rounded-2xl shadow-sm border border-blue-200/50 p-4 animate-in slide-in-from-top-4 duration-500">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="p-1 bg-blue-500 rounded text-white shadow-sm">
+                <Search className="w-3 h-3" />
+              </div>
+              <span className="text-xs font-bold text-blue-700 uppercase tracking-wider">Search Match</span>
+            </div>
+            <div className="space-y-2">
+              {photo.matches.map((m, idx) => (
+                <div key={idx} className="flex flex-col gap-1 p-2 bg-white/60 rounded-lg border border-blue-100/50">
+                  <div className="flex items-center gap-2">
+                    <span className="px-1.5 py-0.5 rounded bg-blue-100 text-[10px] font-bold text-blue-600">
+                      {m.keyword}
+                    </span>
+                    <span className="text-[10px] text-gray-400">
+                      {m.source_type === 'gallery_image' ? '📸 画像の説明文' : '📝 コンテンツ'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-700 leading-relaxed">
+                    「{m.content}」
+                  </p>
+                </div>
+              ))}
             </div>
           </div>
         )}

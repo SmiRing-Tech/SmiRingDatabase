@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { pipeline } from '@xenova/transformers';
 import Groq from 'groq-sdk';
 import { KEYWORDS_EXTRACTION_PROMPT } from './prompt/keywords_extraction_prompt';
+import { DEEP_SEARCH_EXPANSION_PROMPT } from './prompt/deep_search_expansion_prompt';
 import { image_to_text_prompt } from './prompt/image_to_text_prompt';
 
 // ローカルモデル用の変数
@@ -55,7 +56,7 @@ export async function getGeminiEmbedding(text: string, isQuery: boolean = false)
   const client = getVertexClient();
   
   const result = await client.models.embedContent({
-    model: "text-embedding-004", // Vertex AI 推奨の埋め込みモデル
+    model: "gemini-embedding-001",
     contents: text,
     config: {
       taskType: isQuery ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT",
@@ -307,7 +308,24 @@ export async function generateChatResponse(prompt: string): Promise<string> {
 // ==========================================
 // 5. 検索クエリのJSON解析 (Groqを使用)
 // ==========================================
-export async function analyzeSearchQuery(query: string): Promise<{ target: string, keywords: string[] }> {
+export async function analyzeSearchQuery(
+  query: string, 
+  mode: string = 'smart'
+): Promise<any> {
+  // --- 🌟 スペース区切り、または単一キーワードのAIスキップ判定 ---
+  const trimmedQuery = query.trim();
+  const spaceKeywords = trimmedQuery.split(/[\s　]+/);
+
+  // ひらがなが含まれているかチェック (文章性の判定)
+  const hasHiragana = /[ぁ-ん]/.test(trimmedQuery);
+
+  // 判定ルール (Deepモード時はスキップせずAIに深く考えさせる):
+  if (mode !== 'deep' && (spaceKeywords.length > 1 || !hasHiragana || trimmedQuery.length <= 3)) {
+    console.log(`[AI] Direct search triggered (Skip Groq):`, spaceKeywords);
+    return { target: "unknown", keywords: spaceKeywords };
+  }
+  // ---------------------------------------------------------
+
   const apiKey = process.env.GROQ_API_KEY; // GroqのAPIキーを使用
   if (!apiKey) {
     console.warn("警告: GROQ_API_KEY が見つかりません。名前検索としてフォールバックします。");
@@ -315,11 +333,15 @@ export async function analyzeSearchQuery(query: string): Promise<{ target: strin
   }
   
   const client = new Groq({ apiKey });
-  const systemPrompt = KEYWORDS_EXTRACTION_PROMPT;
+  let systemPrompt = KEYWORDS_EXTRACTION_PROMPT;
   
+  if (mode === 'deep') {
+    systemPrompt += `\n\n${DEEP_SEARCH_EXPANSION_PROMPT}`;
+  }
+
   try {
     const completion = await client.chat.completions.create({
-      model: "openai/gpt-oss-20b", // ご指定のモデル
+      model: "openai/gpt-oss-20b", 
       messages: [
         { role: "system", content: "You are a JSON-only output API." },
         { role: "user", content: `${systemPrompt}\n\nInput: ${query}\nOutput:` }
@@ -328,7 +350,9 @@ export async function analyzeSearchQuery(query: string): Promise<{ target: strin
     });
 
     const text = completion.choices[0]?.message?.content || "";
-    return JSON.parse(text);
+    const result = JSON.parse(text);
+    console.log(`[AI] Analysis Result (${mode}):`, result);
+    return result;
   } catch (e) {
     console.error("Groq Query Analysis Error:", e);
     return { target: "person", keywords: [query] };

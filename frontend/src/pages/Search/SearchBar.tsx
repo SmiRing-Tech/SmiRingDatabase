@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Sparkles } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Sparkles, Search, Zap } from 'lucide-react';
+import { CustomDropdown } from '../../components/ui/CustomDropdown';
 import { API_BASE_URL } from '../../config';
+import PhotoViewModal from '../../components/ui/PhotoViewModal';
 
 export type Member = {
   id: string;
@@ -47,99 +49,187 @@ export function memberMatchesQuery(m: Member, q: string): boolean {
 
 export function HighlightedText({ text, query }: { text: string; query: string }) {
   if (!query || !text) return <>{text}</>;
-  const idx = text.toLowerCase().indexOf(query.toLowerCase());
-  if (idx === -1) return <>{text}</>;
+  
+  const keywords = query.trim().split(/[\s　]+/).filter(k => k.length > 0);
+  if (keywords.length === 0) return <>{text}</>;
+
+  const escapedKeywords = keywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const regex = new RegExp(`(${escapedKeywords.join('|')})`, 'gi');
+  const parts = text.split(regex);
+  const lowerKeywords = keywords.map(k => k.toLowerCase());
+
   return (
     <>
-      {text.slice(0, idx)}
-      <mark className="bg-yellow-200 text-gray-900 rounded-sm px-0.5">{text.slice(idx, idx + query.length)}</mark>
-      {text.slice(idx + query.length)}
+      {parts.map((part, i) => 
+        lowerKeywords.includes(part.toLowerCase()) ? (
+          <mark key={i} className="bg-blue-100 text-blue-900 rounded-sm px-0.5">{part}</mark>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
     </>
   );
 }
 
+export function SnippetText({ text, query, maxLength = 60 }: { text: string; query: string, maxLength?: number }) {
+  if (!text) return null;
+  const cleanText = text.replace(/\n/g, ' '); // 改行を取り除いて1行にする
+  if (!query) return <>{cleanText.slice(0, maxLength)}{cleanText.length > maxLength ? '...' : ''}</>;
+  
+  const keywords = query.trim().split(/[\s　]+/).filter(k => k.length > 0);
+  if (keywords.length === 0) return <>{cleanText.slice(0, maxLength)}{cleanText.length > maxLength ? '...' : ''}</>;
+
+  const lowerText = cleanText.toLowerCase();
+  
+  // 一番最初に登場するキーワードを見つける
+  let firstIdx = -1;
+  let matchedKeyword = '';
+  for (const k of keywords) {
+    const idx = lowerText.indexOf(k.toLowerCase());
+    if (idx !== -1) {
+      if (firstIdx === -1 || idx < firstIdx) {
+        firstIdx = idx;
+        matchedKeyword = k;
+      }
+    }
+  }
+  
+  // キーワードが見つからない場合は、ただ先頭を切り出す（ベクトル検索など）
+  if (firstIdx === -1) return <>{cleanText.slice(0, maxLength)}{cleanText.length > maxLength ? '...' : ''}</>;
+  
+  // 最初にヒットしたキーワードを中心に前後を切り出す
+  const contextLength = Math.floor((maxLength - matchedKeyword.length) / 2);
+  const start = Math.max(0, firstIdx - contextLength);
+  const end = Math.min(cleanText.length, firstIdx + matchedKeyword.length + contextLength);
+  const prefix = start > 0 ? '... ' : '';
+  const suffix = end < cleanText.length ? ' ...' : '';
+  
+  const snippet = cleanText.slice(start, end);
+  
+  return (
+    <>
+      {prefix}
+      <HighlightedText text={snippet} query={query} />
+      {suffix}
+    </>
+  );
+}
+
+type SearchMode = 'smart' | 'keyword' | 'deep';
+
 export default function HomeSearchBar() {
   const navigate = useNavigate();
-  const [query, setQuery] = useState('');
-  const [members, setMembers] = useState<Member[]>([]);
+  const [searchParams] = useSearchParams();
+  
+  const [query, setQuery] = useState(searchParams.get('q') || '');
   const [suggestions, setSuggestions] = useState<any[]>([]); // 🎯 型エラー回避のため any[] に変更
   const [isLoading, setIsLoading] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const [isFocused, setIsFocused] = useState(false); // 🎯 フォーカス状態を管理
-  const [activeIndex, setActiveIndex] = useState(-1);
-  const wrapperRef = React.useRef<HTMLDivElement>(null);
+  const [searchMode, setSearchMode] = useState<SearchMode>((searchParams.get('mode') as SearchMode) || 'smart');
 
+  // 🌟 URLのパラメータが変わったら入力欄とモードに反映
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/basic_profile_info`)
-      .then(res => res.json())
-      .then(data => setMembers(data))
-      .catch(() => {});
-  }, []);
+    const q = searchParams.get('q') || '';
+    const m = searchParams.get('mode') as SearchMode;
+    setQuery(q);
+    if (m) setSearchMode(m);
+  }, [searchParams]);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(false);
+  const [selectedPhoto, setSelectedPhoto] = useState<any>(null);
+  const wrapperRef = React.useRef<HTMLDivElement>(null);
+  const ignoreSuggestionsRef = React.useRef(false); // 🌟 エンター押下後にサジェストが届いても無視するためのフラグ
+  const inputRef = React.useRef<HTMLInputElement>(null); // 🌟 入力欄のフォーカス制御用
+
+  const handleSuggestionSelect = (s: any) => {
+    setIsOpen(false);
+    const profileInfo = s.basic_profile_info || s;
+    const isImage = s.type === 'gallery_image' || s.source_type === 'gallery_image';
+    
+    // 一番スコアの高いマッチを確認
+    let bestMatch = null;
+    if (s.matches && s.matches.length > 0) {
+      bestMatch = [...s.matches].sort((a: any, b: any) => b.score - a.score)[0];
+    }
+    
+    // もしフォームの回答にマッチしていた場合は、そのフォームへ飛ぶ
+    if (bestMatch && bestMatch.source_type === 'form_answer' && bestMatch.metadata?.response_id) {
+      const qId = bestMatch.metadata.question_id;
+      navigate(`/form-responses/${bestMatch.metadata.response_id}${qId ? `?questionId=${qId}` : ''}`);
+    } else if (isImage) {
+      setSelectedPhoto({
+        id: s.gallery_id || s.id,
+        view_url: s.view_url,
+        description: s.description,
+        description_generated: s.description_generated,
+        user_id: s.user_id,
+        image_type: s.image_type,
+        visibility: s.visibility,
+        basic_profile_info: profileInfo,
+        matches: s.matches
+      });
+      setIsPhotoModalOpen(true);
+    } else {
+      navigate(`/members/${profileInfo.id || s.user_id || s.id}`);
+    }
+  };
 
   // 🔍 ハイブリッド検索ロジック (300ms デバウンス)
   useEffect(() => {
     const trimmed = query.trim();
-    if (trimmed.length === 0) {
-      setSuggestions([]);
-      setIsLoading(false);
+    // 文字が空、またはドロップダウンが閉じている時は検索しない
+    if (trimmed.length === 0 || !isOpen) {
+      if (trimmed.length === 0) {
+        setSuggestions([]);
+        setIsLoading(false);
+      }
       return;
     }
 
     const timer = setTimeout(async () => {
       setIsLoading(true);
 
-      // 1. まずは部分一致 (Keyword Search)
-      const localMatches = members.filter(m => memberMatchesQuery(m, trimmed));
-      
-      if (localMatches.length >= 6) {
-        setSuggestions(localMatches.slice(0, 6));
-        setIsLoading(false);
-        return;
-      }
-
-      // 2. 6件に満たない場合、ベクトル検索 (ME5) で補填
       try {
         const response = await fetch(`${API_BASE_URL}/api/search/instant`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: trimmed })
+          body: JSON.stringify({ 
+            query: trimmed,
+            model: 'local',
+            searchMode: searchMode
+          })
         });
 
         if (response.ok) {
           const data = await response.json();
-          // 🎯 0.75以上のものを候補として採用
-          const highScores = data.results.filter((r: any) => (r.similarity || 0) >= 0.75);
           
-          const localIds = new Set(localMatches.map(m => m.id));
-          const combinedSuggestions: any[] = localMatches.map(m => ({ ...m, type: 'member' }));
-          
-          for (const r of highScores) {
-            const uId = r.metadata?.user_id || r.source_id;
-            
-            if (r.source_type === 'form_answer') {
-              combinedSuggestions.push({ ...r, type: 'form_answer' });
-            } else {
-              if (!localIds.has(uId) && !combinedSuggestions.some(s => s.id === uId)) {
-                const m = members.find(m => m.id === uId);
-                if (m) combinedSuggestions.push({ ...m, type: 'member' });
-              }
-            }
-          }
+          // 🎯 統合された結果（photos + members）をフラットにして処理
+          const allResults = [
+            ...(data.results?.photos || []),
+            ...(data.results?.members || [])
+          ];
 
-          setSuggestions(combinedSuggestions.slice(0, 8));
+          // 🎯 スコア0.75以上のものを候補として採用
+          const highScores = allResults.filter((r: any) => (r.similarity || r.total_score || 0) >= 0.75);
+
+          // 🌟 エンターがすでに押されている場合は、結果を反映しない
+          if (!ignoreSuggestionsRef.current) {
+            setSuggestions(highScores.slice(0, 8));
+          }
         } else {
-          setSuggestions(localMatches.slice(0, 8));
+          setSuggestions([]);
         }
       } catch (err) {
-        console.error('Vector search error:', err);
-        setSuggestions(localMatches.slice(0, 6));
+        console.error('Search error:', err);
+        setSuggestions([]);
       } finally {
         setIsLoading(false);
       }
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [query, members]);
+  }, [query, searchMode, isOpen]);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -157,7 +247,14 @@ export default function HomeSearchBar() {
     if (e.nativeEvent.isComposing) return;
 
     if (!isOpen || suggestions.length === 0) {
-      if (e.key === 'Enter') { setIsOpen(false); navigate(`/search?q=${encodeURIComponent(query.trim())}`); }
+      if (e.key === 'Enter') { 
+        e.preventDefault(); // 🌟 デフォルトの挙動（フォーム送信等）を止める
+        setIsOpen(false); 
+        inputRef.current?.blur(); // 🌟 フォーカスを外す
+        ignoreSuggestionsRef.current = true; // 🌟 エンターを押したので以後のサジェストを無視
+        setSuggestions([]); // 🌟 画面に残らないようクリア
+        navigate(`/search?q=${encodeURIComponent(query.trim())}&mode=${searchMode}`); 
+      }
       return;
     }
     if (e.key === 'ArrowDown') {
@@ -169,10 +266,13 @@ export default function HomeSearchBar() {
     } else if (e.key === 'Enter') {
       e.preventDefault();
       setIsOpen(false);
+      inputRef.current?.blur(); // 🌟 フォーカスを外す
+      ignoreSuggestionsRef.current = true; // 🌟 エンターを押したので以後のサジェストを無視
       if (activeIndex >= 0 && activeIndex < suggestions.length) {
-        navigate(`/members/${suggestions[activeIndex].id}`);
+        handleSuggestionSelect(suggestions[activeIndex]);
       } else {
-        navigate(`/search?q=${encodeURIComponent(query.trim())}`);
+        setSuggestions([]); // 🌟 画面に残らないようクリア
+        navigate(`/search?q=${encodeURIComponent(query.trim())}&mode=${searchMode}`);
       }
     } else if (e.key === 'Escape') {
       setIsOpen(false);
@@ -184,6 +284,7 @@ export default function HomeSearchBar() {
     setQuery(e.target.value);
     setIsOpen(true);
     setActiveIndex(-1);
+    ignoreSuggestionsRef.current = false; // 🌟 ユーザーが新しく文字を入力したらリセット
   };
 
   return (
@@ -195,6 +296,7 @@ export default function HomeSearchBar() {
           </svg>
         </div>
         <input
+          ref={inputRef}
           type="text"
           value={query}
           onChange={handleChange}
@@ -207,30 +309,48 @@ export default function HomeSearchBar() {
             setTimeout(() => setIsFocused(false), 200);
           }}
           onKeyDown={handleKeyDown}
-          className="w-full pl-11 pr-12 py-3 rounded-full border border-gray-200 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none shadow-sm transition-all text-sm"
-          placeholder="Search members, photos, forms..."
+          className="w-full pl-11 pr-44 py-3.5 rounded-full border border-gray-200 bg-gray-50 focus:bg-white focus:ring-4 focus:ring-blue-500/10 focus:border-blue-400 outline-none shadow-sm transition-all text-sm"
+          placeholder="名前、大学、専攻、国などで検索..."
         />
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate('/search/chat', { state: { q: query.trim() } });
-          }}
-          className="absolute inset-y-0 right-0 pr-4 flex items-center text-blue-500 hover:text-blue-700 transition-all hover:scale-110"
-          title="AIに相談する"
-        >
-          {isLoading ? (
-            <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-          ) : (
-            <>
-              <Sparkles className="w-5 h-5 fill-current opacity-20 group-hover:opacity-100 transition-opacity" />
-              <Sparkles className="w-5 h-5 absolute animate-pulse" />
-            </>
-          )}
-        </button>
+
+        <div className="absolute inset-y-0 right-0 flex items-center pr-3 gap-1.5">
+          {/* 🚀 検索モードチップ */}
+          <div className="w-[110px]">
+            <CustomDropdown
+              value={searchMode}
+              onChange={(val) => setSearchMode(val as SearchMode)}
+              fontSize="text-[10px]"
+              options={[
+                { label: 'スマート', value: 'smart', icon: <Sparkles className="w-3 h-3" />, description: 'AIが意味を解釈' },
+                { label: 'キーワード', value: 'keyword', icon: <Search className="h-3 w-3" />, description: '文字一致を優先' },
+                { label: 'ディープ', value: 'deep', icon: <Zap className="w-3 h-3" />, description: '深層・言い換え検索' }
+              ]}
+              className="!py-1.5 !px-2 !bg-white/60 hover:!bg-white !border-gray-200/50 hover:!border-blue-300 !rounded-xl shadow-sm font-bold"
+            />
+          </div>
+
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate('/search/chat', { state: { q: query.trim() } });
+            }}
+            className="p-2 text-blue-500 hover:text-blue-700 transition-all hover:scale-110 relative"
+            title="AIに相談する"
+          >
+            {isLoading ? (
+              <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <div className="relative">
+                <Sparkles className="w-5 h-5 fill-current opacity-20 group-hover:opacity-100 transition-opacity" />
+                <Sparkles className="w-5 h-5 absolute inset-0 animate-pulse" />
+              </div>
+            )}
+          </button>
+        </div>
       </div>
 
-      {/* 🎯 サジェストドロップダウン: フォーカスあり ＋ 文字あり なら絶対出す */}
-      {isFocused && query.trim().length > 0 && (
+      {/* 🎯 サジェストドロップダウン: オープン状態 ＋ 文字あり なら出す */}
+      {isOpen && query.trim().length > 0 && (
         <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 z-[100]">
           {isLoading ? (
             <div className="p-4 text-center text-sm text-gray-400 font-bold flex items-center justify-center gap-2">
@@ -241,28 +361,43 @@ export default function HomeSearchBar() {
             <>
               {suggestions.length > 0 ? (
                 suggestions.map((s, index) => {
-                  const isMember = s.type === 'member' || (!s.type && s.name_english);
-                  const member = isMember ? s : members.find(m => m.id === (s.metadata?.user_id || s.source_id));
-                  const avatarUrl = member?.avatar_link || '/assets/images/profile_photo_empty.png';
-                  const title = isMember ? s.name_english : (s.content || "").split('\n')[0];
-                  const majorsText = isMember ? (Array.isArray(s.majors) ? s.majors.join(', ') : s.majors) : '';
-                  const subText = isMember 
-                    ? [s.current_school, s.study_abroad_country, majorsText].filter(Boolean).join(' · ')
-                    : `回答 by ${member?.name_english || '不明'}`;
+                  const isImage = s.type === 'gallery_image' || s.source_type === 'gallery_image';
+                  const isMember = !isImage && (s.type === 'member' || (!s.type && s.name_english));
+                  
+                  // バックエンドから返される basic_profile_info などを活用
+                  const profileInfo = s.basic_profile_info || s; 
+                  
+                  const avatarUrl = isImage 
+                    ? (s.thumbnail_url || s.view_url || '/assets/images/profile_photo_empty.png')
+                    : (profileInfo.avatar_link || profileInfo.avatar_url || '/assets/images/profile_photo_empty.png');
+                  
+                  const title = isImage
+                    ? (s.description || '画像の結果')
+                    : (isMember ? s.name_english : (s.content || "").split('\n')[0]);
+                  
+                  const majorsText = Array.isArray(profileInfo.majors) ? profileInfo.majors.join(', ') : (profileInfo.majors || '');
+                  
+                  const defaultSubText = isImage
+                    ? `画像 · ${profileInfo.name_english || '不明'}`
+                    : (isMember 
+                        ? [profileInfo.current_school, profileInfo.study_abroad_country, majorsText].filter(Boolean).join(' · ')
+                        : `回答 by ${profileInfo.name_english || '不明'}`);
+
+                  // 🌟 マッチしたテキストを抽出する
+                  let matchedContent = '';
+                  if (s.matches && s.matches.length > 0) {
+                    // スコアが高い順にソートして一番良いマッチを取得
+                    const bestMatch = [...s.matches].sort((a: any, b: any) => b.score - a.score)[0];
+                    if (bestMatch && bestMatch.content) {
+                      matchedContent = bestMatch.content;
+                    }
+                  }
 
                   const isActive = activeIndex === index;
                   return (
                     <div
                       key={s.id || index}
-                      onMouseDown={() => { 
-                        setIsOpen(false); 
-                        if (s.type === 'form_answer' && s.metadata?.response_id) {
-                          const qId = s.metadata.question_id;
-                          navigate(`/form-responses/${s.metadata.response_id}${qId ? `?questionId=${qId}` : ''}`);
-                        } else {
-                          navigate(`/members/${member?.id || s.id}`);
-                        }
-                      }}
+                      onMouseDown={() => handleSuggestionSelect(s)}
                       className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${isActive ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
                     >
                       <img src={avatarUrl} alt="" className="w-9 h-9 rounded-lg object-cover bg-gray-100 flex-shrink-0 border border-gray-200" />
@@ -275,8 +410,12 @@ export default function HomeSearchBar() {
                             </span>
                           )}
                         </p>
-                        <p className="text-[10px] text-gray-400 truncate">
-                          <HighlightedText text={subText} query={query.trim()} />
+                        <p className="text-[10px] text-gray-500 truncate">
+                          {matchedContent ? (
+                            <SnippetText text={matchedContent} query={query.trim()} />
+                          ) : (
+                            <HighlightedText text={defaultSubText} query={query.trim()} />
+                          )}
                         </p>
                       </div>
                     </div>
@@ -292,21 +431,31 @@ export default function HomeSearchBar() {
               <div
                 onMouseDown={() => { 
                   setIsOpen(false); 
-                  navigate(`/search?q=${encodeURIComponent(query.trim())}`); 
+                  navigate(`/search?q=${encodeURIComponent(query.trim())}&mode=${searchMode}`); 
                 }}
                 className={`flex items-center gap-2 px-4 py-3 border-t border-gray-100 cursor-pointer text-sm font-bold transition-colors ${
                   activeIndex === suggestions.length ? 'bg-gray-50 text-blue-700' : 'hover:bg-gray-50 text-blue-600'
                 }`}
               >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
+                <Search className="w-4 h-4" />
                 「{query}」ですべて検索
               </div>
             </>
           )}
         </div>
       )}
+
+      {/* 🖼️ 写真拡大表示用モーダル */}
+      <PhotoViewModal
+        isOpen={isPhotoModalOpen}
+        imageUrl={selectedPhoto?.view_url}
+        onClose={() => {
+          setIsPhotoModalOpen(false);
+        }}
+        description={selectedPhoto?.description}
+        isOwner={false}
+        photo={selectedPhoto}
+      />
     </div>
   );
 }

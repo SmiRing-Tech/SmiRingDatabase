@@ -9,6 +9,7 @@ export type DropdownOption = {
   isLabel?: boolean;
   value?: string;
   icon?: React.ReactNode;
+  description?: string; // 🌟 説明文を追加
 };
 
 // Genericsを使って、multipleの値によってvalueとonChangeの型を動的に変える
@@ -20,6 +21,7 @@ interface CustomDropdownProps<T extends boolean> {
   searchable?: boolean;
   placeholder?: string;
   className?: string;
+  fontSize?: string; // 🌟 文字サイズを指定できるように
 }
 // -------------
 
@@ -30,7 +32,8 @@ export const CustomDropdown = <T extends boolean = false>({
   onChange,
   searchable = false,
   placeholder = "選択してください",
-  className = ""
+  className = "",
+  fontSize = "text-sm" // デフォルトは従来通りのサイズ
 }: CustomDropdownProps<T>) => {
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -155,11 +158,10 @@ export const CustomDropdown = <T extends boolean = false>({
   };
 
   return (
-    <div className="relative w-full text-sm" ref={dropdownRef}>
+    <div className={`relative w-full ${fontSize}`} ref={dropdownRef}>
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        // デザイン改善: rounded-xl, 影の強化, トランジション + 外部からのclassNameを反映
         className={`w-full bg-white border border-gray-300 rounded-xl text-left px-4 py-2.5 flex justify-between items-center shadow-sm hover:border-gray-400 hover:shadow transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${className}`}
       >
         <span className="truncate pr-4 select-none text-gray-700">
@@ -188,7 +190,7 @@ export const CustomDropdown = <T extends boolean = false>({
                 width: coords.width,
                 zIndex: 9999,
               }}
-              className="bg-white/95 backdrop-blur-md border border-gray-200 rounded-xl shadow-lg overflow-hidden flex flex-col"
+              className={`bg-white/95 backdrop-blur-md border border-gray-200 rounded-xl shadow-lg overflow-hidden flex flex-col ${fontSize}`}
             >
 
               {searchable && (
@@ -217,7 +219,7 @@ export const CustomDropdown = <T extends boolean = false>({
               transition-colors"
               >
                 {filteredOptions.length === 0 ? (
-                  <div className="px-4 py-3 text-gray-500 text-center text-sm">見つかりませんでした</div>
+                  <div className={`px-4 py-3 text-gray-500 text-center ${fontSize}`}>見つかりませんでした</div>
                 ) : (
                   filteredOptions.map((opt, index) => {
                     const itemKey = opt.isLabel ? `label-${index}` : opt.value;
@@ -252,9 +254,16 @@ export const CustomDropdown = <T extends boolean = false>({
                           </div>
                         )}
 
-                        <span className={`truncate select-none ${isSelected && !multiple ? 'font-medium text-blue-600' : 'text-gray-700'}`}>
-                          {opt.label}
-                        </span>
+                        <div className="flex flex-col truncate">
+                          <span className={`truncate select-none ${isSelected && !multiple ? 'font-bold text-blue-600' : 'text-gray-700 font-medium'}`}>
+                            {opt.label}
+                          </span>
+                          {opt.description && (
+                            <span className="opacity-60 line-clamp-1 text-[0.9em] leading-tight mt-0.5">
+                              {opt.description}
+                            </span>
+                          )}
+                        </div>
 
                         {!multiple && isSelected && (
                           <Check className="w-4 h-4 text-blue-500 ml-auto flex-shrink-0" />

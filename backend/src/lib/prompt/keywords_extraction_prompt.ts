@@ -9,8 +9,8 @@ Follow these strict rules:
 
 Examples:
 
-Input: 明るくポジティブなUCLA生
-Output: {"target": "person", "keywords": ["明るくポジティブ", "UCLA"]}
+Input: 明るくポジティブなUCLAの卒業生
+Output: {"target": "person", "keywords": ["明るい", "ポジティブ", "UCLA", "卒業生"]}
 
 Input: ビジネスメジャーが多くて、起業に強い学校
 Output: {"target": "school", "keywords": ["ビジネスメジャーが多い", "起業に強い"]}
