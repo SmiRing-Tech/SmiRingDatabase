@@ -125,7 +125,6 @@ export default function HomeSearchBar() {
   const [suggestions, setSuggestions] = useState<any[]>([]); // 🎯 型エラー回避のため any[] に変更
   const [isLoading, setIsLoading] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
-  const [isFocused, setIsFocused] = useState(false); // 🎯 フォーカス状態を管理
   const [searchMode, setSearchMode] = useState<SearchMode>((searchParams.get('mode') as SearchMode) || 'smart');
 
   // 🌟 URLのパラメータが変わったら入力欄とモードに反映
@@ -301,12 +300,7 @@ export default function HomeSearchBar() {
           value={query}
           onChange={handleChange}
           onFocus={() => {
-            setIsFocused(true);
             setIsOpen(true);
-          }}
-          onBlur={() => {
-            // サジェストクリックを優先するため少し遅らせる
-            setTimeout(() => setIsFocused(false), 200);
           }}
           onKeyDown={handleKeyDown}
           className="w-full pl-11 pr-44 py-3.5 rounded-full border border-gray-200 bg-gray-50 focus:bg-white focus:ring-4 focus:ring-blue-500/10 focus:border-blue-400 outline-none shadow-sm transition-all text-sm"
