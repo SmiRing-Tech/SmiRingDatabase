@@ -26,6 +26,7 @@ export default function ResetPasswordPage() {
   const [isSuccess, setIsSuccess] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [isAgreed, setIsAgreed] = useState(false);
   const navigate = useNavigate();
 
   const strength = password.length > 0 ? getPasswordStrength(password) : null;
@@ -175,9 +176,26 @@ export default function ResetPasswordPage() {
               )}
             </div>
 
+            {/* Agreement Checkbox */}
+            <div className="flex items-center gap-2 py-1">
+              <input
+                type="checkbox"
+                id="agreement"
+                checked={isAgreed}
+                onChange={e => setIsAgreed(e.target.checked)}
+                className="w-4 h-4 text-sky-500 border-gray-300 rounded focus:ring-sky-500"
+              />
+              <label htmlFor="agreement" className="text-xs text-gray-500 cursor-pointer">
+                <a href="https://drive.google.com/file/d/1pHINgk_mihMKVoU-IZlEx-Z1_u9o7MMF/view?usp=sharing" target="_blank" rel="noopener noreferrer" className="text-sky-500 font-bold hover:text-sky-600 transition-colors">利用規約</a>
+                {' と '}
+                <a href="https://drive.google.com/file/d/1a6fHqKALgQQMu4pCmuZlQmNAQ9wMpDta/view?usp=sharing" target="_blank" rel="noopener noreferrer" className="text-sky-500 font-bold hover:text-sky-600 transition-colors">プライバシーポリシー</a>
+                {' に同意する'}
+              </label>
+            </div>
+
             <button
               type="submit"
-              disabled={isLoading || !!(confirmPassword && password !== confirmPassword)}
+              disabled={isLoading || !!(confirmPassword && password !== confirmPassword) || !isAgreed}
               className="w-full py-3.5 rounded-xl font-bold text-white text-sm mt-2
                          bg-gradient-to-r from-sky-300 to-sky-500
                          hover:from-sky-400 hover:to-sky-600
