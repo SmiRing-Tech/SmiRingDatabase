@@ -1,6 +1,13 @@
 import { GoogleGenAI } from '@google/genai';
-import { pipeline } from '@xenova/transformers';
+import { pipeline, env } from '@xenova/transformers';
 import Groq from 'groq-sdk';
+
+// 本番環境（Dockerイメージにモデルを焼き込んでいる環境）では、HuggingFaceへのアクセスを禁止
+if (process.env.NODE_ENV === 'production') {
+  env.allowRemoteModels = false;
+  env.localModelPath = '/app/.cache';
+}
+
 import { KEYWORDS_EXTRACTION_PROMPT } from './prompt/keywords_extraction_prompt';
 import { DEEP_SEARCH_EXPANSION_PROMPT } from './prompt/deep_search_expansion_prompt';
 import { image_to_text_prompt } from './prompt/image_to_text_prompt';
