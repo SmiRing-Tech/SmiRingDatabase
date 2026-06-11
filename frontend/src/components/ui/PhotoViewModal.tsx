@@ -95,6 +95,28 @@ export default function PhotoViewModal({
     }
   }, [activeImageUrl]);
 
+  // 左右の写真のプリロード処理
+  useEffect(() => {
+    if (!isSlideMode || !photos || photos.length <= 1 || !isSynced) return;
+
+    const preloadIndices = [];
+    if (currentIndex > 0) {
+      preloadIndices.push(currentIndex - 1);
+    }
+    if (currentIndex < photos.length - 1) {
+      preloadIndices.push(currentIndex + 1);
+    }
+
+    preloadIndices.forEach(idx => {
+      const p = photos[idx];
+      const url = p?.view_url || p?.thumbnail_url;
+      if (url) {
+        const img = new Image();
+        img.src = url;
+      }
+    });
+  }, [currentIndex, photos, isSlideMode, isSynced]);
+
   // モーダルの開閉に応じて URL ハッシュと body スクロールを制御する
   useEffect(() => {
     if (isOpen) {
@@ -267,7 +289,6 @@ export default function PhotoViewModal({
       >
         {/* 3. 画像・コンテンツ本体 (my-auto で中央配置を実現) */}
         <div
-          onClick={(e) => e.stopPropagation()}
           className="relative w-full max-w-4xl my-auto flex flex-col items-center animate-in zoom-in-95 duration-300 group cursor-default"
         >
           {/* 画像コンテナと左右矢印 */}
@@ -283,9 +304,22 @@ export default function PhotoViewModal({
               </button>
             )}
 
-            {/* ローディングプレースホルダー（スケルトン） */}
-            {(isImageLoading || !isSynced) && (
-              <div className="w-full max-w-lg aspect-[4/3] rounded-lg bg-gray-200 animate-pulse flex items-center justify-center border border-gray-100 shadow-inner">
+            {/* ローディングプレースホルダー（サムネイルプレビュー） */}
+            {isImageLoading && activePhoto?.thumbnail_url && (
+              <img
+                src={activePhoto.thumbnail_url}
+                alt="Loading preview"
+                onClick={(e) => e.stopPropagation()}
+                className="max-w-full max-h-[65vh] object-contain rounded-lg filter blur-md opacity-70 animate-pulse select-none"
+              />
+            )}
+
+            {/* ローディングプレースホルダー（スケルトン：サムネイルが無い場合のフォールバック） */}
+            {(isImageLoading || !isSynced) && !activePhoto?.thumbnail_url && (
+              <div 
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-lg aspect-[4/3] rounded-lg bg-gray-200 animate-pulse flex items-center justify-center border border-gray-100 shadow-inner"
+              >
                 <svg className="w-12 h-12 text-gray-400 animate-bounce" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
@@ -296,8 +330,10 @@ export default function PhotoViewModal({
               src={activeImageUrl}
               alt="View"
               onLoad={() => setIsImageLoading(false)}
-              style={{ display: (isImageLoading || !isSynced) ? 'none' : 'block' }}
-              className="max-w-full max-h-[65vh] object-contain rounded-lg shadow-2xl select-none"
+              onClick={(e) => e.stopPropagation()}
+              className={`max-w-full max-h-[65vh] object-contain rounded-lg shadow-2xl select-none transition-opacity duration-300 ${
+                (isImageLoading || !isSynced) ? 'absolute opacity-0 pointer-events-none' : 'opacity-100'
+              }`}
             />
 
             {/* 右矢印ボタン */}
@@ -369,7 +405,10 @@ export default function PhotoViewModal({
           
           {/* 🔍 検索マッチ情報 (検索から遷移してきた場合のみ表示) */}
           {activePhoto?.matches && activePhoto.matches.length > 0 && (
-            <div className="mt-4 w-full max-w-2xl bg-blue-50/80 backdrop-blur-md rounded-2xl shadow-sm border border-blue-200/50 p-4 animate-in slide-in-from-top-4 duration-500">
+            <div 
+              onClick={(e) => e.stopPropagation()}
+              className="mt-4 w-full max-w-2xl bg-blue-50/80 backdrop-blur-md rounded-2xl shadow-sm border border-blue-200/50 p-4 animate-in slide-in-from-top-4 duration-500"
+            >
               <div className="flex items-center gap-2 mb-3">
                 <div className="p-1 bg-blue-500 rounded text-white shadow-sm">
                   <Search className="w-3 h-3" />
@@ -398,7 +437,10 @@ export default function PhotoViewModal({
 
           {/* 説明文 */}
           {(activeDescription || (activePhoto?.description_generated && activePhoto.description_generated.length > 0)) && (
-            <div className="mt-4 w-full max-w-2xl bg-white/80 backdrop-blur-md rounded-2xl shadow-sm border border-white/40 overflow-hidden">
+            <div 
+              onClick={(e) => e.stopPropagation()}
+              className="mt-4 w-full max-w-2xl bg-white/80 backdrop-blur-md rounded-2xl shadow-sm border border-white/40 overflow-hidden"
+            >
               {/* ユーザー説明文 & AI切り替えボタン */}
               <div className="flex items-center justify-between px-5 py-3 gap-4">
                 <p className="flex-1 text-gray-800 font-bold text-base text-left">

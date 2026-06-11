@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import GallerySidebar from './components/GallerySidebar';
 import PhotoViewModal from '../../components/ui/PhotoViewModal';
 import PhotoUploadModal from '../../components/ui/PhotoUploadModal';
@@ -30,30 +30,68 @@ export default function GalleryPage() {
   const [filterPerson, setFilterPerson] = useState<string[]>([]);
 
   const [isLoading, setIsLoading] = useState(true);
+  const [isFetchingMore, setIsFetchingMore] = useState(false);
   const [photos, setPhotos] = useState<GalleryItem[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false); // スマホ用サイドバー開閉
 
-  const fetchPhotos = useCallback(async () => {
+  // ページネーション状態
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const LIMIT = 50;
+
+  const fetchPhotos = useCallback(async (currentOffset = 0, isInit = false) => {
     try {
+      if (isInit) {
+        setIsLoading(true);
+        setHasMore(true);
+      } else {
+        setIsFetchingMore(true);
+      }
+
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token;
       if (!token) return;
       setCurrentUserId(session.user.id);
 
-      const response = await fetch(`${API_BASE_URL}/api/gallery?includeAvatars=true`, {
+      const params = new URLSearchParams();
+      params.append('includeAvatars', 'true');
+      params.append('limit', LIMIT.toString());
+      params.append('offset', currentOffset.toString());
+      
+      if (filterPerson.length > 0) {
+        params.append('userIds', filterPerson.join(','));
+      }
+      if (filterType.length > 0) {
+        params.append('imageTypes', filterType.join(','));
+      }
+      if (searchQuery.trim()) {
+        params.append('search', searchQuery.trim());
+      }
+
+      const response = await fetch(`${API_BASE_URL}/api/gallery?${params.toString()}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
+
       if (response.ok) {
         const data = await response.json();
-        setPhotos(data);
+        if (isInit) {
+          setPhotos(data);
+        } else {
+          setPhotos(prev => [...prev, ...data]);
+        }
+
+        if (data.length < LIMIT) {
+          setHasMore(false);
+        }
       }
     } catch (error) {
       console.error('ギャラリーの取得に失敗しました:', error);
     } finally {
       setIsLoading(false);
+      setIsFetchingMore(false);
     }
-  }, []);
+  }, [filterPerson, filterType, searchQuery]);
 
   const handleClearFilters = () => {
     setSearchQuery('');
@@ -61,9 +99,18 @@ export default function GalleryPage() {
     setFilterPerson([]);
   };
 
+  // フィルター変更時の初期化
   useEffect(() => {
-    fetchPhotos();
-  }, [fetchPhotos]);
+    setOffset(0);
+    fetchPhotos(0, true);
+  }, [searchQuery, filterType, filterPerson, fetchPhotos]);
+
+  const loadMore = () => {
+    if (isLoading || isFetchingMore || !hasMore) return;
+    const nextOffset = offset + LIMIT;
+    setOffset(nextOffset);
+    fetchPhotos(nextOffset, false);
+  };
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-white">
@@ -90,13 +137,13 @@ export default function GalleryPage() {
       <GalleryGrid
         photos={photos}
         isLoading={isLoading}
+        isFetchingMore={isFetchingMore}
+        hasMore={hasMore}
         currentUserId={currentUserId}
-        searchQuery={searchQuery}
-        filterType={filterType}
-        filterPerson={filterPerson}
-        fetchPhotos={fetchPhotos}
+        onLoadMore={loadMore}
         setIsSidebarOpen={setIsSidebarOpen}
         onClearFilters={handleClearFilters}
+        onRefresh={() => fetchPhotos(0, true)}
       />
     </div>
   );
@@ -105,36 +152,45 @@ export default function GalleryPage() {
 type GridProps = {
   photos: GalleryItem[];
   isLoading: boolean;
+  isFetchingMore: boolean;
+  hasMore: boolean;
   currentUserId: string | null;
-  searchQuery: string;
-  filterType: string[];
-  filterPerson: string[];
-  fetchPhotos: () => void;
+  onLoadMore: () => void;
   setIsSidebarOpen: (val: boolean) => void;
   onClearFilters: () => void;
+  onRefresh: () => void;
 };
 
-function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType, filterPerson, fetchPhotos, setIsSidebarOpen, onClearFilters }: GridProps) {
+function GalleryGrid({ 
+  photos, 
+  isLoading, 
+  isFetchingMore, 
+  hasMore, 
+  currentUserId, 
+  onLoadMore, 
+  setIsSidebarOpen, 
+  onClearFilters, 
+  onRefresh 
+}: GridProps) {
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState<{ url: string; description: string | null; isOwner: boolean; photo: GalleryItem } | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
 
-  const filteredPhotos = useMemo(() => {
-    return photos.filter(photo => {
-      const name = (photo.basic_profile_info as any)?.name_english || 'Unknown';
-      const desc = photo.description || '';
-      
-      const matchType = filterType.length === 0 || (photo.image_type && filterType.includes(photo.image_type));
-      const matchPerson = filterPerson.length === 0 || filterPerson.includes(photo.user_id);
-      const matchSearch = !searchQuery || name.toLowerCase().includes(searchQuery.toLowerCase()) || desc.toLowerCase().includes(searchQuery.toLowerCase());
-      
-      return matchType && matchPerson && matchSearch;
-    });
-  }, [photos, filterType, filterPerson, searchQuery]);
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    if (
+      target.scrollHeight - target.scrollTop <= target.clientHeight + 150 &&
+      !isLoading &&
+      !isFetchingMore &&
+      hasMore
+    ) {
+      onLoadMore();
+    }
+  };
 
   return (
     // flex-1 で残りのスペース(右側)を全部埋めます
-    <div className="flex-1 p-6 md:p-8 h-full overflow-y-auto bg-white">
+    <div onScroll={handleScroll} className="flex-1 p-6 md:p-8 h-full overflow-y-auto bg-white">
       
       {/* ヘッダーエリア */}
       <div className="flex flex-col gap-4 mb-8">
@@ -163,47 +219,63 @@ function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType
       </div>
 
       {isLoading ? (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 animate-pulse">
-          {Array.from({ length: 15 }).map((_, i) => (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-6 animate-pulse">
+          {Array.from({ length: 16 }).map((_, i) => (
             <div key={i} className="aspect-square rounded-xl bg-gray-200" />
           ))}
         </div>
-      ) : filteredPhotos.length > 0 ? (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-          {filteredPhotos.map((photo) => (
-            <div 
-              key={photo.id} 
-              className="aspect-square rounded-xl overflow-hidden bg-gray-100 cursor-pointer group relative shadow-sm hover:shadow-md transition-all"
-              onClick={() => {
-                setSelectedPhoto({ 
-                  url: photo.view_url, 
-                  description: photo.description, 
-                  isOwner: photo.user_id === currentUserId,
-                  photo: photo
-                });
-                setViewModalOpen(true);
-              }}
-            >
-              <img 
-                src={photo.thumbnail_url || photo.view_url} 
-                alt={photo.image_type || '写真'} 
-                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" 
-                loading="lazy"
-              />
-              {photo.image_type === 'avatar' && (
-                <div className="absolute top-2 right-2 bg-white/90 p-1.5 rounded-md shadow-sm backdrop-blur-sm z-10" title="アバター写真">
-                  <User className="w-4 h-4 text-gray-500" />
-                </div>
-              )}
-              {photo.description && (
-                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-4 translate-y-full group-hover:translate-y-0 transition-transform duration-300">
-                  <span className="text-white text-sm font-medium truncate block">
-                    {photo.description}
-                  </span>
-                </div>
-              )}
+      ) : photos.length > 0 ? (
+        <div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {photos.map((photo) => (
+              <div 
+                key={photo.id} 
+                className="aspect-square rounded-xl overflow-hidden bg-gray-100 cursor-pointer group relative shadow-sm hover:shadow-md transition-all"
+                onClick={() => {
+                  setSelectedPhoto({ 
+                    url: photo.view_url, 
+                    description: photo.description, 
+                    isOwner: photo.user_id === currentUserId,
+                    photo: photo
+                  });
+                  setViewModalOpen(true);
+                }}
+              >
+                <img 
+                  src={photo.thumbnail_url || photo.view_url} 
+                  alt={photo.image_type || '写真'} 
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" 
+                  loading="lazy"
+                />
+                {photo.image_type === 'avatar' && (
+                  <div className="absolute top-2 right-2 bg-white/90 p-1.5 rounded-md shadow-sm backdrop-blur-sm z-10" title="アバター写真">
+                    <User className="w-4 h-4 text-gray-500" />
+                  </div>
+                )}
+                {photo.description && (
+                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-4 translate-y-full group-hover:translate-y-0 transition-transform duration-300">
+                    <span className="text-white text-sm font-medium truncate block">
+                      {photo.description}
+                    </span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          
+          {/* 追加ロードスピナー */}
+          {isFetchingMore && (
+            <div className="flex justify-center items-center py-8">
+              <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
             </div>
-          ))}
+          )}
+
+          {/* これ以上データがない場合の控えめな表示 */}
+          {!hasMore && photos.length > 10 && (
+            <div className="text-center text-xs text-gray-400 py-8 font-bold">
+              すべての写真を表示しました
+            </div>
+          )}
         </div>
       ) : (
         <div className="w-full py-16 text-center text-gray-400 border-2 border-dashed border-gray-200 rounded-xl flex flex-col items-center justify-center gap-4">
@@ -224,10 +296,10 @@ function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType
         description={selectedPhoto?.description}
         isOwner={selectedPhoto?.isOwner}
         photo={selectedPhoto?.photo}
-        onPhotoUpdated={fetchPhotos}
-        onPhotoDeleted={fetchPhotos}
+        onPhotoUpdated={onRefresh}
+        onPhotoDeleted={onRefresh}
         onClose={() => setViewModalOpen(false)}
-        photos={filteredPhotos}
+        photos={photos}
         initialPhotoId={selectedPhoto?.photo?.id}
         currentUserId={currentUserId}
       />
@@ -236,7 +308,7 @@ function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType
       <PhotoUploadModal
         isOpen={uploadModalOpen}
         onClose={() => setUploadModalOpen(false)}
-        onSuccess={() => fetchPhotos()}
+        onSuccess={onRefresh}
         mode="gallery"
       />
     </div>

@@ -160,6 +160,10 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
     // クエリパラメータでアバターを含めるかどうかを判定（デフォルトは除外）
     const includeAvatars = req.query.includeAvatars === 'true';
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+    const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+    const userIds = req.query.userIds ? (req.query.userIds as string).split(',') : undefined;
+    const imageTypes = req.query.imageTypes ? (req.query.imageTypes as string).split(',') : undefined;
+    const search = req.query.search ? (req.query.search as string).trim() : undefined;
 
     // visibility が public, registered, organization のものを取得
     let query = supabase
@@ -171,10 +175,24 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
       query = query.neq('image_type', 'avatar');
     }
 
+    if (userIds && userIds.length > 0 && userIds[0] !== '') {
+      query = query.in('user_id', userIds);
+    }
+
+    if (imageTypes && imageTypes.length > 0 && imageTypes[0] !== '') {
+      query = query.in('image_type', imageTypes);
+    }
+
+    if (search) {
+      query = query.ilike('description', `%${search}%`);
+    }
+
     query = query.order('created_at', { ascending: false });
 
     if (limit && !isNaN(limit)) {
-      query = query.limit(limit);
+      query = query.range(offset, offset + limit - 1);
+    } else if (offset > 0) {
+      query = query.range(offset, offset + 1000);
     }
 
     const { data: galleries, error: fetchError } = await query;
