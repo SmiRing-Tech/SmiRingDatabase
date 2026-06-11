@@ -352,8 +352,8 @@ function MemberCard({ member, query, matchedKeywords = [], matches = [] }: { mem
   const avatarUrl = member.avatar_link || '/assets/images/profile_photo_empty.png';
   const majorsText = Array.isArray(member.majors) ? member.majors.join(', ') : member.majors;
   const subText = [member.current_school, member.study_abroad_country, majorsText].filter(Boolean).join(' · ');
-  const active = member.last_login_at
-    ? Date.now() - new Date(member.last_login_at).getTime() < SIX_MONTHS_MS
+  const active = member.last_sign_in_at
+    ? Date.now() - new Date(member.last_sign_in_at).getTime() < SIX_MONTHS_MS
     : false;
 
   return (

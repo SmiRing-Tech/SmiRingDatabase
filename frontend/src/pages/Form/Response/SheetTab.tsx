@@ -24,15 +24,16 @@ const CellContent = ({ question, answer }: { question: QuestionData, answer: any
       if (isNaN(date.getTime())) return <Wrapper>{String(answer)}</Wrapper>;
       
       const fmt = question.dateTimeSettings?.format || {};
+      const useUTC = !fmt.timezone;
       const dateParts = [];
-      if (fmt.year) dateParts.push(`${date.getFullYear()}年`);
-      if (fmt.month) dateParts.push(`${date.getMonth() + 1}月`);
-      if (fmt.date) dateParts.push(`${date.getDate()}日`);
+      if (fmt.year) dateParts.push(`${useUTC ? date.getUTCFullYear() : date.getFullYear()}年`);
+      if (fmt.month) dateParts.push(`${(useUTC ? date.getUTCMonth() : date.getMonth()) + 1}月`);
+      if (fmt.date) dateParts.push(`${useUTC ? date.getUTCDate() : date.getDate()}日`);
       
       const timeParts = [];
-      if (fmt.hour) timeParts.push(`${date.getHours()}時`);
-      if (fmt.minute) timeParts.push(`${date.getMinutes()}分`);
-      if (fmt.second) timeParts.push(`${date.getSeconds()}秒`);
+      if (fmt.hour) timeParts.push(`${useUTC ? date.getUTCHours() : date.getHours()}時`);
+      if (fmt.minute) timeParts.push(`${useUTC ? date.getUTCMinutes() : date.getMinutes()}分`);
+      if (fmt.second) timeParts.push(`${useUTC ? date.getUTCSeconds() : date.getSeconds()}秒`);
 
       return (
         <div className="flex items-center gap-1.5 text-gray-700 text-sm py-1">

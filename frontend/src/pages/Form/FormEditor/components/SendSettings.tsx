@@ -33,7 +33,7 @@ type Member = {
   avatar_link?: string;
   study_abroad_country?: string;
   smiring_department?: any;
-  last_login_at?: string | null;
+  last_sign_in_at?: string | null;
 };
 
 type Props = {
@@ -172,8 +172,8 @@ export default function SendSettings({
     const matchesSearch = (m.name_english || '').toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCountry = !filterCountry || normalizeCountry(m.study_abroad_country) === filterCountry;
     const matchesDept = !filterDepartment || normalizeDepartments(m.smiring_department).includes(filterDepartment);
-    const active = m.last_login_at
-      ? Date.now() - new Date(m.last_login_at).getTime() < SIX_MONTHS_MS
+    const active = m.last_sign_in_at
+      ? Date.now() - new Date(m.last_sign_in_at).getTime() < SIX_MONTHS_MS
       : false;
     const matchesActive =
       filterActive === 'active' ? active :
@@ -208,10 +208,19 @@ export default function SendSettings({
 
   return (
     <div className="w-full h-full bg-white p-8 border-l border-gray-200 flex flex-col overflow-y-auto">
-      <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-3 mb-8">
-        <span className={`w-2 h-8 rounded-full inline-block ${isPublished ? 'bg-green-500' : 'bg-blue-600'}`} />
-        {isPublished ? '公開設定の変更' : '送信設定'}
-      </h2>
+      <div className="flex items-center justify-between mb-8">
+        <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-3">
+          <span className={`w-2 h-8 rounded-full inline-block ${isPublished ? 'bg-green-500' : 'bg-blue-600'}`} />
+          {isPublished ? '公開設定の変更' : '送信設定'}
+        </h2>
+        <button
+          onClick={onBackToEdit}
+          className="bg-white border border-gray-200 text-gray-600 px-4 py-2.5 rounded-xl font-bold hover:bg-gray-50 transition-all flex items-center gap-2 text-sm shadow-sm"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          戻る
+        </button>
+      </div>
 
       <div className="space-y-8 flex-1">
 
@@ -316,8 +325,8 @@ export default function SendSettings({
             ) : (
               <div className="divide-y divide-gray-100">
                 {filteredUnselected.map(member => {
-                  const active = member.last_login_at
-                    ? Date.now() - new Date(member.last_login_at).getTime() < SIX_MONTHS_MS
+                  const active = member.last_sign_in_at
+                    ? Date.now() - new Date(member.last_sign_in_at).getTime() < SIX_MONTHS_MS
                     : false;
                   return (
                     <label key={member.id} className="flex items-center gap-4 p-3 cursor-pointer transition-colors hover:bg-gray-50">
@@ -418,10 +427,7 @@ export default function SendSettings({
       </div>
 
       {/* --- 🌟 ボタンエリアのテキスト変更 --- */}
-      <div className="pt-8 mt-4 flex gap-3 border-t border-gray-100">
-        <button onClick={onBackToEdit} className="flex-1 bg-white border border-gray-200 text-gray-600 py-3.5 rounded-xl font-bold hover:bg-gray-50 transition-all flex justify-center items-center gap-2">
-          <ArrowLeft className="w-5 h-5" />戻る
-        </button>
+      <div className="pt-8 mt-4 border-t border-gray-100">
         <button
           onClick={() => onSend({
             assignedUsers: selectedUserIds,
@@ -433,7 +439,7 @@ export default function SendSettings({
             allowEditResponses
           })}
           disabled={isButtonDisabled}
-          className={`flex-[2] text-white py-3.5 rounded-xl font-bold shadow-md transition-all transform hover:scale-[1.02] flex justify-center items-center gap-2 disabled:opacity-50 disabled:hover:scale-100 disabled:cursor-not-allowed ${isPublished ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+          className={`w-full text-white py-3.5 rounded-xl font-bold shadow-md transition-all transform hover:scale-[1.02] flex justify-center items-center gap-2 disabled:opacity-50 disabled:hover:scale-100 disabled:cursor-not-allowed ${isPublished ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
         >
           {isPublished ? (
             <><Settings className="w-5 h-5" />設定を更新</>

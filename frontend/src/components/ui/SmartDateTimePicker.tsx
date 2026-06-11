@@ -23,6 +23,7 @@ export interface SmartDateTimePickerProps {
   is24h?: boolean;
   placeholder?: string;
   defaultFocus?: FieldType;
+  disabled?: boolean;
 }
 
 type FieldType = 'timezone' | 'year' | 'month' | 'date' | 'hour' | 'minute' | 'second';
@@ -37,6 +38,81 @@ const getDaysInMonth = (year: number, month: number) => {
   return new Date(year, month, 0).getDate();
 };
 
+// 指定されたタイムゾーンの現地時間での各パーツ（年・月・日・時・分・秒）を取得する
+const getPartsInTimezone = (date: Date, tz: string) => {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+      hour12: false
+    });
+    const parts = formatter.formatToParts(date);
+    const getPart = (type: string) => parseInt(parts.find(p => p.type === type)?.value || '0', 10);
+    
+    const rawHour = getPart('hour');
+    return {
+      year: getPart('year'),
+      month: getPart('month'),
+      date: getPart('day'),
+      hour: rawHour === 24 ? 0 : rawHour % 24,
+      minute: getPart('minute'),
+      second: getPart('second')
+    };
+  } catch (e) {
+    // タイムゾーンが不正な場合やエラー時はブラウザのローカル時間を使用する
+    return {
+      year: date.getFullYear(),
+      month: date.getMonth() + 1,
+      date: date.getDate(),
+      hour: date.getHours(),
+      minute: date.getMinutes(),
+      second: date.getSeconds()
+    };
+  }
+};
+
+// 指定されたタイムゾーンでの現地時間（年・月・日・時・分・秒）を標準の UTC Date に変換する
+const localTimeToDateInTimezone = (
+  year: number,
+  month: number,
+  date: number,
+  hour: number,
+  minute: number,
+  second: number,
+  tz: string
+): Date => {
+  const localISO = `${year}-${String(month).padStart(2, '0')}-${String(date).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}`;
+  try {
+    const tempDate = new Date(localISO + 'Z');
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      timeZoneName: 'longOffset'
+    });
+    const parts = formatter.formatToParts(tempDate);
+    const tzPart = parts.find(p => p.type === 'timeZoneName')?.value || 'GMT';
+    
+    let offsetMinutes = 0;
+    const match = tzPart.match(/GMT([+-])(\d{1,2}):(\d{2})/);
+    if (match) {
+      const sign = match[1] === '+' ? 1 : -1;
+      const hours = parseInt(match[2], 10);
+      const minutes = parseInt(match[3], 10);
+      offsetMinutes = sign * (hours * 60 + minutes);
+    }
+    
+    const utcDate = new Date(Date.UTC(year, month - 1, date, hour, minute, second));
+    utcDate.setMinutes(utcDate.getMinutes() - offsetMinutes);
+    return utcDate;
+  } catch (e) {
+    return new Date(year, month - 1, date, hour, minute, second);
+  }
+};
+
 export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
   value,
   onChange,
@@ -45,7 +121,8 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
   format = { year: true, month: true, date: true, hour: true, minute: true, second: false, timezone: false },
   is24h = true,
   placeholder = "日時を選択",
-  defaultFocus = 'date'
+  defaultFocus = 'date',
+  disabled = false
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -107,15 +184,26 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
   useEffect(() => {
     if (isOpen) {
       const d = value || new Date();
-      setYear(d.getFullYear());
-      setMonth(d.getMonth() + 1);
-      setDate(d.getDate());
-      setHour(d.getHours());
-      setMinute(d.getMinutes());
-      setSecond(d.getSeconds());
+      const useUTC = !format.timezone;
+      if (useUTC) {
+        setYear(d.getUTCFullYear());
+        setMonth(d.getUTCMonth() + 1);
+        setDate(d.getUTCDate());
+        setHour(d.getUTCHours());
+        setMinute(d.getUTCMinutes());
+        setSecond(d.getUTCSeconds());
+      } else {
+        const partsInTz = getPartsInTimezone(d, localTimezone);
+        setYear(partsInTz.year);
+        setMonth(partsInTz.month);
+        setDate(partsInTz.date);
+        setHour(partsInTz.hour);
+        setMinute(partsInTz.minute);
+        setSecond(partsInTz.second);
+      }
       if (timezone) setLocalTimezone(timezone);
     }
-  }, [isOpen, value, timezone]);
+  }, [isOpen, value, timezone, format.timezone, localTimezone]);
 
   // 存在するフィールドのリスト（Auto-advance用）
   const availableFields = useMemo(() => {
@@ -176,7 +264,13 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
     const finalMinute = format.minute ? minute : 0;
     const finalSecond = format.second ? second : 0;
 
-    const newDate = new Date(finalYear, finalMonth, finalDate, finalHour, finalMinute, finalSecond);
+    const useUTC = !format.timezone;
+    let newDate: Date;
+    if (useUTC) {
+      newDate = new Date(Date.UTC(finalYear, finalMonth, finalDate, finalHour, finalMinute, finalSecond));
+    } else {
+      newDate = localTimeToDateInTimezone(finalYear, finalMonth + 1, finalDate, finalHour, finalMinute, finalSecond, localTimezone);
+    }
     onChange(newDate);
     if (onTimezoneChange) onTimezoneChange(localTimezone);
     setIsOpen(false);
@@ -228,12 +322,25 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
   const getDisplayText = () => {
     if (!value) return placeholder;
     const parts = [];
-    const vYear = value.getFullYear();
-    const vMonth = value.getMonth() + 1;
-    const vDate = value.getDate();
-    const vHour = value.getHours();
-    const vMin = value.getMinutes();
-    const vSec = value.getSeconds();
+    const useUTC = !format.timezone;
+    
+    let vYear, vMonth, vDate, vHour, vMin, vSec;
+    if (useUTC) {
+      vYear = value.getUTCFullYear();
+      vMonth = value.getUTCMonth() + 1;
+      vDate = value.getUTCDate();
+      vHour = value.getUTCHours();
+      vMin = value.getUTCMinutes();
+      vSec = value.getUTCSeconds();
+    } else {
+      const partsInTz = getPartsInTimezone(value, localTimezone);
+      vYear = partsInTz.year;
+      vMonth = partsInTz.month;
+      vDate = partsInTz.date;
+      vHour = partsInTz.hour;
+      vMin = partsInTz.minute;
+      vSec = partsInTz.second;
+    }
 
     if (format.year) parts.push(`${vYear}年`);
     if (format.month) parts.push(`${String(vMonth).padStart(2, '0')}月`);
@@ -498,8 +605,13 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
     <div className="relative w-full" ref={containerRef}>
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-full bg-white border border-gray-300 rounded-xl px-4 py-3 flex items-center shadow-sm hover:border-blue-300 transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 group"
+        disabled={disabled}
+        onClick={() => !disabled && setIsOpen(!isOpen)}
+        className={`w-full border rounded-xl px-4 py-3 flex items-center shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 group ${
+          disabled
+            ? 'bg-gray-50/50 border-gray-100 cursor-not-allowed opacity-60'
+            : 'bg-white border-gray-300 hover:border-blue-300'
+        }`}
       >
         <div className="flex items-center gap-2 flex-1 overflow-hidden">
           {format.timezone && timezone && (
@@ -525,7 +637,7 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
             </span>
           </div>
         </div>
-        <ChevronRight className="w-5 h-5 text-gray-400 group-hover:text-blue-500 transition-all" />
+        {!disabled && <ChevronRight className="w-5 h-5 text-gray-400 group-hover:text-blue-500 transition-all" />}
       </button>
 
       <AnimatePresence>

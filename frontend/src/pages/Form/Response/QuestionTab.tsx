@@ -547,11 +547,13 @@ const formatValue = (value: any, question: QuestionData) => {
       if (isNaN(d.getTime())) return valStr;
 
       const fmt = question.dateTimeSettings.format;
+      const useUTC = !fmt.timezone;
       const hasDate = fmt.year || fmt.month || fmt.date;
       const hasTime = fmt.hour || fmt.minute;
 
       if (hasDate && hasTime) {
         return d.toLocaleString('ja-JP', { 
+          timeZone: useUTC ? 'UTC' : undefined,
           year: fmt.year ? 'numeric' : undefined,
           month: fmt.month ? 'long' : undefined,
           day: fmt.date ? 'numeric' : undefined,
@@ -561,6 +563,7 @@ const formatValue = (value: any, question: QuestionData) => {
         });
       } else if (hasDate) {
         return d.toLocaleDateString('ja-JP', { 
+          timeZone: useUTC ? 'UTC' : undefined,
           year: fmt.year ? 'numeric' : undefined,
           month: fmt.month ? 'long' : undefined,
           day: fmt.date ? 'numeric' : undefined,
@@ -568,6 +571,7 @@ const formatValue = (value: any, question: QuestionData) => {
         });
       } else if (hasTime) {
         return d.toLocaleTimeString('ja-JP', { 
+          timeZone: useUTC ? 'UTC' : undefined,
           hour: fmt.hour ? '2-digit' : undefined,
           minute: fmt.minute ? '2-digit' : undefined,
         });

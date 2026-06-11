@@ -481,6 +481,7 @@ export default function AnswerBox({ question, answer, onChange, error, timezone,
             timezone={timezone}
             onTimezoneChange={onTimezoneChange}
             is24h={question.dateTimeSettings.is24h}
+            disabled={readOnly}
           />
         </div>
       </div>

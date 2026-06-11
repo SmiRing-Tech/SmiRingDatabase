@@ -183,8 +183,8 @@ export default function ProfilePage() {
 
         {/* Active / Non-active バッジ */}
         {(() => {
-          const active = profileData?.last_login_at &&
-            Date.now() - new Date(profileData.last_login_at).getTime() < 6 * 30 * 24 * 60 * 60 * 1000;
+          const active = profileData?.last_sign_in_at &&
+            Date.now() - new Date(profileData.last_sign_in_at).getTime() < 6 * 30 * 24 * 60 * 60 * 1000;
           return (
             <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold mb-6 md:mb-10 ${active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
               <span className={`w-2 h-2 rounded-full ${active ? 'bg-green-500' : 'bg-gray-400'}`} />

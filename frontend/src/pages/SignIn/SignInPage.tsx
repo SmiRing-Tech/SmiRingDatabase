@@ -27,14 +27,7 @@ export default function SignInPage() {
 
       localStorage.setItem('saved_email', email.trim());
 
-      if (data.session?.access_token) {
-        fetch(`${API_BASE_URL}/api/auth/update-last-login`, {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${data.session.access_token}` },
-        }).catch(console.error);
-      }
-
-      navigate('/home');
+            navigate('/home');
     } catch (error: any) {
       showFeedback(`ログインエラー: ${error.message}`, { type: 'error', mode: 'banner' });
     } finally {

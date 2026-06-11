@@ -36,6 +36,7 @@ export default function MembersPage() {
 
   // --- フィルター用State ---
   const [searchQuery, setSearchQuery] = useState('');
+  const [showOnlyActive, setShowOnlyActive] = useState(true);
   const [selectedSchools, setSelectedSchools] = useState<string[]>([]);
   const [selectedMajors, setSelectedMajors] = useState<string[]>([]);
 
@@ -107,7 +108,10 @@ export default function MembersPage() {
       )
     );
 
-    return matchesSearch && matchesSchool && matchesMajor;
+    // 4. アクティブ判定（トグルがオンの場合のみアクティブユーザーに絞る）
+    const matchesActive = !showOnlyActive || isActive(member.last_sign_in_at);
+
+    return matchesSearch && matchesSchool && matchesMajor && matchesActive;
   });
 
   const toggleFilter = (value: string, currentList: string[], setList: React.Dispatch<React.SetStateAction<string[]>>) => {
@@ -209,20 +213,34 @@ export default function MembersPage() {
       <div className="flex-1 p-6 md:p-8 h-full overflow-y-auto">
 
         {/* ヘッダーエリア */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center justify-between mb-8 flex-wrap gap-4">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Our Members</h1>
             <p className="text-sm text-gray-500 mt-1">{filteredMembers.length} members found</p>
           </div>
 
-          {/* スマホ表示の時にだけ出る「フィルターを開く」ボタン */}
-          <button
-            onClick={() => setIsSidebarOpen(true)}
-            className="md:hidden p-2 text-gray-600 bg-white border border-gray-200 shadow-sm hover:bg-gray-50 rounded-lg flex items-center gap-2"
-          >
-            <FilterIcon />
-            <span className="text-sm font-bold">Filter</span>
-          </button>
+          <div className="flex items-center gap-4">
+            {/* アクティブメンバーのみのトグル */}
+            <label className="flex items-center gap-2.5 cursor-pointer select-none bg-white border border-gray-200 px-4 py-2.5 rounded-xl shadow-sm hover:bg-gray-50 hover:border-gray-300 transition-all text-sm font-bold text-gray-600">
+              <input
+                type="checkbox"
+                checked={showOnlyActive}
+                onChange={(e) => setShowOnlyActive(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="relative w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500"></div>
+              <span>Activeのみ表示</span>
+            </label>
+
+            {/* スマホ表示の時にだけ出る「フィルターを開く」ボタン */}
+            <button
+              onClick={() => setIsSidebarOpen(true)}
+              className="md:hidden p-2 text-gray-600 bg-white border border-gray-200 shadow-sm hover:bg-gray-50 rounded-lg flex items-center gap-2"
+            >
+              <FilterIcon />
+              <span className="text-sm font-bold">Filter</span>
+            </button>
+          </div>
         </div>
 
         {/* メンバーグリッド */}
@@ -233,7 +251,7 @@ export default function MembersPage() {
             <SearchIcon className="w-12 h-12 mb-4 text-gray-300" />
             <p>条件に一致するメンバーが見つかりませんでした。</p>
             <button
-              onClick={() => { setSearchQuery(''); setSelectedSchools([]); setSelectedMajors([]); }}
+              onClick={() => { setSearchQuery(''); setSelectedSchools([]); setSelectedMajors([]); setShowOnlyActive(false); }}
               className="mt-4 text-blue-600 font-bold hover:underline"
             >
               フィルターをクリアする
@@ -266,7 +284,7 @@ function VerticalMemberCard({ member }: { member: any }) {
   const nameEnglish = member.name_english || 'No Name';
   const nameKanji = member.name_kanji || '';
   const avatarUrl = member.avatar_link || '/assets/images/profile_photo_empty.png';
-  const active = isActive(member.last_login_at);
+  const active = isActive(member.last_sign_in_at);
 
   // 専攻を配列化（バッジ表示用）
   const majorsArray = member.majors

@@ -43,8 +43,8 @@ function ValueDisplay({ value, fieldKey }: { value: any, fieldKey?: string }) {
         const fieldDef = fieldKey ? BASIC_INFO_FIELDS[fieldKey] : null;
         const fmt = fieldDef?.dateTimeSettings?.format;
         
-        // 時間が不要な設定の場合は、時差の影響を受けないようにUTCメソッドを使用する
-        const useUTC = fmt && !fmt.hour && !fmt.minute;
+        // タイムゾーン設定が無効な場合は、時差の影響を受けないようにUTCメソッドを使用する
+        const useUTC = !fmt || !fmt.timezone;
 
         if (fmt) {
           const parts = [];
@@ -54,9 +54,9 @@ function ValueDisplay({ value, fieldKey }: { value: any, fieldKey?: string }) {
           
           if (fmt.hour || fmt.minute || fmt.second) {
             const timeParts = [];
-            if (fmt.hour) timeParts.push(`${String(d.getHours()).padStart(2, '0')}時`);
-            if (fmt.minute) timeParts.push(`${String(d.getMinutes()).padStart(2, '0')}分`);
-            if (fmt.second) timeParts.push(`${String(d.getSeconds()).padStart(2, '0')}秒`);
+            if (fmt.hour) timeParts.push(`${String(useUTC ? d.getUTCHours() : d.getHours()).padStart(2, '0')}時`);
+            if (fmt.minute) timeParts.push(`${String(useUTC ? d.getUTCMinutes() : d.getMinutes()).padStart(2, '0')}分`);
+            if (fmt.second) timeParts.push(`${String(useUTC ? d.getUTCSeconds() : d.getSeconds()).padStart(2, '0')}秒`);
             parts.push(timeParts.join(''));
           }
           return parts.join(' ');
