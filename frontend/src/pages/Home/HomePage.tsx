@@ -251,7 +251,7 @@ function PhotoGallerySection({ onClickMore }: { onClickMore: () => void }) {
       setIsLoading(true);
       if (user) setCurrentUserId(user.id);
 
-      const response = await apiClient.get('/api/gallery');
+      const response = await apiClient.get('/api/gallery?limit=10');
       if (response.ok) {
         const data = await response.json();
         setPhotos(data);
@@ -321,6 +321,9 @@ function PhotoGallerySection({ onClickMore }: { onClickMore: () => void }) {
         onPhotoUpdated={fetchPhotos}
         onPhotoDeleted={fetchPhotos}
         onClose={() => setViewModalOpen(false)}
+        photos={photos}
+        initialPhotoId={selectedPhoto?.id}
+        currentUserId={currentUserId}
       />
     </div>
   );

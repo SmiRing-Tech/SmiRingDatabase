@@ -141,6 +141,23 @@ export default function HomeSearchBar() {
   const ignoreSuggestionsRef = React.useRef(false); // 🌟 エンター押下後にサジェストが届いても無視するためのフラグ
   const inputRef = React.useRef<HTMLInputElement>(null); // 🌟 入力欄のフォーカス制御用
 
+  const searchPhotos = React.useMemo(() => {
+    return suggestions
+      .filter((s: any) => s.type === 'gallery_image' || s.source_type === 'gallery_image')
+      .map((s: any) => ({
+        id: s.gallery_id || s.id,
+        view_url: s.view_url,
+        thumbnail_url: s.thumbnail_url || s.view_url,
+        description: s.description,
+        description_generated: s.description_generated,
+        user_id: s.user_id,
+        image_type: s.image_type,
+        visibility: s.visibility,
+        basic_profile_info: s.basic_profile_info || s,
+        matches: s.matches
+      }));
+  }, [suggestions]);
+
   const handleSuggestionSelect = (s: any) => {
     setIsOpen(false);
     const profileInfo = s.basic_profile_info || s;
@@ -449,6 +466,8 @@ export default function HomeSearchBar() {
         description={selectedPhoto?.description}
         isOwner={false}
         photo={selectedPhoto}
+        photos={searchPhotos}
+        initialPhotoId={selectedPhoto?.id}
       />
     </div>
   );

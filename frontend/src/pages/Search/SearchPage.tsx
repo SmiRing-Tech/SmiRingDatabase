@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import HomeSearchBar, { type Member, memberMatchesQuery, HighlightedText } from './SearchBar';
 import { apiClient } from '../../lib/apiClient';
+import { supabase } from '../../lib/supabase';
 import { Search, Send, X, ChevronRight, ChevronDown } from 'lucide-react';
 import PhotoViewModal from '../../components/ui/PhotoViewModal';
 
@@ -37,10 +38,17 @@ export default function SearchPage() {
   const [selectedPhoto, setSelectedPhoto] = useState<any>(null); // 🎯 拡大表示用の写真
   const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(false);
   const [searchMode, setSearchMode] = useState<SearchMode>(() => (searchParams.get('mode') as SearchMode) ?? 'smart'); // 🚀 検索モード
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const lastExecutedQueryRef = useRef<number>(0); // 🎯 二重実行防止用（時間ベース）
 
-  // メンバー情報の初期取得
+  // メンバー情報の初期取得とユーザーセッションの取得
   useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        setCurrentUserId(session.user.id);
+      }
+    });
+
     apiClient.get('/api/basic_profile_info')
       .then(res => res.json())
       .then(data => setMembers(data))
@@ -116,6 +124,21 @@ export default function SearchPage() {
     if (!lastConfirmedQuery) return [];
     return members.filter(m => memberMatchesQuery(m, lastConfirmedQuery));
   }, [members, lastConfirmedQuery]);
+
+  const mappedPhotos = useMemo(() => {
+    return vectorResults.photos.map((r: any) => ({
+      id: r.gallery_id,
+      view_url: r.view_url,
+      thumbnail_url: r.thumbnail_url || r.view_url,
+      description: r.description,
+      description_generated: r.description_generated,
+      user_id: r.user_id,
+      image_type: r.image_type,
+      visibility: r.visibility,
+      basic_profile_info: r.basic_profile_info,
+      matches: r.matches
+    }));
+  }, [vectorResults.photos]);
 
   const hasNoResults = lastConfirmedQuery !== '' && 
     filteredMembers.length === 0 && 
@@ -296,6 +319,9 @@ export default function SearchPage() {
         description={selectedPhoto?.description}
         isOwner={false}
         photo={selectedPhoto}
+        photos={mappedPhotos}
+        initialPhotoId={selectedPhoto?.id}
+        currentUserId={currentUserId}
       />
     </div>
   );

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import GallerySidebar from './components/GallerySidebar';
 import PhotoViewModal from '../../components/ui/PhotoViewModal';
 import PhotoUploadModal from '../../components/ui/PhotoUploadModal';
@@ -119,6 +119,19 @@ function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType
   const [selectedPhoto, setSelectedPhoto] = useState<{ url: string; description: string | null; isOwner: boolean; photo: GalleryItem } | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
 
+  const filteredPhotos = useMemo(() => {
+    return photos.filter(photo => {
+      const name = (photo.basic_profile_info as any)?.name_english || 'Unknown';
+      const desc = photo.description || '';
+      
+      const matchType = filterType.length === 0 || (photo.image_type && filterType.includes(photo.image_type));
+      const matchPerson = filterPerson.length === 0 || filterPerson.includes(photo.user_id);
+      const matchSearch = !searchQuery || name.toLowerCase().includes(searchQuery.toLowerCase()) || desc.toLowerCase().includes(searchQuery.toLowerCase());
+      
+      return matchType && matchPerson && matchSearch;
+    });
+  }, [photos, filterType, filterPerson, searchQuery]);
+
   return (
     // flex-1 で残りのスペース(右側)を全部埋めます
     <div className="flex-1 p-6 md:p-8 h-full overflow-y-auto bg-white">
@@ -155,67 +168,54 @@ function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType
             <div key={i} className="aspect-square rounded-xl bg-gray-200" />
           ))}
         </div>
-      ) : (() => {
-        const filteredPhotos = photos.filter(photo => {
-          const name = (photo.basic_profile_info as any)?.name_english || 'Unknown';
-          const desc = photo.description || '';
-          
-          const matchType = filterType.length === 0 || (photo.image_type && filterType.includes(photo.image_type));
-          const matchPerson = filterPerson.length === 0 || filterPerson.includes(photo.user_id);
-          const matchSearch = !searchQuery || name.toLowerCase().includes(searchQuery.toLowerCase()) || desc.toLowerCase().includes(searchQuery.toLowerCase());
-          
-          return matchType && matchPerson && matchSearch;
-        });
-
-        return filteredPhotos.length > 0 ? (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-            {filteredPhotos.map((photo) => (
-              <div 
-                key={photo.id} 
-                className="aspect-square rounded-xl overflow-hidden bg-gray-100 cursor-pointer group relative shadow-sm hover:shadow-md transition-all"
-                onClick={() => {
-                  setSelectedPhoto({ 
-                    url: photo.view_url, 
-                    description: photo.description, 
-                    isOwner: photo.user_id === currentUserId,
-                    photo: photo
-                  });
-                  setViewModalOpen(true);
-                }}
-              >
-                <img 
-                  src={photo.thumbnail_url || photo.view_url} 
-                  alt={photo.image_type || '写真'} 
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" 
-                  loading="lazy"
-                />
-                {photo.image_type === 'avatar' && (
-                  <div className="absolute top-2 right-2 bg-white/90 p-1.5 rounded-md shadow-sm backdrop-blur-sm z-10" title="アバター写真">
-                    <User className="w-4 h-4 text-gray-500" />
-                  </div>
-                )}
-                {photo.description && (
-                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-4 translate-y-full group-hover:translate-y-0 transition-transform duration-300">
-                    <span className="text-white text-sm font-medium truncate block">
-                      {photo.description}
-                    </span>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="w-full py-16 text-center text-gray-400 border-2 border-dashed border-gray-200 rounded-xl flex flex-col items-center justify-center gap-4">
-            <p>条件に一致する写真がありません</p>
-            <button 
-              onClick={onClearFilters}
-              className="text-blue-600 font-bold hover:underline text-sm"
+      ) : filteredPhotos.length > 0 ? (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+          {filteredPhotos.map((photo) => (
+            <div 
+              key={photo.id} 
+              className="aspect-square rounded-xl overflow-hidden bg-gray-100 cursor-pointer group relative shadow-sm hover:shadow-md transition-all"
+              onClick={() => {
+                setSelectedPhoto({ 
+                  url: photo.view_url, 
+                  description: photo.description, 
+                  isOwner: photo.user_id === currentUserId,
+                  photo: photo
+                });
+                setViewModalOpen(true);
+              }}
             >
-              フィルターをクリアする
-            </button>
-          </div>
-        );
-      })()}
+              <img 
+                src={photo.thumbnail_url || photo.view_url} 
+                alt={photo.image_type || '写真'} 
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" 
+                loading="lazy"
+              />
+              {photo.image_type === 'avatar' && (
+                <div className="absolute top-2 right-2 bg-white/90 p-1.5 rounded-md shadow-sm backdrop-blur-sm z-10" title="アバター写真">
+                  <User className="w-4 h-4 text-gray-500" />
+                </div>
+              )}
+              {photo.description && (
+                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-4 translate-y-full group-hover:translate-y-0 transition-transform duration-300">
+                  <span className="text-white text-sm font-medium truncate block">
+                    {photo.description}
+                  </span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="w-full py-16 text-center text-gray-400 border-2 border-dashed border-gray-200 rounded-xl flex flex-col items-center justify-center gap-4">
+          <p>条件に一致する写真がありません</p>
+          <button 
+            onClick={onClearFilters}
+            className="text-blue-600 font-bold hover:underline text-sm"
+          >
+            フィルターをクリアする
+          </button>
+        </div>
+      )}
 
       {/* 写真拡大表示モーダル */}
       <PhotoViewModal
@@ -227,6 +227,9 @@ function GalleryGrid({ photos, isLoading, currentUserId, searchQuery, filterType
         onPhotoUpdated={fetchPhotos}
         onPhotoDeleted={fetchPhotos}
         onClose={() => setViewModalOpen(false)}
+        photos={filteredPhotos}
+        initialPhotoId={selectedPhoto?.photo?.id}
+        currentUserId={currentUserId}
       />
 
       {/* 写真アップロードモーダル */}

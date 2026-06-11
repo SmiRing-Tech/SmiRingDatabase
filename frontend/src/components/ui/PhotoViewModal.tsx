@@ -1,14 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../../config';
 import PhotoEditModal from './PhotoEditModal';
-import { Sparkles, ChevronDown, ChevronUp, Search } from 'lucide-react';
+import { Sparkles, ChevronDown, ChevronUp, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 
 type Props = {
   isOpen: boolean;
-  imageUrl: string | null;
   onClose: () => void;
+  imageUrl?: string | null;
   description?: string | null;
   isOwner?: boolean; // 自分が投稿した写真かどうか
   photo?: {
@@ -34,9 +34,26 @@ type Props = {
   } | null;
   onPhotoUpdated?: () => void;
   onPhotoDeleted?: () => void;
+
+  // スライド機能用
+  photos?: any[] | null;
+  initialPhotoId?: string | null;
+  currentUserId?: string | null;
 };
 
-export default function PhotoViewModal({ isOpen, imageUrl, onClose, description, isOwner, photo, onPhotoUpdated, onPhotoDeleted }: Props) {
+export default function PhotoViewModal({ 
+  isOpen, 
+  imageUrl, 
+  onClose, 
+  description, 
+  isOwner, 
+  photo, 
+  onPhotoUpdated, 
+  onPhotoDeleted,
+  photos,
+  initialPhotoId,
+  currentUserId
+}: Props) {
   const navigate = useNavigate();
   
   // 編集モーダルと削除確認モーダルの状態
@@ -47,11 +64,36 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [showAIDesc, setShowAIDesc] = useState(false);
 
+  // スライド機能用ステート
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [isImageLoading, setIsImageLoading] = useState(true);
+  const [isSynced, setIsSynced] = useState(false);
+  const touchStartX = useRef<number | null>(null);
+
+  const isSlideMode = !!(photos && photos.length > 0);
+  const activePhoto = isSlideMode && photos ? photos[currentIndex] : photo;
+  const activeImageUrl = isSlideMode && photos ? (activePhoto?.view_url || activePhoto?.thumbnail_url) : imageUrl;
+  const activeDescription = isSlideMode && photos ? activePhoto?.description : description;
+  const activeIsOwner = (() => {
+    if (!isSlideMode) return isOwner;
+    if (currentUserId && activePhoto?.user_id) {
+      return activePhoto.user_id === currentUserId;
+    }
+    return isOwner;
+  })();
+
   // stale closure を防ぐため、最新の onClose を ref で保持する
   const onCloseRef = useRef(onClose);
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
+
+  // 画像URLが変わったらローディング状態にする
+  useEffect(() => {
+    if (activeImageUrl) {
+      setIsImageLoading(true);
+    }
+  }, [activeImageUrl]);
 
   // モーダルの開閉に応じて URL ハッシュと body スクロールを制御する
   useEffect(() => {
@@ -59,6 +101,17 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
       setIsVisible(true);
       setShowAIDesc(false); // 新しい写真を開くときはAI解説を閉じておく
       document.body.style.overflow = 'hidden';
+
+      // スライド用のインデックス初期化
+      if (isSlideMode && photos && initialPhotoId) {
+        const idx = photos.findIndex(p => p.id === initialPhotoId);
+        if (idx !== -1) {
+          setCurrentIndex(idx);
+        } else {
+          setCurrentIndex(0);
+        }
+      }
+      setIsSynced(true);
 
       // まだ #photo が付いていない場合のみ履歴を積む
       if (window.location.hash !== '#photo') {
@@ -70,13 +123,15 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
       }
     } else {
       setIsVisible(false);
+      setIsSynced(false);
+      setIsImageLoading(true);
       document.body.style.overflow = 'unset';
     }
 
     return () => {
       document.body.style.overflow = 'unset';
     };
-  }, [isOpen]);
+  }, [isOpen, isSlideMode, photos, initialPhotoId]);
 
   // 戻るボタン（popstate）でモーダルを閉じる
   useEffect(() => {
@@ -102,8 +157,57 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
     }
   };
 
+  const handlePrev = useCallback((e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!isSlideMode || !photos || photos.length === 0 || currentIndex === 0) return;
+    setIsImageLoading(true);
+    setCurrentIndex(prev => prev - 1);
+    setShowAIDesc(false);
+  }, [isSlideMode, photos, currentIndex]);
+
+  const handleNext = useCallback((e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!isSlideMode || !photos || photos.length === 0 || currentIndex === photos.length - 1) return;
+    setIsImageLoading(true);
+    setCurrentIndex(prev => prev + 1);
+    setShowAIDesc(false);
+  }, [isSlideMode, photos, currentIndex]);
+
+  // キーボードイベント（← / → で写真切り替え）
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isOpen || !isSlideMode) return;
+      if (e.key === 'ArrowLeft') {
+        handlePrev();
+      } else if (e.key === 'ArrowRight') {
+        handleNext();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, isSlideMode, handlePrev, handleNext]);
+
+  // タッチイベント（フリックで写真切り替え）
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX.current === null) return;
+    const touchEndX = e.changedTouches[0].clientX;
+    const diffX = touchStartX.current - touchEndX;
+
+    if (diffX > 50) {
+      handleNext();
+    } else if (diffX < -50) {
+      handlePrev();
+    }
+    touchStartX.current = null;
+  };
+
   const handleDeleteConfirm = async () => {
-    if (!photo) return;
+    const targetPhoto = activePhoto;
+    if (!targetPhoto) return;
     setIsDeleting(true);
     setDeleteError(null);
 
@@ -112,7 +216,7 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
       const token = session?.access_token;
       if (!token) throw new Error('認証トークンがありません');
 
-      const response = await fetch(`${API_BASE_URL}/api/gallery/${photo.id}`, {
+      const response = await fetch(`${API_BASE_URL}/api/gallery/${targetPhoto.id}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -134,7 +238,7 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
     }
   };
 
-  if (!isOpen || !imageUrl) return null;
+  if (!isOpen || !activeImageUrl) return null;
 
   return (
     // 背景クリックは何もしない
@@ -157,6 +261,8 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
       {/* 2. スクロール可能なエリア */}
       <div
         onClick={handleCloseButton}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
         className="fixed inset-0 overflow-y-auto cursor-pointer flex flex-col items-center p-6 md:p-12 lg:p-20"
       >
         {/* 3. 画像・コンテンツ本体 (my-auto で中央配置を実現) */}
@@ -164,146 +270,180 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
           onClick={(e) => e.stopPropagation()}
           className="relative w-full max-w-4xl my-auto flex flex-col items-center animate-in zoom-in-95 duration-300 group cursor-default"
         >
-          <div className="relative flex-shrink-0">
-            <img
-              src={imageUrl}
-              alt="View"
-            className="max-w-full max-h-[65vh] object-contain rounded-lg shadow-2xl"
-          />
-
-          {/* 自分の写真の場合のみ、編集・削除ボタンを表示（スマホは常時、PCはホバー時） */}
-          {isOwner && (
-            <div className="absolute top-4 right-4 flex items-center gap-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-200">
-              {/* 編集ボタン */}
+          {/* 画像コンテナと左右矢印 */}
+          <div className="relative flex-shrink-0 flex items-center justify-center w-full min-h-[40vh]">
+            {/* 左矢印ボタン */}
+            {isSlideMode && photos && photos.length > 1 && currentIndex > 0 && (
               <button
-                onClick={() => setIsEditModalOpen(true)}
-                className="p-2 bg-white/90 hover:bg-white text-blue-600 rounded-lg shadow-sm backdrop-blur-sm transition-colors"
-                title="編集"
+                onClick={handlePrev}
+                className="absolute left-4 p-3 bg-white/70 hover:bg-white text-gray-800 rounded-full shadow-lg backdrop-blur-md transition-all z-20 hover:scale-110 active:scale-95 border border-gray-100"
+                aria-label="前の写真"
               >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                </svg>
+                <ChevronLeft className="w-6 h-6" />
               </button>
-              {/* 削除ボタン */}
-              <button
-                onClick={() => setIsDeleteConfirmOpen(true)}
-                className="p-2 bg-white/90 hover:bg-white text-red-600 rounded-lg shadow-sm backdrop-blur-sm transition-colors"
-                title="削除"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              </button>
-            </div>
-          )}
-        </div>
+            )}
 
-        {/* 投稿者情報タイル（写真の下、説明文の上） */}
-        {photo?.basic_profile_info && (
-          <div 
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose(); // モーダルを閉じる
-              navigate(`/members/${photo.basic_profile_info?.id}`);
-            }}
-            className="mt-4 flex items-center gap-3 bg-white/60 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-white/40 shadow-sm hover:bg-white/80 hover:shadow-md hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer group/tile"
-          >
-            <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-200 border-2 border-white shadow-sm flex-shrink-0">
-              <img
-                src={photo.basic_profile_info.avatar_url || '/assets/images/profile_photo_empty.png'}
-                alt=""
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).src = '/assets/images/profile_photo_empty.png';
-                }}
-              />
-            </div>
-            <div className="flex flex-col">
-              <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider leading-none mb-0.5 group-hover/tile:text-blue-500 transition-colors">Uploaded by</span>
-              <span className="text-sm font-bold text-gray-700 leading-none group-hover/tile:text-blue-600 transition-colors">
-                {photo.basic_profile_info.name_english || photo.basic_profile_info.name_kanji || 'Unknown'}
-              </span>
-            </div>
-          </div>
-        )}
-        
-        {/* 🔍 検索マッチ情報 (検索から遷移してきた場合のみ表示) */}
-        {photo?.matches && photo.matches.length > 0 && (
-          <div className="mt-4 w-full max-w-2xl bg-blue-50/80 backdrop-blur-md rounded-2xl shadow-sm border border-blue-200/50 p-4 animate-in slide-in-from-top-4 duration-500">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="p-1 bg-blue-500 rounded text-white shadow-sm">
-                <Search className="w-3 h-3" />
+            {/* ローディングプレースホルダー（スケルトン） */}
+            {(isImageLoading || !isSynced) && (
+              <div className="w-full max-w-lg aspect-[4/3] rounded-lg bg-gray-200 animate-pulse flex items-center justify-center border border-gray-100 shadow-inner">
+                <svg className="w-12 h-12 text-gray-400 animate-bounce" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
               </div>
-              <span className="text-xs font-bold text-blue-700 uppercase tracking-wider">Search Match</span>
-            </div>
-            <div className="space-y-2">
-              {photo.matches.map((m, idx) => (
-                <div key={idx} className="flex flex-col gap-1 p-2 bg-white/60 rounded-lg border border-blue-100/50">
-                  <div className="flex items-center gap-2">
-                    <span className="px-1.5 py-0.5 rounded bg-blue-100 text-[10px] font-bold text-blue-600">
-                      {m.keyword}
-                    </span>
-                    <span className="text-[10px] text-gray-400">
-                      {m.source_type === 'gallery_image' ? '📸 画像の説明文' : '📝 コンテンツ'}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-700 leading-relaxed">
-                    「{m.content}」
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+            )}
 
-        {/* 説明文 */}
-        {(description || (photo?.description_generated && photo.description_generated.length > 0)) && (
-          <div className="mt-4 w-full max-w-2xl bg-white/80 backdrop-blur-md rounded-2xl shadow-sm border border-white/40 overflow-hidden">
-            {/* ユーザー説明文 & AI切り替えボタン */}
-            <div className="flex items-center justify-between px-5 py-3 gap-4">
-              <p className="flex-1 text-gray-800 font-bold text-base text-left">
-                {description || 'No description'}
-              </p>
-              
-              {photo?.description_generated && photo.description_generated.length > 0 && (
+            <img
+              src={activeImageUrl}
+              alt="View"
+              onLoad={() => setIsImageLoading(false)}
+              style={{ display: (isImageLoading || !isSynced) ? 'none' : 'block' }}
+              className="max-w-full max-h-[65vh] object-contain rounded-lg shadow-2xl select-none"
+            />
+
+            {/* 右矢印ボタン */}
+            {isSlideMode && photos && photos.length > 1 && currentIndex < photos.length - 1 && (
+              <button
+                onClick={handleNext}
+                className="absolute right-4 p-3 bg-white/70 hover:bg-white text-gray-800 rounded-full shadow-lg backdrop-blur-md transition-all z-20 hover:scale-110 active:scale-95 border border-gray-100"
+                aria-label="次の写真"
+              >
+                <ChevronRight className="w-6 h-6" />
+              </button>
+            )}
+
+            {/* 自分の写真の場合のみ、編集・削除ボタンを表示（スマホは常時、PCはホバー時） */}
+            {activeIsOwner && (
+              <div className="absolute top-4 right-4 flex items-center gap-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-200 z-20">
+                {/* 編集ボタン */}
                 <button
-                  onClick={() => setShowAIDesc(!showAIDesc)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-300 flex-shrink-0 ${
-                    showAIDesc 
-                      ? 'bg-blue-500 text-white shadow-md' 
-                      : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
-                  }`}
-                  title="AIによる詳細解説を表示"
+                  onClick={() => setIsEditModalOpen(true)}
+                  className="p-2 bg-white/90 hover:bg-white text-blue-600 rounded-lg shadow-sm backdrop-blur-sm transition-colors"
+                  title="編集"
                 >
-                  <Sparkles className={`w-4 h-4 ${showAIDesc ? 'animate-pulse' : ''}`} />
-                  <span className="text-[11px] font-bold uppercase tracking-wider">AI Analysis</span>
-                  {showAIDesc ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
                 </button>
-              )}
-            </div>
-
-            {/* AI詳細解説（アコーディオン） */}
-            {showAIDesc && photo?.description_generated && (
-              <div className="px-5 pb-5 pt-1 animate-in slide-in-from-top-2 duration-300">
-                <div className="p-4 bg-blue-50/50 rounded-xl border border-blue-100/50 space-y-2">
-                  {photo.description_generated.map((line, idx) => (
-                    <div key={idx} className="flex gap-2 text-sm text-gray-700 leading-relaxed">
-                      <span className="text-blue-400 font-bold shrink-0">•</span>
-                      <p>{line}</p>
-                    </div>
-                  ))}
-                  <div className="pt-2 flex justify-end">
-                    <span className="text-[9px] text-blue-300 font-bold uppercase tracking-widest flex items-center gap-1">
-                      Powered by Gemini 3.1 Flash
-                    </span>
-                  </div>
-                </div>
+                {/* 削除ボタン */}
+                <button
+                  onClick={() => setIsDeleteConfirmOpen(true)}
+                  className="p-2 bg-white/90 hover:bg-white text-red-600 rounded-lg shadow-sm backdrop-blur-sm transition-colors"
+                  title="削除"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
               </div>
             )}
           </div>
-        )}
-      </div> {/* 3. Content Wrapper */}
-    </div> {/* 2. Scrollable Area */}
+
+          {/* 投稿者情報タイル（写真の下、説明文の上） */}
+          {activePhoto?.basic_profile_info && (
+            <div 
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose(); // モーダルを閉じる
+                navigate(`/members/${activePhoto.basic_profile_info?.id}`);
+              }}
+              className="mt-4 flex items-center gap-3 bg-white/60 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-white/40 shadow-sm hover:bg-white/80 hover:shadow-md hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer group/tile"
+            >
+              <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-200 border-2 border-white shadow-sm flex-shrink-0">
+                <img
+                  src={activePhoto.basic_profile_info.avatar_url || '/assets/images/profile_photo_empty.png'}
+                  alt=""
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).src = '/assets/images/profile_photo_empty.png';
+                  }}
+                />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider leading-none mb-0.5 group-hover/tile:text-blue-500 transition-colors">Uploaded by</span>
+                <span className="text-sm font-bold text-gray-700 leading-none group-hover/tile:text-blue-600 transition-colors">
+                  {activePhoto.basic_profile_info.name_english || activePhoto.basic_profile_info.name_kanji || 'Unknown'}
+                </span>
+              </div>
+            </div>
+          )}
+          
+          {/* 🔍 検索マッチ情報 (検索から遷移してきた場合のみ表示) */}
+          {activePhoto?.matches && activePhoto.matches.length > 0 && (
+            <div className="mt-4 w-full max-w-2xl bg-blue-50/80 backdrop-blur-md rounded-2xl shadow-sm border border-blue-200/50 p-4 animate-in slide-in-from-top-4 duration-500">
+              <div className="flex items-center gap-2 mb-3">
+                <div className="p-1 bg-blue-500 rounded text-white shadow-sm">
+                  <Search className="w-3 h-3" />
+                </div>
+                <span className="text-xs font-bold text-blue-700 uppercase tracking-wider">Search Match</span>
+              </div>
+              <div className="space-y-2">
+                {activePhoto.matches.map((m: any, idx: number) => (
+                  <div key={idx} className="flex flex-col gap-1 p-2 bg-white/60 rounded-lg border border-blue-100/50">
+                    <div className="flex items-center gap-2">
+                      <span className="px-1.5 py-0.5 rounded bg-blue-100 text-[10px] font-bold text-blue-600">
+                        {m.keyword}
+                      </span>
+                      <span className="text-[10px] text-gray-400">
+                        {m.source_type === 'gallery_image' ? '📸 画像の説明文' : '📝 コンテンツ'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-700 leading-relaxed">
+                      「{m.content}」
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 説明文 */}
+          {(activeDescription || (activePhoto?.description_generated && activePhoto.description_generated.length > 0)) && (
+            <div className="mt-4 w-full max-w-2xl bg-white/80 backdrop-blur-md rounded-2xl shadow-sm border border-white/40 overflow-hidden">
+              {/* ユーザー説明文 & AI切り替えボタン */}
+              <div className="flex items-center justify-between px-5 py-3 gap-4">
+                <p className="flex-1 text-gray-800 font-bold text-base text-left">
+                  {activeDescription || 'No description'}
+                </p>
+                
+                {activePhoto?.description_generated && activePhoto.description_generated.length > 0 && (
+                  <button
+                    onClick={() => setShowAIDesc(!showAIDesc)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-300 flex-shrink-0 ${
+                      showAIDesc 
+                        ? 'bg-blue-500 text-white shadow-md' 
+                        : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+                    }`}
+                    title="AIによる詳細解説を表示"
+                  >
+                    <Sparkles className={`w-4 h-4 ${showAIDesc ? 'animate-pulse' : ''}`} />
+                    <span className="text-[11px] font-bold uppercase tracking-wider">AI Analysis</span>
+                    {showAIDesc ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                  </button>
+                )}
+              </div>
+
+              {/* AI詳細解説（アコーディオン） */}
+              {showAIDesc && activePhoto?.description_generated && (
+                <div className="px-5 pb-5 pt-1 animate-in slide-in-from-top-2 duration-300">
+                  <div className="p-4 bg-blue-50/50 rounded-xl border border-blue-100/50 space-y-2">
+                    {activePhoto.description_generated.map((line: string, idx: number) => (
+                      <div key={idx} className="flex gap-2 text-sm text-gray-700 leading-relaxed">
+                        <span className="text-blue-400 font-bold shrink-0">•</span>
+                        <p>{line}</p>
+                      </div>
+                    ))}
+                    <div className="pt-2 flex justify-end">
+                      <span className="text-[9px] text-blue-300 font-bold uppercase tracking-widest flex items-center gap-1">
+                        Powered by Gemini 3.1 Flash
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div> {/* 3. Content Wrapper */}
+      </div> {/* 2. Scrollable Area */}
 
       {/* 削除確認モーダル */}
       {isDeleteConfirmOpen && (
@@ -369,10 +509,10 @@ export default function PhotoViewModal({ isOpen, imageUrl, onClose, description,
       <PhotoEditModal
         isOpen={isEditModalOpen}
         onClose={() => setIsEditModalOpen(false)}
-        photo={photo ?? null}
+        photo={activePhoto ?? null}
         onSuccess={() => {
           if (onPhotoUpdated) onPhotoUpdated();
-          onClose(); // 更新後、表示用モーダルも閉じるか、そのままにするか。今回は閉じる。
+          onClose(); // 更新後、表示用モーダルも閉じる
         }}
       />
     </div>

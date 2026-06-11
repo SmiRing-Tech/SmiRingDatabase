@@ -331,6 +331,8 @@ export default function ProfilePage() {
         photo={selectedPhoto}
         onPhotoUpdated={() => fetchGallery(profileData.id)}
         onPhotoDeleted={() => fetchGallery(profileData.id)}
+        photos={galleryItems}
+        initialPhotoId={selectedPhoto?.id}
       />
     </div>
   );

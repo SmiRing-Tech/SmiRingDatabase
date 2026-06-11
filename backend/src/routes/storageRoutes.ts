@@ -159,6 +159,7 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
 
     // クエリパラメータでアバターを含めるかどうかを判定（デフォルトは除外）
     const includeAvatars = req.query.includeAvatars === 'true';
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
 
     // visibility が public, registered, organization のものを取得
     let query = supabase
@@ -170,7 +171,13 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
       query = query.neq('image_type', 'avatar');
     }
 
-    const { data: galleries, error: fetchError } = await query.order('created_at', { ascending: false });
+    query = query.order('created_at', { ascending: false });
+
+    if (limit && !isNaN(limit)) {
+      query = query.limit(limit);
+    }
+
+    const { data: galleries, error: fetchError } = await query;
 
     if (fetchError) throw fetchError;
 

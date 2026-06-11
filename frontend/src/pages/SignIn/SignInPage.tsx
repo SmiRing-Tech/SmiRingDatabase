@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { useFeedback } from '../../context/FeedbackContext';
 import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
-import { API_BASE_URL } from '../../config';
 import { Eye, EyeOff, Mail, Lock, ArrowRight, Loader2 } from 'lucide-react';
 import AuthLayout from './AuthLayout';
 
@@ -18,7 +17,7 @@ export default function SignInPage() {
     e.preventDefault();
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password,
       });
