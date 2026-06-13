@@ -98,9 +98,6 @@ router.patch('/api/basic_profile_info/me', async (req: Request, res: Response) =
     // Body から更新したいフィールドのみ受け取り、メタデータを分離
     const { _ai_metadata, ...updates } = req.body;
 
-    // 更新日時をセット
-    updates.updated_at = new Date().toISOString();
-
     const { data, error } = await supabase
       .from('basic_profile_info')
       .update(updates)

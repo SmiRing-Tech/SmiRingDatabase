@@ -132,8 +132,7 @@ async function reindexAll() {
               type: 'profile', 
               user_id: user.id,
               field_key: field.id,
-              name_english: user.name_english,
-              updated_at: new Date().toISOString()
+              name_english: user.name_english
             }
           });
 

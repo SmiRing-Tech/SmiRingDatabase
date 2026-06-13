@@ -24,7 +24,7 @@ router.get('/api/forms/:id', async (req: Request, res: Response) => {
     const includeDeleted = req.query.includeDeleted === 'true';
 
     let query = supabase
-      .from('form_questions')
+      .from('form_question_mappings')
       .select('*, questions(*)')
       .eq('form_id', formId)
       .order('order_index', { ascending: true });
@@ -95,7 +95,6 @@ router.post('/api/forms/:id/save', async (req: Request, res: Response) => {
       allow_multiple_responses: allow_multiple_responses !== undefined ? allow_multiple_responses : false,
       allow_edit_responses: allow_edit_responses !== undefined ? allow_edit_responses : true,
       allow_anonymous: req.body.allow_anonymous !== undefined ? req.body.allow_anonymous : false,
-      updated_at: new Date().toISOString(),
     });
     if (formError) throw formError;
 
@@ -123,11 +122,11 @@ router.post('/api/forms/:id/save', async (req: Request, res: Response) => {
       if (qError) throw qError;
     }
 
-    // 3. 紐付け (form_questions) の差分更新処理
+    // 3. 紐付け (form_question_mappings) の差分更新処理
 
     // ① 現在DBに保存されている、このフォームの紐付けデータを主キー(id)込みで取得
     const { data: existingLinks, error: fetchError } = await supabase
-      .from('form_questions')
+      .from('form_question_mappings')
       .select('id, question_id')
       .eq('form_id', formId);
     if (fetchError) throw fetchError;
@@ -139,7 +138,7 @@ router.post('/api/forms/:id/save', async (req: Request, res: Response) => {
     const idsToDelete = existingQuestionIds.filter(id => !newQuestionIds.includes(id));
     if (idsToDelete.length > 0) {
       const { data: responses, error: respError } = await supabase
-        .from('form_responses')
+        .from('form_response_mappings')
         .select('id')
         .eq('form_id', formId)
         .eq('status', 'submitted')
@@ -152,7 +151,7 @@ router.post('/api/forms/:id/save', async (req: Request, res: Response) => {
       if (hasResponses) {
         // 回答がある場合はソフトデリート (is_deleted = true)
         const { error: updateError } = await supabase
-          .from('form_questions')
+          .from('form_question_mappings')
           .update({ is_deleted: true })
           .eq('form_id', formId)
           .in('question_id', idsToDelete);
@@ -160,7 +159,7 @@ router.post('/api/forms/:id/save', async (req: Request, res: Response) => {
       } else {
         // 回答がない場合は物理削除
         const { error: deleteError } = await supabase
-          .from('form_questions')
+          .from('form_question_mappings')
           .delete()
           .eq('form_id', formId)
           .in('question_id', idsToDelete);
@@ -197,12 +196,12 @@ router.post('/api/forms/:id/save', async (req: Request, res: Response) => {
 
     // ④ まとめて実行
     if (toInsert.length > 0) {
-      const { error: insertError } = await supabase.from('form_questions').insert(toInsert);
+      const { error: insertError } = await supabase.from('form_question_mappings').insert(toInsert);
       if (insertError) throw insertError;
     }
 
     if (toUpdate.length > 0) {
-      const { error: updateError } = await supabase.from('form_questions').upsert(toUpdate);
+      const { error: updateError } = await supabase.from('form_question_mappings').upsert(toUpdate);
       if (updateError) throw updateError;
     }
 
@@ -237,8 +236,7 @@ router.post('/api/forms/:id/publish', async (req: Request, res: Response) => {
         allow_anonymous: allow_anonymous,
         allow_multiple_responses: allow_multiple_responses ?? false,
         allow_edit_responses: allow_edit_responses ?? true,
-        publish_settings: publish_settings,
-        updated_at: new Date().toISOString()
+        publish_settings: publish_settings
       })
       .eq('id', formId);
 
@@ -270,24 +268,22 @@ router.post('/api/forms/:id/responses/save', async (req: Request, res: Response)
 
     if (response_id) {
       const { error } = await supabase
-        .from('form_responses')
+        .from('form_response_mappings')
         .update({
           content: content,
-          status: 'draft',
-          updated_at: new Date().toISOString()
+          status: 'draft'
         })
         .eq('id', response_id)
         .eq('user_id', user_id);
       if (error) throw error;
     } else {
       const { data, error } = await supabase
-        .from('form_responses')
+        .from('form_response_mappings')
         .insert({
           form_id: formId,
           user_id: user_id,
           content: content,
-          status: 'draft',
-          updated_at: new Date().toISOString()
+          status: 'draft'
         })
         .select('id')
         .single();
@@ -336,7 +332,7 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
     // 3. 複数回答不可の場合、既存の回答（下書き含む）がないか念のため再確認してIDを特定する
     if (!allowMultiple && !finalResponseId) {
       const { data: existing } = await supabase
-        .from('form_responses')
+        .from('form_response_mappings')
         .select('id')
         .eq('form_id', formId)
         .eq('user_id', user_id)
@@ -349,14 +345,13 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
       }
     }
 
-    // 4. form_responses を更新/挿入
+    // 4. form_response_mappings を更新/挿入
     const upsertData: any = {
       form_id: formId,
       user_id: user_id,
       content: answers,
       status: 'submitted',
       submitted_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
       is_anonymous: isAnonymous
     };
 
@@ -365,7 +360,7 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
     }
 
     const { data: responseData, error: responseError } = await supabase
-      .from('form_responses')
+      .from('form_response_mappings')
       .upsert(upsertData)
       .select('id')
       .single();
@@ -418,7 +413,7 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
         const [formRes, qLinksRes] = await Promise.all([
           supabase.from('forms').select('title').eq('id', formId).single(),
           supabase
-            .from('form_questions')
+            .from('form_question_mappings')
             .select('questions(id, title, question_type, options)')
             .eq('form_id', formId)
             .eq('is_deleted', false)
@@ -504,7 +499,7 @@ router.get('/api/users/:id/form-responses', async (req: Request, res: Response) 
 
   try {
     const { data, error } = await supabase
-      .from('form_responses')
+      .from('form_response_mappings')
       .select(`
         id,
         status,
@@ -561,7 +556,7 @@ router.get('/api/assigned-forms', async (req: Request, res: Response) => {
     let responsesData: any[] = [];
     if (formIds.length > 0) {
       const { data } = await supabase
-        .from('form_responses')
+        .from('form_response_mappings')
         .select('form_id, status')
         .in('form_id', formIds)
         .eq('user_id', user.id);
@@ -599,7 +594,7 @@ router.get('/api/forms/:id/my-responses', async (req: Request, res: Response) =>
     if (authError || !user) throw authError;
 
     const { data, error } = await supabase
-      .from('form_responses')
+      .from('form_response_mappings')
       .select('*')
       .eq('form_id', formId)
       .eq('user_id', user.id)
@@ -622,7 +617,7 @@ router.get('/api/forms/:id/responses/count', async (req: Request, res: Response)
 
   try {
     const { count, error } = await supabase
-      .from('form_responses')
+      .from('form_response_mappings')
       .select('*', { count: 'exact', head: true })
       .eq('form_id', formId)
       .eq('status', 'submitted');
@@ -643,7 +638,7 @@ router.get('/api/forms/:id/responses', async (req: Request, res: Response) => {
 
   try {
     const { data: responses, error: responseError } = await supabase
-      .from('form_responses')
+      .from('form_response_mappings')
       .select('id, user_id, status, submitted_at, updated_at, content, is_anonymous')
       .eq('form_id', formId)
       .eq('status', 'submitted')
@@ -670,7 +665,7 @@ router.get('/api/forms/:id/responses', async (req: Request, res: Response) => {
     }
 
     // 質問一覧を取得して file_upload タイプを特定
-    const { data: qData } = await supabase.from('form_questions').select('questions(id, question_type)').eq('form_id', formId);
+    const { data: qData } = await supabase.from('form_question_mappings').select('questions(id, question_type)').eq('form_id', formId);
     const fileQuestionIds = (qData || [])
       .filter((q: any) => q.questions?.question_type === 'file_upload')
       .map((q: any) => q.questions.id);
@@ -720,7 +715,7 @@ router.get('/api/form-responses/:responseId', async (req: Request, res: Response
   try {
     // 1. 回答本体を取得
     const { data: response, error: responseError } = await supabase
-      .from('form_responses')
+      .from('form_response_mappings')
       .select('id, form_id, user_id, content, status, submitted_at, is_anonymous')
       .eq('id', responseId)
       .single();
@@ -740,7 +735,7 @@ router.get('/api/form-responses/:responseId', async (req: Request, res: Response
 
     // 3. 質問一覧を取得
     const { data: qLinks, error: qError } = await supabase
-      .from('form_questions')
+      .from('form_question_mappings')
       .select('order_index, is_required, questions(id, title, description, question_type, options)')
       .eq('form_id', form_id)
       .order('order_index', { ascending: true });
@@ -841,7 +836,7 @@ router.get('/api/forms/:id/non-respondents', async (req: Request, res: Response)
 
     // 提出済みの user_id を取得
     const { data: submitted } = await supabase
-      .from('form_responses')
+      .from('form_response_mappings')
       .select('user_id')
       .eq('form_id', formId)
       .eq('status', 'submitted');
