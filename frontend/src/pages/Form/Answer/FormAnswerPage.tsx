@@ -7,7 +7,7 @@ import type { QuestionData } from '../FormEditor/FormEditorPage';
 import FormAnswerUI from './components/FormAnswerUI';
 import { supabase } from '../../../lib/supabase';
 import { CheckCircle2, Home, Edit2, PlusCircle } from 'lucide-react';
-import { API_BASE_URL } from '../../../config';
+import { apiClient } from '../../../lib/apiClient';
 
 export default function FormAnswerPage() {
   const { showFeedback } = useFeedback();
@@ -97,11 +97,9 @@ export default function FormAnswerPage() {
 
         // 🌟 修正：Promise.all を使って並列でリクエストを投げる
         const [formRes, draftRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/api/forms/${id}`),
+          apiClient.get(`/api/forms/${id}`),
           userId && !isPreviewMode 
-            ? fetch(`${API_BASE_URL}/api/forms/${id}/my-responses`, {
-                headers: { 'Authorization': `Bearer ${session.access_token}` }
-              })
+            ? apiClient.get(`/api/forms/${id}/my-responses`)
             : Promise.resolve(null)
         ]);
 
@@ -184,16 +182,9 @@ export default function FormAnswerPage() {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session?.user?.id) return; // 匿名の場合は下書き保存スキップ（必要に応じて調整）
 
-        const res = await fetch(`${API_BASE_URL}/api/forms/${id}/responses/save`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`
-          },
-          body: JSON.stringify({
-            response_id: responseId,
-            content: answers,
-          })
+        const res = await apiClient.post(`/api/forms/${id}/responses/save`, {
+          response_id: responseId,
+          content: answers,
         });
 
         if (res.ok) {
@@ -224,19 +215,10 @@ export default function FormAnswerPage() {
 
     setIsLoading(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      const response = await fetch(`${API_BASE_URL}/api/forms/${id}/submit`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token}`
-        },
-        body: JSON.stringify({
-          response_id: responseId,
-          answers: answersToSubmit,
-          turnstileToken,
-        })
+      const response = await apiClient.post(`/api/forms/${id}/submit`, {
+        response_id: responseId,
+        answers: answersToSubmit,
+        turnstileToken,
       });
 
       if (!response.ok) {

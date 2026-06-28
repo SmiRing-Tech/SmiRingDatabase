@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.STAGE_FIELDS_MAP = exports.ROLE_NAMES = exports.STAGE_TABLE_MAP = exports.ROLE_GUARDIAN = exports.ROLE_POST = exports.ROLE_CURRENT = exports.ROLE_PRE = void 0;
+exports.ALL_STAGE_FIELDS = exports.STAGE_FIELDS_MAP = exports.ROLE_NAMES = exports.STAGE_TABLE_MAP = exports.ROLE_GUARDIAN = exports.ROLE_POST = exports.ROLE_CURRENT = exports.ROLE_PRE = void 0;
 exports.filterProfileByActiveRole = filterProfileByActiveRole;
 exports.selectActiveRole = selectActiveRole;
 const express_1 = require("express");
@@ -67,14 +67,17 @@ exports.STAGE_FIELDS_MAP = {
         'concerns'
     ]
 };
-function filterProfileByActiveRole(profile, activeRole) {
-    const allStageFields = new Set();
+exports.ALL_STAGE_FIELDS = (() => {
+    const fieldsSet = new Set();
     Object.values(exports.STAGE_FIELDS_MAP).forEach(fields => {
-        fields.forEach(f => allStageFields.add(f));
+        fields.forEach(f => fieldsSet.add(f));
     });
+    return fieldsSet;
+})();
+function filterProfileByActiveRole(profile, activeRole) {
     const allowedFields = new Set(activeRole ? exports.STAGE_FIELDS_MAP[activeRole] || [] : []);
     const filtered = { ...profile };
-    allStageFields.forEach(field => {
+    exports.ALL_STAGE_FIELDS.forEach(field => {
         if (!allowedFields.has(field)) {
             delete filtered[field];
         }
@@ -208,8 +211,13 @@ router.get('/api/basic_profile_info', authenticate_1.authenticate, async (req, r
                 const stageData = stageDataMap.get(p.id) || {};
                 const roles = userRolesMap.get(p.id) || [];
                 const active = selectActiveRole(roles);
+                // Remove legacy stage fields from basic profile to avoid leaks
+                const cleanBasic = { ...p };
+                exports.ALL_STAGE_FIELDS.forEach(field => {
+                    delete cleanBasic[field];
+                });
                 const merged = {
-                    ...p,
+                    ...cleanBasic,
                     ...stageData,
                     active_stage_role_id: active ? exports.ROLE_NAMES[active] : null,
                     id: p.id // Keep user's ID
@@ -284,8 +292,13 @@ router.get('/api/basic_profile_info/me', authenticate_1.authenticate, async (req
                 }
             }
         }
+        // Remove legacy stage fields from basic profile to avoid leaks
+        const cleanBasic = { ...basicInfo };
+        exports.ALL_STAGE_FIELDS.forEach(field => {
+            delete cleanBasic[field];
+        });
         const profile = {
-            ...basicInfo,
+            ...cleanBasic,
             ...stageData,
             active_stage_role_id: activeRole ? exports.ROLE_NAMES[activeRole] : null,
             id: basicInfo.id // Keep user's ID
@@ -363,7 +376,7 @@ router.patch('/api/basic_profile_info/me', authenticate_1.authenticate, async (r
             if (allowedStageFields.includes(key)) {
                 stageUpdates[key] = value;
             }
-            else {
+            else if (!exports.ALL_STAGE_FIELDS.has(key)) {
                 basicUpdates[key] = value;
             }
         }
@@ -542,8 +555,13 @@ router.get('/api/basic_profile_info/:id', authenticate_1.authenticate, async (re
                 }
             }
         }
+        // Remove legacy stage fields from basic profile to avoid leaks
+        const cleanBasic = { ...basicInfo };
+        exports.ALL_STAGE_FIELDS.forEach(field => {
+            delete cleanBasic[field];
+        });
         const profile = {
-            ...basicInfo,
+            ...cleanBasic,
             ...stageData,
             active_stage_role_id: activeRole ? exports.ROLE_NAMES[activeRole] : null,
             id: basicInfo.id // Keep user's ID

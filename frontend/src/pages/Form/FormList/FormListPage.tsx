@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '../../../lib/supabase';
-import { API_BASE_URL } from '../../../config';
+import { apiClient } from '../../../lib/apiClient';
 import { X, Users } from 'lucide-react';
 
 export default function FormListPage() {
@@ -26,16 +25,12 @@ export default function FormListPage() {
     setIsModalOpen(true);
     setIsModalLoading(true);
 
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token;
-    if (!token) { setIsModalLoading(false); return; }
-
     const [nonRes, doneRes] = await Promise.all([
-      fetch(`${API_BASE_URL}/api/forms/${form.id}/non-respondents`, { headers: { 'Authorization': `Bearer ${token}` } }),
-      fetch(`${API_BASE_URL}/api/forms/${form.id}/responses`, { headers: { 'Authorization': `Bearer ${token}` } }),
+      apiClient.get(`/api/forms/${form.id}/non-respondents`),
+      apiClient.get(`/api/forms/${form.id}/responses`),
     ]);
-    setNonRespondents(await nonRes.json());
-    setRespondents(await doneRes.json());
+    if (nonRes.ok) setNonRespondents(await nonRes.json());
+    if (doneRes.ok) setRespondents(await doneRes.json());
     setIsModalLoading(false);
   };
 
@@ -47,12 +42,7 @@ export default function FormListPage() {
   useEffect(() => {
     const fetchMyForms = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const token = session?.access_token;
-        if (!token) return;
-        const response = await fetch(`${API_BASE_URL}/api/my-forms`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const response = await apiClient.get('/api/my-forms');
         if (response.ok) setForms(await response.json());
       } catch (error) {
         console.error('フォーム一覧の取得に失敗しました:', error);

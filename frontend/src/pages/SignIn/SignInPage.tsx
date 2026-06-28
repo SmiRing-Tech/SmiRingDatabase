@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useFeedback } from '../../context/FeedbackContext';
 import { supabase } from '../../lib/supabase';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Eye, EyeOff, Mail, Lock, ArrowRight, Loader2 } from 'lucide-react';
 import AuthLayout from './AuthLayout';
 
@@ -12,6 +12,7 @@ export default function SignInPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,7 +27,9 @@ export default function SignInPage() {
 
       localStorage.setItem('saved_email', email.trim());
 
-            navigate('/home');
+      const from = (location.state as any)?.from;
+      const targetPath = from ? `${from.pathname}${from.search || ''}${from.hash || ''}` : '/home';
+      navigate(targetPath, { replace: true });
     } catch (error: any) {
       showFeedback(`ログインエラー: ${error.message}`, { type: 'error', mode: 'banner' });
     } finally {

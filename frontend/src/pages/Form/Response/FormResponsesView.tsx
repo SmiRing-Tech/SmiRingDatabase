@@ -1,12 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { supabase } from '../../../lib/supabase';
 import type { QuestionData } from '../FormEditor/FormEditorPage';
 import type { ResponseSummary } from './types';
 import SheetTab from './SheetTab';
 import QuestionTab from './QuestionTab';
 import IndividualTab from './IndividualTab';
-import { API_BASE_URL } from '../../../config';
+import { apiClient } from '../../../lib/apiClient';
 import { Table2, LayoutList, User as UserIcon, Inbox } from 'lucide-react';
 
 type ResponseTab = 'sheet' | 'question' | 'individual';
@@ -34,7 +33,7 @@ export default function FormResponsesView({ formId }: { formId: string }) {
       setIsLoading(true);
       try {
         // 1. フォームの質問 & 匿名設定を取得
-        const formRes = await fetch(`${API_BASE_URL}/api/forms/${formId}`);
+        const formRes = await apiClient.get(`/api/forms/${formId}`);
         if (formRes.ok) {
           const formData = await formRes.json();
           setTitle(formData.title || '無題のフォーム');
@@ -56,11 +55,7 @@ export default function FormResponsesView({ formId }: { formId: string }) {
         }
 
         // 2. 回答一覧を取得（content付き、submitted_at ascending）
-        const { data: { session } } = await supabase.auth.getSession();
-        const token = session?.access_token;
-        const respRes = await fetch(`${API_BASE_URL}/api/forms/${formId}/responses`, {
-          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
-        });
+        const respRes = await apiClient.get(`/api/forms/${formId}/responses`);
         if (respRes.ok) {
           const data: ResponseSummary[] = await respRes.json();
           setResponses(data);

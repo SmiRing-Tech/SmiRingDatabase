@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_BASE_URL } from '../../config';
+import { apiClient } from '../../lib/apiClient';
 
 type Props = {
   userId?: string;
@@ -86,11 +86,16 @@ export default function DetailInfoTab({ userId, isEditable = false }: Props) {
       try {
         setIsLoading(true);
         // 新しく作成したバックエンドAPIを叩く
-        const res = await fetch(`${API_BASE_URL}/api/users/${userId}/form-responses`);
-        const data = await res.json();
-        setResponses(data || []);
+        const res = await apiClient.get(`/api/users/${userId}/form-responses`);
+        if (res.ok) {
+          const data = await res.json();
+          setResponses(Array.isArray(data) ? data : []);
+        } else {
+          setResponses([]);
+        }
       } catch (error) {
         console.error('フォーム回答の取得エラー:', error);
+        setResponses([]);
       } finally {
         setIsLoading(false);
       }

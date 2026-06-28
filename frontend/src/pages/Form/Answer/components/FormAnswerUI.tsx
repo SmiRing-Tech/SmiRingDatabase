@@ -7,7 +7,7 @@ import { Send, ExternalLink, User, Loader2 } from 'lucide-react';
 import { Turnstile } from '@marsidev/react-turnstile';
 import type { FileItem } from './FileUploadField';
 import { supabase } from '../../../../lib/supabase';
-import { API_BASE_URL } from '../../../../config';
+import { apiClient } from '../../../../lib/apiClient';
 
 type ReadonlyInfo = {
   displayName: string;
@@ -137,13 +137,7 @@ export default function FormAnswerUI({
               formData.append('form_id', formId || '');
               formData.append('auto_gallery', q.fileUploadSettings?.autoGallery !== false ? 'true' : 'false');
 
-              const res = await fetch(`${API_BASE_URL}/api/forms/attachments/upload`, {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${session.access_token}`
-                },
-                body: formData
-              });
+              const res = await apiClient.post('/api/forms/attachments/upload', formData);
 
               if (!res.ok) {
                 const errData = await res.json();

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
 export default function WelcomePage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { session } = useAuth();
   const [phase, setPhase] = useState<'enter' | 'visible' | 'exit'>('enter');
 
@@ -20,12 +21,12 @@ export default function WelcomePage() {
       if (session) {
         navigate('/home');
       } else {
-        navigate('/sign-in');
+        navigate('/sign-in', { state: location.state });
       }
     }, 2900);
 
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
-  }, [navigate, session]);
+  }, [navigate, session, location.state]);
 
   const isVisible = phase === 'visible';
   const isExit = phase === 'exit';

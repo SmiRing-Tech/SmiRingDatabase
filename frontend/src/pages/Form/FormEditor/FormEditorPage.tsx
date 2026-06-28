@@ -16,7 +16,7 @@ import FormEditorSkeleton from './components/FormEditorSkeleton';
 
 // Responseビューのimport
 import FormResponsesView from '../Response/FormResponsesView';
-import { API_BASE_URL } from '../../../config';
+import { apiClient } from '../../../lib/apiClient';
 
 export type QuestionData = {
   id: string;
@@ -149,15 +149,12 @@ export default function FormEditorPage() {
     setRespondentsTab(tab);
     setRespondentsModal(true);
     setIsRespondentsLoading(true);
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token;
-    if (!token) { setIsRespondentsLoading(false); return; }
     const [nonRes, doneRes] = await Promise.all([
-      fetch(`${API_BASE_URL}/api/forms/${formId}/non-respondents`, { headers: { 'Authorization': `Bearer ${token}` } }),
-      fetch(`${API_BASE_URL}/api/forms/${formId}/responses`, { headers: { 'Authorization': `Bearer ${token}` } }),
+      apiClient.get(`/api/forms/${formId}/non-respondents`),
+      apiClient.get(`/api/forms/${formId}/responses`),
     ]);
-    setNonRespondents(await nonRes.json());
-    setRespondents(await doneRes.json());
+    if (nonRes.ok) setNonRespondents(await nonRes.json());
+    if (doneRes.ok) setRespondents(await doneRes.json());
     setIsRespondentsLoading(false);
   };
   // 質問自体の並べ替え中かどうか
@@ -169,7 +166,7 @@ export default function FormEditorPage() {
     const fetchCount = async () => {
       if (!urlId) return;
       try {
-        const response = await fetch(`${API_BASE_URL}/api/forms/${urlId}/responses/count`);
+        const response = await apiClient.get(`/api/forms/${urlId}/responses/count`);
         if (response.ok) {
           const data = await response.json();
           setResponseCount(data.count);
@@ -248,7 +245,7 @@ export default function FormEditorPage() {
       }
 
       try {
-        const response = await fetch(`${API_BASE_URL}/api/forms/${urlId}?includeDeleted=true`);
+        const response = await apiClient.get(`/api/forms/${urlId}?includeDeleted=true`);
         if (!response.ok) throw new Error('フォームの取得に失敗しました');
         const form = await response.json();
 
@@ -351,10 +348,13 @@ export default function FormEditorPage() {
           gridCols: q.gridCols,
         }));
 
-        const response = await fetch(`${API_BASE_URL}/api/forms/${formId}/save`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title, description, questions: strippedQuestions, created_by: userId, allow_multiple_responses: currentAllowMultiple, allow_edit_responses: currentAllowEdit })
+        const response = await apiClient.post(`/api/forms/${formId}/save`, {
+          title,
+          description,
+          questions: strippedQuestions,
+          created_by: userId,
+          allow_multiple_responses: currentAllowMultiple,
+          allow_edit_responses: currentAllowEdit
         });
 
         if (!response.ok) throw new Error('保存に失敗しました');
@@ -529,18 +529,14 @@ export default function FormEditorPage() {
       }
       const newStatus = settings.assignedUsers.length === 0 ? 'draft' : 'published';
 
-      const response = await fetch(`${API_BASE_URL}/api/forms/${formId}/publish`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          assigned_user_ids: settings.assignedUsers,
-          due_date: finalDeadline,
-          allow_anonymous: settings.isAnonymous,
-          allow_multiple_responses: settings.allowMultipleResponses,
-          allow_edit_responses: settings.allowEditResponses,
-          timezone: settings.timezone,
-          status: newStatus
-        })
+      const response = await apiClient.post(`/api/forms/${formId}/publish`, {
+        assigned_user_ids: settings.assignedUsers,
+        due_date: finalDeadline,
+        allow_anonymous: settings.isAnonymous,
+        allow_multiple_responses: settings.allowMultipleResponses,
+        allow_edit_responses: settings.allowEditResponses,
+        timezone: settings.timezone,
+        status: newStatus
       });
 
       if (!response.ok) throw new Error('更新に失敗しました');

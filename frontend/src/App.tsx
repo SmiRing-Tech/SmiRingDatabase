@@ -1,4 +1,4 @@
-import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom';
+import { createBrowserRouter, RouterProvider, Navigate, useLocation } from 'react-router-dom';
 import { useEffect } from 'react';
 import type { PermissionAction } from './context/AuthContext';
 
@@ -32,6 +32,7 @@ import { apiClient } from './lib/apiClient';
 // ==========================================
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { session, isLoading } = useAuth();
+  const location = useLocation();
 
   // タイムゾーン同期ロジック (セッションがある時だけ動かす)
   useEffect(() => {
@@ -63,9 +64,9 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   // ロード中は何も出さない
   if (isLoading) return null; 
 
-  // 未ログインならWelcome画面へ
+  // 未ログインならWelcome画面へ (元のパスを state に引き渡す)
   if (!session) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/" state={{ from: location }} replace />;
   }
 
   return <>{children}</>;

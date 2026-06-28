@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Sparkles, Search, Zap } from 'lucide-react';
 import { CustomDropdown } from '../../components/ui/CustomDropdown';
-import { API_BASE_URL } from '../../config';
+import { apiClient } from '../../lib/apiClient';
 import PhotoViewModal from '../../components/ui/PhotoViewModal';
 
 export type Member = {
@@ -207,14 +207,10 @@ export default function HomeSearchBar() {
       setIsLoading(true);
 
       try {
-        const response = await fetch(`${API_BASE_URL}/api/search/instant`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            query: trimmed,
-            model: 'local',
-            searchMode: searchMode
-          })
+        const response = await apiClient.post('/api/search/instant', {
+          query: trimmed,
+          model: 'local',
+          searchMode: searchMode
         });
 
         if (response.ok) {

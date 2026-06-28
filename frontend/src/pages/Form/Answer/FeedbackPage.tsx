@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
 import FormAnswerUI from './components/FormAnswerUI';
-import { API_BASE_URL } from '../../../config';
+import { apiClient } from '../../../lib/apiClient';
 import { useFeedback } from '../../../context/FeedbackContext';
-import { supabase } from '../../../lib/supabase';
 
 const FORM_ID = 'd39c8fee-ec64-474b-bcc9-b7725607ec67';
 
@@ -15,7 +14,7 @@ export default function FeedbackPage() {
   useEffect(() => {
     const loadForm = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/forms/${FORM_ID}`);
+        const res = await apiClient.get(`/api/forms/${FORM_ID}`);
         if (!res.ok) throw new Error('フォームの取得に失敗しました');
         const data = await res.json();
         setForm(data);
@@ -30,19 +29,9 @@ export default function FeedbackPage() {
 
   const handleSubmit = async (turnstileToken: string, finalAnswers?: Record<string, any>) => {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error('認証が必要です');
-
-      const res = await fetch(`${API_BASE_URL}/api/forms/${FORM_ID}/submit`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({
-          answers: finalAnswers || answers,
-          turnstileToken
-        })
+      const res = await apiClient.post(`/api/forms/${FORM_ID}/submit`, {
+        answers: finalAnswers || answers,
+        turnstileToken
       });
 
       if (!res.ok) {
