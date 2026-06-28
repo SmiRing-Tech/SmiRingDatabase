@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { supabase } from '../lib/supabase';
 import { PROFILE_FIELDS } from '../lib/profileSchema';
 import { answerToText, getLocalEmbedding, getGeminiEmbedding, initAIModel } from '../lib/ai';
+import { selectActiveRole, ROLE_PRE, ROLE_CURRENT, ROLE_POST } from '../routes/profileRoutes';
 
 /**
  * すべてのユーザープロフィールを最新のAI言語化ロジックで再インデックスします。
@@ -17,8 +18,7 @@ async function reindexAll() {
     return;
   }
 
-  // 2. 全ユーザーのプロフィール情報を取得
-  const { data: users, error } = await supabase
+  const { data: basicProfiles, error } = await supabase
     .from('basic_profile_info')
     .select('*');
 
@@ -26,6 +26,65 @@ async function reindexAll() {
     console.error('❌ ユーザー情報の取得に失敗しました:', error);
     return;
   }
+
+  const userIds = (basicProfiles || []).map(u => u.id);
+
+  // 1. 全ユーザーのアクティブなロールマッピングを一括取得
+  const { data: roleMappings } = await supabase
+    .from('user_role_mappings')
+    .select('user_id, user_role')
+    .in('user_id', userIds)
+    .eq('is_current_status', true);
+
+  // 2. ユーザーIDごとにロールIDリストをグループ化
+  const userRolesMap = new Map<string, string[]>();
+  (roleMappings || []).forEach(rm => {
+    const list = userRolesMap.get(rm.user_id) || [];
+    list.push(rm.user_role);
+    userRolesMap.set(rm.user_id, list);
+  });
+
+  // 3. ユーザーごとにアクティブなロールを選択し、テーブル別にIDを振り分け
+  const preUserIds: string[] = [];
+  const currentUserIds: string[] = [];
+  const postUserIds: string[] = [];
+
+  userIds.forEach(uid => {
+    const roles = userRolesMap.get(uid) || [];
+    const active = selectActiveRole(roles);
+    if (active === ROLE_PRE) preUserIds.push(uid);
+    else if (active === ROLE_CURRENT) currentUserIds.push(uid);
+    else if (active === ROLE_POST) postUserIds.push(uid);
+  });
+
+  // 4. 各段階別プロフィールテーブルに対して、対象ユーザーIDのみで一括取得
+  const [preRes, currentRes, postRes] = await Promise.all([
+    preUserIds.length > 0
+      ? supabase.from('pre_study_abroad_profiles').select('*').in('user_id', preUserIds)
+      : Promise.resolve({ data: [] }),
+    currentUserIds.length > 0
+      ? supabase.from('current_study_abroad_profiles').select('*').in('user_id', currentUserIds)
+      : Promise.resolve({ data: [] }),
+    postUserIds.length > 0
+      ? supabase.from('post_study_abroad_profiles').select('*').in('user_id', postUserIds)
+      : Promise.resolve({ data: [] })
+  ]);
+
+  // 5. 取得したデータをユーザーIDをキーとする Map に格納
+  const stageDataMap = new Map<string, any>();
+  (preRes.data || []).forEach(p => stageDataMap.set(p.user_id, p));
+  (currentRes.data || []).forEach(p => stageDataMap.set(p.user_id, p));
+  (postRes.data || []).forEach(p => stageDataMap.set(p.user_id, p));
+
+  // 6. 基本プロフィール情報に、対象のアクティブな段階データを結合
+  const users = (basicProfiles || []).map(p => {
+    const stageData = stageDataMap.get(p.id) || {};
+    return {
+      ...p,
+      ...stageData,
+      id: p.id // Keep user's ID
+    };
+  });
 
   if (!users || users.length === 0) {
     console.log('ℹ️  対象となるユーザーが見つかりませんでした。');

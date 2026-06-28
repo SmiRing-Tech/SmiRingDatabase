@@ -1,5 +1,6 @@
 import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom';
 import { useEffect } from 'react';
+import type { PermissionAction } from './context/AuthContext';
 
 // ページのインポート
 import SignInPage from './pages/SignIn/SignInPage';
@@ -19,6 +20,8 @@ import FeedbackPage from './pages/Form/Answer/FeedbackPage';
 import FormResponseDetailPage from './pages/Form/Response/FormResponseDetailPage';
 import SearchPage from './pages/Search/SearchPage';
 import ChatPage from './pages/Search/ChatPage';
+import AppsPage from './pages/Apps/AppsPage';
+import ManagementConsolePage from './pages/Management/ManagementConsolePage';
 import { FeedbackProvider } from './context/FeedbackContext';
 import FeedbackSystem from './components/ui/FeedbackSystem';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -69,6 +72,27 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 };
 
 // ==========================================
+// 権限ベースのルートガード
+// 外側の ProtectedRoute（セッションチェック）の内側で使う想定
+// ==========================================
+const RequirePermission = ({
+  resource,
+  action,
+  children,
+}: {
+  resource: string;
+  action: PermissionAction;
+  children: React.ReactNode;
+}) => {
+  const { hasPermission, isPermissionsLoading, isLoading } = useAuth();
+
+  if (isLoading || isPermissionsLoading) return null;
+  if (!hasPermission(resource, action)) return <Navigate to="/home" replace />;
+
+  return <>{children}</>;
+};
+
+// ==========================================
 // ルーターの設定 (Flutterの routes リストに相当)
 // ==========================================
 const router = createBrowserRouter([
@@ -100,6 +124,8 @@ const router = createBrowserRouter([
       { path: '/form-responses/:responseId', element: <FormResponseDetailPage /> },
       { path: '/search', element: <SearchPage /> },
       { path: '/search/chat', element: <ChatPage /> },
+      { path: '/apps', element: <AppsPage /> },
+      { path: '/management', element: <RequirePermission resource="management" action="read"><ManagementConsolePage /></RequirePermission> },
     ],
   },
 ]);

@@ -3,13 +3,14 @@ import { supabase } from '../lib/supabase';
 import { resolveAvatarUrl, getSignedFileUrl } from '../lib/r2';
 import { getLocalEmbedding, getGeminiEmbedding, answerToText } from '../lib/ai';
 import { queueIndexWork, deleteSearchIndexByMetadata } from '../lib/vectorIndexer';
+import { authenticate } from '../middleware/authenticate';
 
 const router = Router();
 
 // ==========================================
 // 📖 フォーム＆質問の取得 API
 // ==========================================
-router.get('/api/forms/:id', async (req: Request, res: Response) => {
+router.get('/api/forms/:id', authenticate, async (req: Request, res: Response) => {
   const { id: formId } = req.params;
 
   try {
@@ -72,7 +73,7 @@ router.get('/api/forms/:id', async (req: Request, res: Response) => {
 // ==========================================
 // 📝 フォーム＆質問の一括保存 API
 // ==========================================
-router.post('/api/forms/:id/save', async (req: Request, res: Response) => {
+router.post('/api/forms/:id/save', authenticate, async (req: Request, res: Response) => {
   const { id: formId } = req.params;
   const { title, description, questions = [], created_by, allow_multiple_responses, allow_edit_responses } = req.body;
 
@@ -215,7 +216,7 @@ router.post('/api/forms/:id/save', async (req: Request, res: Response) => {
 // ==========================================
 // 🚀 フォーム公開（送信完了） API
 // ==========================================
-router.post('/api/forms/:id/publish', async (req: Request, res: Response) => {
+router.post('/api/forms/:id/publish', authenticate, async (req: Request, res: Response) => {
   const { id: formId } = req.params;
   const { assigned_user_ids, due_date, allow_anonymous, allow_multiple_responses, allow_edit_responses, timezone, status } = req.body;
 
@@ -252,17 +253,12 @@ router.post('/api/forms/:id/publish', async (req: Request, res: Response) => {
 // ==========================================
 // 💾 フォーム回答の「下書き」保存 API
 // ==========================================
-router.post('/api/forms/:id/responses/save', async (req: Request, res: Response) => {
+router.post('/api/forms/:id/responses/save', authenticate, async (req: Request, res: Response) => {
   const { id: formId } = req.params;
   const { content, response_id } = req.body;
 
   try {
-    // 🔐 JWT検証
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) return res.status(401).json({ error: '認証に失敗しました' });
-    const user_id = user.id;
+    const user_id = req.user!.id;
 
     let resultId = response_id;
 
@@ -301,17 +297,12 @@ router.post('/api/forms/:id/responses/save', async (req: Request, res: Response)
 // ==========================================
 // 📥 フォーム回答の送信 API
 // ==========================================
-router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
+router.post('/api/forms/:id/submit', authenticate, async (req: Request, res: Response) => {
   const { id: formId } = req.params;
   const { answers, turnstileToken, response_id } = req.body;
 
   try {
-    // 🔐 JWT検証
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) return res.status(401).json({ error: '認証に失敗しました' });
-    const user_id = user.id;
+    const user_id = req.user!.id;
 
     // 1. フォーム設定を取得して複数回答と匿名設定の可否を確認
     const { data: form } = await supabase.from('forms').select('allow_multiple_responses, allow_anonymous').eq('id', formId).single();
@@ -465,20 +456,12 @@ router.post('/api/forms/:id/submit', async (req: Request, res: Response) => {
 // ==========================================
 // 📋 自分のフォーム一覧を取得する API
 // ==========================================
-router.get('/api/my-forms', async (req: Request, res: Response) => {
+router.get('/api/my-forms', authenticate, async (req: Request, res: Response) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) {
-      return res.status(401).json({ error: '認証トークンがありません' });
-    }
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) throw authError;
-
     const { data, error } = await supabase
       .from('forms')
       .select('id, title, status, updated_at')
-      .eq('created_by', user.id)
+      .eq('created_by', req.user!.id)
       .is('deleted_at', null)
       .order('updated_at', { ascending: false });
 
@@ -494,7 +477,7 @@ router.get('/api/my-forms', async (req: Request, res: Response) => {
 // ==========================================
 // 📄 指定ユーザーのフォーム回答一覧を取得する API
 // ==========================================
-router.get('/api/users/:id/form-responses', async (req: Request, res: Response) => {
+router.get('/api/users/:id/form-responses', authenticate, async (req: Request, res: Response) => {
   const { id: userId } = req.params;
 
   try {
@@ -533,21 +516,15 @@ router.get('/api/users/:id/form-responses', async (req: Request, res: Response) 
 // ==========================================
 // 📩 自分にアサインされたフォームを取得する API
 // ==========================================
-router.get('/api/assigned-forms', async (req: Request, res: Response) => {
+router.get('/api/assigned-forms', authenticate, async (req: Request, res: Response) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) throw authError;
-
     // 1. 自分にアサインされたフォームを取得
     const { data: forms, error: formError } = await supabase
       .from('forms')
       .select('id, title, due_date, status, publish_settings')
       .eq('status', 'published')
       .is('deleted_at', null)
-      .contains('publish_settings', { assigned_user_ids: [user.id] });
+      .contains('publish_settings', { assigned_user_ids: [req.user!.id] });
 
     if (formError) throw formError;
 
@@ -559,7 +536,7 @@ router.get('/api/assigned-forms', async (req: Request, res: Response) => {
         .from('form_response_mappings')
         .select('form_id, status')
         .in('form_id', formIds)
-        .eq('user_id', user.id);
+        .eq('user_id', req.user!.id);
       responsesData = data || [];
     }
 
@@ -584,20 +561,15 @@ router.get('/api/assigned-forms', async (req: Request, res: Response) => {
 // ==========================================
 // 📋 特定のフォームに対する自分の回答を取得する API
 // ==========================================
-router.get('/api/forms/:id/my-responses', async (req: Request, res: Response) => {
+router.get('/api/forms/:id/my-responses', authenticate, async (req: Request, res: Response) => {
   const { id: formId } = req.params;
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) throw authError;
 
     const { data, error } = await supabase
       .from('form_response_mappings')
       .select('*')
       .eq('form_id', formId)
-      .eq('user_id', user.id)
+      .eq('user_id', req.user!.id)
       .order('updated_at', { ascending: false });
 
     if (error) throw error;
@@ -612,7 +584,7 @@ router.get('/api/forms/:id/my-responses', async (req: Request, res: Response) =>
 // ==========================================
 // 📊 フォームの回答数を取得する API
 // ==========================================
-router.get('/api/forms/:id/responses/count', async (req: Request, res: Response) => {
+router.get('/api/forms/:id/responses/count', authenticate, async (req: Request, res: Response) => {
   const { id: formId } = req.params;
 
   try {
@@ -633,7 +605,7 @@ router.get('/api/forms/:id/responses/count', async (req: Request, res: Response)
 // ==========================================
 // 📊 フォームへの回答者一覧を取得する API
 // ==========================================
-router.get('/api/forms/:id/responses', async (req: Request, res: Response) => {
+router.get('/api/forms/:id/responses', authenticate, async (req: Request, res: Response) => {
   const { id: formId } = req.params;
 
   try {
@@ -709,7 +681,7 @@ router.get('/api/forms/:id/responses', async (req: Request, res: Response) => {
 // ==========================================
 // 📋 回答IDから詳細を取得する API
 // ==========================================
-router.get('/api/form-responses/:responseId', async (req: Request, res: Response) => {
+router.get('/api/form-responses/:responseId', authenticate, async (req: Request, res: Response) => {
   const { responseId } = req.params;
 
   try {
@@ -811,16 +783,10 @@ router.get('/api/form-responses/:responseId', async (req: Request, res: Response
 // ==========================================
 // 👥 未回答者一覧を取得する API
 // ==========================================
-router.get('/api/forms/:id/non-respondents', async (req: Request, res: Response) => {
+router.get('/api/forms/:id/non-respondents', authenticate, async (req: Request, res: Response) => {
   const { id: formId } = req.params;
 
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) return res.status(401).json({ error: '認証失敗' });
-
     // フォームの assigned_user_ids を取得
     const { data: form, error: formError } = await supabase
       .from('forms')
@@ -829,7 +795,7 @@ router.get('/api/forms/:id/non-respondents', async (req: Request, res: Response)
       .single();
 
     if (formError || !form) return res.status(404).json({ error: 'フォームが見つかりません' });
-    if (form.created_by !== user.id) return res.status(403).json({ error: '権限がありません' });
+    if (form.created_by !== req.user!.id) return res.status(403).json({ error: '権限がありません' });
 
     const assignedIds: string[] = form.publish_settings?.assigned_user_ids || [];
     if (assignedIds.length === 0) return res.json([]);

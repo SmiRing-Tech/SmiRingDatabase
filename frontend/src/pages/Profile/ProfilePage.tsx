@@ -76,10 +76,15 @@ export default function ProfilePage() {
       const response = await fetch(endpoint, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
+      if (!response.ok) {
+        throw new Error(`プロフィールの取得に失敗しました: ${response.statusText}`);
+      }
       const data = await response.json();
       setProfileData(data);
       // プロフィール取得後にそのユーザーのギャラリーを取得する
-      fetchGallery(data.id);
+      if (data && data.id) {
+        fetchGallery(data.id);
+      }
     } catch (error) {
       console.error('プロフィール取得エラー:', error);
     } finally {

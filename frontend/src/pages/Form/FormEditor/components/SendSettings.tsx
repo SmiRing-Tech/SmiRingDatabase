@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { ArrowLeft, Send, Search, Users, Square, X, Settings } from 'lucide-react';
-import { API_BASE_URL } from '../../../../config';
+import { apiClient } from '../../../../lib/apiClient';
 import { SmartDateTimePicker } from '../../../../components/ui/SmartDateTimePicker';
 import countries from 'i18n-iso-countries';
 import jaLocale from 'i18n-iso-countries/langs/ja.json';
@@ -134,7 +134,7 @@ export default function SendSettings({
   useEffect(() => {
     const fetchMembers = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/basic_profile_info`);
+        const response = await apiClient.get('/api/basic_profile_info?role=smiring_member');
         if (response.ok) setMembers(await response.json());
       } catch (error) {
         console.error(error);

@@ -49,7 +49,7 @@ export default function SearchPage() {
       }
     });
 
-    apiClient.get('/api/basic_profile_info')
+    apiClient.get('/api/basic_profile_info?role=smiring_member')
       .then(res => res.json())
       .then(data => setMembers(data))
       .catch(err => console.error('メンバー取得エラー:', err))

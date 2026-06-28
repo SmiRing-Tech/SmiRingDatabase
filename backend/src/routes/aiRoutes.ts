@@ -4,8 +4,101 @@ import { getLocalEmbedding, getGeminiEmbedding, generateChatResponse, analyzeSea
 import { queueIndexWork } from '../lib/vectorIndexer';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { authenticate } from '../middleware/authenticate';
+
+import { selectActiveRole, ROLE_PRE, ROLE_CURRENT, ROLE_POST } from './profileRoutes';
 
 const router = Router();
+
+// 👤 ユーザーIDのリストを受け取り、アクティブな留学段階プロフィールを結合して返す一括取得ヘルパー
+async function fetchActiveProfiles(userIds: string[]) {
+  if (!userIds || userIds.length === 0) return [];
+
+  // 1. 基本プロフィールを一括取得
+  const { data: basicProfiles } = await supabase
+    .from('basic_profile_info')
+    .select('id, name_english, name_kanji, avatar_id')
+    .in('id', userIds);
+
+  const basicList = basicProfiles || [];
+
+  // 2. 全ユーザーのアクティブなロールマッピングを一括取得
+  const { data: roleMappings } = await supabase
+    .from('user_role_mappings')
+    .select('user_id, user_role')
+    .in('user_id', userIds)
+    .eq('is_current_status', true);
+
+  // 3. ユーザーIDごとにロールIDリストをグループ化
+  const userRolesMap = new Map<string, string[]>();
+  (roleMappings || []).forEach(rm => {
+    const list = userRolesMap.get(rm.user_id) || [];
+    list.push(rm.user_role);
+    userRolesMap.set(rm.user_id, list);
+  });
+
+  // 4. ユーザーごとにアクティブなロールを選択し、テーブル別にIDを振り分け
+  const preUserIds: string[] = [];
+  const currentUserIds: string[] = [];
+  const postUserIds: string[] = [];
+
+  userIds.forEach(uid => {
+    const roles = userRolesMap.get(uid) || [];
+    const active = selectActiveRole(roles);
+    if (active === ROLE_PRE) preUserIds.push(uid);
+    else if (active === ROLE_CURRENT) currentUserIds.push(uid);
+    else if (active === ROLE_POST) postUserIds.push(uid);
+  });
+
+  // 5. 各段階別プロフィールテーブルに対して一括取得
+  const [preRes, currentRes, postRes] = await Promise.all([
+    preUserIds.length > 0
+      ? supabase.from('pre_study_abroad_profiles').select('user_id, expected_timing, interested_countries, interested_majors').in('user_id', preUserIds)
+      : Promise.resolve({ data: [] }),
+    currentUserIds.length > 0
+      ? supabase.from('current_study_abroad_profiles').select('user_id, current_school, study_abroad_country, majors').in('user_id', currentUserIds)
+      : Promise.resolve({ data: [] }),
+    postUserIds.length > 0
+      ? supabase.from('post_study_abroad_profiles').select('user_id, last_overseas_university, study_abroad_country, majors').in('user_id', postUserIds)
+      : Promise.resolve({ data: [] })
+  ]);
+
+  // 6. 取得したデータをユーザーIDをキーとする Map に格納し、表示プロパティ名を共通化する
+  const stageDataMap = new Map<string, any>();
+
+  (preRes.data || []).forEach(p => {
+    stageDataMap.set(p.user_id, {
+      current_school: p.expected_timing || null,
+      study_abroad_country: p.interested_countries || null,
+      majors: p.interested_majors ? [p.interested_majors] : []
+    });
+  });
+
+  (currentRes.data || []).forEach(p => {
+    stageDataMap.set(p.user_id, {
+      current_school: p.current_school,
+      study_abroad_country: p.study_abroad_country,
+      majors: p.majors
+    });
+  });
+
+  (postRes.data || []).forEach(p => {
+    stageDataMap.set(p.user_id, {
+      current_school: p.last_overseas_university,
+      study_abroad_country: p.study_abroad_country,
+      majors: p.majors
+    });
+  });
+
+  // 7. 基本プロフィール情報に、対象のアクティブな段階データを結合
+  return basicList.map(bp => {
+    const stageData = stageDataMap.get(bp.id) || {};
+    return {
+      ...bp,
+      ...stageData
+    };
+  });
+}
 
 // Cloudflare R2 (storageRoutesと同じ設定)
 const r2 = new S3Client({
@@ -23,7 +116,7 @@ const BUCKET_NAME = process.env.R2_BUCKET_NAME!;
 // ==========================================
 // 🧪 AIテスト用のエンドポイント
 // ==========================================
-router.post('/api/test-ai', async (req: Request, res: Response) => {
+router.post('/api/test-ai', authenticate, async (req: Request, res: Response) => {
   try {
     const { text } = req.body;
     if (!text) return res.status(400).json({ error: 'textが必要です' });
@@ -50,16 +143,10 @@ router.post('/api/test-ai', async (req: Request, res: Response) => {
 // ==========================================
 // 📝 フォーム回答の保存 ＆ 裏側でのAIベクトル化API
 // ==========================================
-router.post('/api/answers', async (req: Request, res: Response) => {
+router.post('/api/answers', authenticate, async (req: Request, res: Response) => {
   try {
-    // 🔐 JWT検証
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) return res.status(401).json({ error: '認証に失敗しました' });
-
     const { question_id, form_id, answer_data } = req.body;
-    const user_id = user.id;
+    const user_id = req.user!.id;
 
     if (!question_id || !answer_data) {
       return res.status(400).json({ error: '必須データが足りません' });
@@ -104,7 +191,7 @@ router.post('/api/answers', async (req: Request, res: Response) => {
 // ==========================================
 // 🔍 爆速ローカルAI検索 API (エンターキーを押す前の即時リスト用)
 // ==========================================
-router.post('/api/search/instant', async (req: Request, res: Response) => {
+router.post('/api/search/instant', authenticate, async (req: Request, res: Response) => {
   try {
     const { query, limit, model, searchMode } = req.body;
     if (!query) return res.status(400).json({ error: '検索キーワードが必要です' });
@@ -356,13 +443,14 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
 
         // 🌟 メンバー情報の結合
         const userIds = members.map(m => m.user_id);
-        const { data: userProfiles } = await supabase.from('basic_profile_info').select('id, name_english, name_kanji, avatar_id, current_school, study_abroad_country, majors').in('id', userIds);
-        const userAvatarIds = [...new Set((userProfiles || []).map(p => p.avatar_id).filter(Boolean))];
+        const flattenedUserProfiles = await fetchActiveProfiles(userIds);
+
+        const userAvatarIds = [...new Set((flattenedUserProfiles || []).map(p => p.avatar_id).filter(Boolean))];
         const { data: userAvatars } = userAvatarIds.length > 0 ? await supabase.from('gallery').select('id, storage_path').in('id', userAvatarIds) : { data: [] };
         const userAvatarMap = Object.fromEntries((userAvatars || []).map(a => [a.id, a.storage_path]));
 
         const membersWithInfo = await Promise.all(members.map(async (m) => {
-          const profile = userProfiles?.find(p => p.id === m.user_id);
+          const profile = flattenedUserProfiles?.find(p => p.id === m.user_id) as any;
           let avatarUrl = null;
           if (profile?.avatar_id && userAvatarMap[profile.avatar_id]) {
             try { avatarUrl = await getSignedUrl(r2, new GetObjectCommand({ Bucket: BUCKET_NAME, Key: userAvatarMap[profile.avatar_id] }), { expiresIn: 3600 }); } catch (e) {}
@@ -461,13 +549,14 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
         const topGalleryIds = Object.entries(imageScores).sort((a, b) => b[1].total_score - a[1].total_score).slice(0, limit || 15).map(([id]) => id);
         const { data: galleries } = await supabase.from('gallery').select('id, storage_path, thumbnail_path, description, description_generated, user_id, image_type, visibility').in('id', topGalleryIds);
         const photoUserIds = [...new Set((galleries || []).map(g => g.user_id))];
-        const { data: photoProfiles } = await supabase.from('basic_profile_info').select('id, name_english, name_kanji, avatar_id, current_school, study_abroad_country, majors').in('id', photoUserIds);
-        const photoAvatarIds = [...new Set((photoProfiles || []).map(p => p.avatar_id).filter(Boolean))];
+        const flattenedPhotoProfiles = await fetchActiveProfiles(photoUserIds);
+
+        const photoAvatarIds = [...new Set((flattenedPhotoProfiles || []).map(p => p.avatar_id).filter(Boolean))];
         const { data: photoAvatars } = photoAvatarIds.length > 0 ? await supabase.from('gallery').select('id, storage_path').in('id', photoAvatarIds) : { data: [] };
         const photoAvatarMap = Object.fromEntries((photoAvatars || []).map(a => [a.id, a.storage_path]));
 
         const photos = await Promise.all((galleries || []).map(async (g: any) => {
-          const profile = photoProfiles?.find(p => p.id === g.user_id);
+          const profile = flattenedPhotoProfiles?.find(p => p.id === g.user_id) as any;
           let avatarUrl = null;
           if (profile?.avatar_id && photoAvatarMap[profile.avatar_id]) {
             try { avatarUrl = await getSignedUrl(r2, new GetObjectCommand({ Bucket: BUCKET_NAME, Key: photoAvatarMap[profile.avatar_id] }), { expiresIn: 3600 }); } catch (e) {}
@@ -516,13 +605,14 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
 
         // 🌟 メンバー情報の結合
         const userIds = members.map(m => m.user_id);
-        const { data: userProfiles } = await supabase.from('basic_profile_info').select('id, name_english, name_kanji, avatar_id, current_school, study_abroad_country, majors').in('id', userIds);
-        const userAvatarIds = [...new Set((userProfiles || []).map(p => p.avatar_id).filter(Boolean))];
+        const flattenedUserProfiles = await fetchActiveProfiles(userIds);
+
+        const userAvatarIds = [...new Set((flattenedUserProfiles || []).map(p => p.avatar_id).filter(Boolean))];
         const { data: userAvatars } = userAvatarIds.length > 0 ? await supabase.from('gallery').select('id, storage_path').in('id', userAvatarIds) : { data: [] };
         const userAvatarMap = Object.fromEntries((userAvatars || []).map(a => [a.id, a.storage_path]));
 
         const membersWithInfo = await Promise.all(members.map(async (m) => {
-          const profile = userProfiles?.find(p => p.id === m.user_id);
+          const profile = flattenedUserProfiles?.find(p => p.id === m.user_id) as any;
           let avatarUrl = null;
           if (profile?.avatar_id && userAvatarMap[profile.avatar_id]) {
             try { avatarUrl = await getSignedUrl(r2, new GetObjectCommand({ Bucket: BUCKET_NAME, Key: userAvatarMap[profile.avatar_id] }), { expiresIn: 3600 }); } catch (e) {}
@@ -553,7 +643,7 @@ router.post('/api/search/instant', async (req: Request, res: Response) => {
 // ==========================================
 // 🧠 フルRAGチャット API (エンターキーを押した後のAI相談用)
 // ==========================================
-router.post('/api/search/chat', async (req: Request, res: Response) => {
+router.post('/api/search/chat', authenticate, async (req: Request, res: Response) => {
   try {
     const { query } = req.body;
     if (!query) return res.status(400).json({ error: '質問が必要です' });

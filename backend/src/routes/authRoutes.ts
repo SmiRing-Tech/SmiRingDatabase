@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase';
+import { authenticate } from '../middleware/authenticate';
 
 const router = Router();
 
@@ -34,6 +35,25 @@ router.post('/api/auth/check-invitation-code', async (req: Request, res: Respons
 
   } catch (error: any) {
     res.status(500).json({ error: 'コードの検証中にエラーが発生しました' });
+  }
+});
+
+/**
+ * ログイン中ユーザーの実効権限一覧を返す API
+ * フロントエンドが AuthContext に権限をキャッシュするために使用
+ */
+router.get('/api/me/permissions', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { data, error } = await supabase.rpc('get_user_permissions', {
+      p_user_id: req.user!.id,
+    });
+
+    if (error) throw error;
+
+    res.json(data ?? []);
+  } catch (error: any) {
+    console.error('権限取得エラー:', error);
+    res.status(500).json({ error: '権限の取得中にエラーが発生しました' });
   }
 });
 

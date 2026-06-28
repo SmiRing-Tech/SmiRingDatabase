@@ -15,7 +15,8 @@ import {
   Clock, 
   Timer,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  LayoutGrid
 } from 'lucide-react';
 import { useFeedback } from '../../context/FeedbackContext';
 
@@ -153,6 +154,11 @@ function HomeQuickActionButtons() {
         onClick={() => handleCreateNewForm()}
         icon={<FilePlus className="w-5 h-5 text-blue-600" />}
       />
+      <QuickActionButton
+        label="Apps"
+        onClick={() => navigate('/apps')}
+        icon={<LayoutGrid className="w-5 h-5 text-blue-600" />}
+      />
     </div>
   );
 }
@@ -177,7 +183,7 @@ function ProfilesSection({ onClickMore }: { onClickMore: () => void }) {
 
   const fetchMembers = () => {
     setIsLoading(true);
-    apiClient.get('/api/basic_profile_info')
+    apiClient.get('/api/basic_profile_info?role=smiring_member')
       .then(r => r.json())
       .then((data: any[]) => {
         const sorted = [...data].sort((a, b) =>

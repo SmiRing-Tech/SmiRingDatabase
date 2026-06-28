@@ -38,8 +38,15 @@ export const CustomDropdown = <T extends boolean = false>({
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [coords, setCoords] = useState({ top: 0, bottom: 0, left: 0, width: 0, isBottomHalf: false });
+  const [tempValues, setTempValues] = useState<string[]>([]);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // clickOutsideで最新のtempValuesを取得するためのRef
+  const tempValuesRef = useRef<string[]>([]);
+  useEffect(() => {
+    tempValuesRef.current = tempValues;
+  }, [tempValues]);
 
   // メニューの位置を計算
   const updateCoords = () => {
@@ -61,6 +68,11 @@ export const CustomDropdown = <T extends boolean = false>({
       // スクロール時（モーダル内含む）やリサイズ時に位置を再計算
       window.addEventListener('scroll', updateCoords, true);
       window.addEventListener('resize', updateCoords);
+
+      // オープン時に現在の選択値で初期化
+      if (multiple) {
+        setTempValues((value as string[]) || []);
+      }
     }
     return () => {
       window.removeEventListener('scroll', updateCoords, true);
@@ -69,17 +81,23 @@ export const CustomDropdown = <T extends boolean = false>({
   }, [isOpen]);
 
   useEffect(() => {
+    if (!isOpen) return;
+
     const handleClickOutside = (event: MouseEvent) => {
       const isDropdownClick = dropdownRef.current && dropdownRef.current.contains(event.target as Node);
       const isMenuClick = menuRef.current && menuRef.current.contains(event.target as Node);
 
       if (!isDropdownClick && !isMenuClick) {
+        if (multiple) {
+          // クリック枠外で閉じる時も選択内容を保存して閉じる
+          onChange(tempValuesRef.current as any);
+        }
         setIsOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  }, [isOpen, multiple, onChange]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -127,17 +145,14 @@ export const CustomDropdown = <T extends boolean = false>({
     if (opt.isLabel || !opt.value) return;
 
     if (multiple) {
-      // 複数選択
-      const currentValues = (value as string[]) || [];
-      const isSelected = currentValues.includes(opt.value);
-      const newValue = isSelected
-        ? currentValues.filter(v => v !== opt.value)
-        : [...currentValues, opt.value];
-
-      // TypeScriptの推論を助けるためにasを使用
-      onChange(newValue as any);
+      // 複数選択時はローカルステートのみを更新
+      const isSelected = tempValues.includes(opt.value);
+      const newTemp = isSelected
+        ? tempValues.filter(v => v !== opt.value)
+        : [...tempValues, opt.value];
+      setTempValues(newTemp);
     } else {
-      // 単一選択
+      // 単一選択時は即時決定
       onChange(opt.value as any);
       setIsOpen(false);
     }
@@ -224,7 +239,7 @@ export const CustomDropdown = <T extends boolean = false>({
                   filteredOptions.map((opt, index) => {
                     const itemKey = opt.isLabel ? `label-${index}` : opt.value;
                     const isSelected = multiple
-                      ? ((value as string[]) || []).includes(opt.value!)
+                      ? tempValues.includes(opt.value!)
                       : value === opt.value;
 
                     if (opt.isLabel) {
@@ -278,7 +293,10 @@ export const CustomDropdown = <T extends boolean = false>({
                 <div className="border-t border-gray-100 p-2 bg-white/50 flex justify-end sticky bottom-0">
                   <button
                     type="button"
-                    onClick={() => setIsOpen(false)}
+                    onClick={() => {
+                      onChange(tempValues as any);
+                      setIsOpen(false);
+                    }}
                     className="px-4 py-1.5 bg-gray-900 hover:bg-black text-white text-sm font-medium rounded-lg shadow-sm transition-colors"
                   >
                     完了

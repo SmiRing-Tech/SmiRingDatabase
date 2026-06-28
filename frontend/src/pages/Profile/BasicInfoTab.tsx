@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import * as Icons from 'lucide-react';
 import { SquarePen, ChevronRight, ArrowDown } from 'lucide-react';
 import ProfileEditModal from './components/ProfileEditModal';
@@ -232,6 +232,10 @@ export default function BasicInfoPage({ initialData, isEditable = false, onDataC
   const [data, setData] = useState(initialData || {});
   const [editingFieldKey, setEditingFieldKey] = useState<string | null>(null);
 
+  useEffect(() => {
+    setData(initialData || {});
+  }, [initialData]);
+
   const handleEdit = (key: string) => {
     setEditingFieldKey(key);
   };
@@ -338,44 +342,85 @@ export default function BasicInfoPage({ initialData, isEditable = false, onDataC
     return value;
   };
 
+  const activeStage = data['active_stage_role_id'] || null;
+
   return (
     // 🌟 左右の余白もレスポンシブに対応 (スマホはpx-4, PCはpx-6)
     <div className="w-full px-4 md:px-6 py-6 pb-20">
-      {/* 基本情報 */}
-      <SectionTitle title="基本情報" />
+      {/* 基本プロフィール */}
+      <SectionTitle title="基本プロフィール" />
       <ProfileInfoRow title="名前（英語）" value={getDisplayValue('name_english', data['name_english'])} fieldKey="name_english" onEdit={() => handleEdit('name_english')} isEditable={isEditable}>
         <ProfileInfoRow title="名前（漢字）" value={getDisplayValue('name_kanji', data['name_kanji'])} fieldKey="name_kanji" onEdit={() => handleEdit('name_kanji')} isEditable={isEditable} />
       </ProfileInfoRow>
-
-      {/* 学歴・留学情報 */}
-      <SectionTitle title="学歴・留学情報" />
       <ProfileInfoRow title="誕生日" value={getDisplayValue('birthday', data['birthday'])} fieldKey="birthday" onEdit={() => handleEdit('birthday')} isEditable={isEditable} />
       <ProfileInfoRow title="出身地" value={getDisplayValue('hometown', data['hometown'])} fieldKey="hometown" onEdit={() => handleEdit('hometown')} isEditable={isEditable} />
-      <ProfileInfoRow title="留学先（国）" value={getDisplayValue('study_abroad_country', data['study_abroad_country'])} fieldKey="study_abroad_country" onEdit={() => handleEdit('study_abroad_country')} isEditable={isEditable}>
-        <ProfileInfoRow title="留学先（都市）" value={getDisplayValue('study_abroad_city', data['study_abroad_city'])} fieldKey="study_abroad_city" onEdit={() => handleEdit('study_abroad_city')} isEditable={isEditable} />
-        <ProfileInfoRow title="留学形態" value={getDisplayValue('study_abroad_type', data['study_abroad_type'])} fieldKey="study_abroad_type" onEdit={() => handleEdit('study_abroad_type')} isEditable={isEditable} />
-        <ProfileInfoRow title="留学歴" value={getDisplayValue('study_abroad_history', data['study_abroad_history'])} fieldKey="study_abroad_history" onEdit={() => handleEdit('study_abroad_history')} isEditable={isEditable} />
-        <ProfileInfoRow title="語学学校" value={getDisplayValue('english_school', data['english_school'])} fieldKey="english_school" onEdit={() => handleEdit('english_school')} isEditable={isEditable} />
-      </ProfileInfoRow>
-      <ProfileInfoRow title="現在の学校" value={getDisplayValue('current_school', data['current_school'])} fieldKey="current_school" onEdit={() => handleEdit('current_school')} isEditable={isEditable}>
-        <ProfileInfoRow title="学歴" value={getDisplayValue('school_history', data['school_history'])} fieldKey="school_history" onEdit={() => handleEdit('school_history')} isEditable={isEditable} />
-      </ProfileInfoRow>
       <ProfileInfoRow title="学年" value={getDisplayValue('grade_level', data['grade_level'])} fieldKey="grade_level" onEdit={() => handleEdit('grade_level')} isEditable={isEditable} />
-      <ProfileInfoRow title="専攻" value={getDisplayValue('majors', data['majors'])} fieldKey="majors" onEdit={() => handleEdit('majors')} isEditable={isEditable}>
-        <ProfileInfoRow title="副専攻" value={getDisplayValue('minors', data['minors'])} fieldKey="minors" onEdit={() => handleEdit('minors')} isEditable={isEditable} />
-        <ProfileInfoRow title="専攻歴" value={getDisplayValue('major_history', data['major_history'])} fieldKey="major_history" onEdit={() => handleEdit('major_history')} isEditable={isEditable} />
-      </ProfileInfoRow>
-
-      {/* アイデンティティ */}
-      <SectionTitle title="アイデンティティ" />
       <ProfileInfoRow title="自分の強み・特徴" value={getDisplayValue('personality', data['personality'])} fieldKey="personality" onEdit={() => handleEdit('personality')} isEditable={isEditable} />
       <ProfileInfoRow title="大切にしている価値観" value={getDisplayValue('important_values', data['important_values'])} fieldKey="important_values" onEdit={() => handleEdit('important_values')} isEditable={isEditable} />
       <ProfileInfoRow title="将来の展望" value={getDisplayValue('future_image', data['future_image'])} fieldKey="future_image" onEdit={() => handleEdit('future_image')} isEditable={isEditable} />
 
-      {/* SmiRing関連 */}
-      <SectionTitle title="SmiRing関連" />
-      <ProfileInfoRow title="SmiRing所属部署" value={getDisplayValue('smiring_department', data['smiring_department'])} fieldKey="smiring_department" onEdit={() => handleEdit('smiring_department')} isEditable={isEditable} />
-      <ProfileInfoRow title="加入時期" value={getDisplayValue('smiring_join_date', data['smiring_join_date'])} fieldKey="smiring_join_date" onEdit={() => handleEdit('smiring_join_date')} isEditable={isEditable} />
+      {/* 留学プロフィール */}
+      <SectionTitle title="留学プロフィール" />
+      <ProfileInfoRow title="現在の状況" value={getDisplayValue('active_stage_role_id', data['active_stage_role_id'])} fieldKey="active_stage_role_id" onEdit={() => handleEdit('active_stage_role_id')} isEditable={isEditable} />
+
+      {/* 留学前 (Pre) の表示項目 */}
+      {activeStage === "留学前" && (
+        <>
+          <ProfileInfoRow title="留学への関心度" value={getDisplayValue('study_abroad_interest_level', data['study_abroad_interest_level'])} fieldKey="study_abroad_interest_level" onEdit={() => handleEdit('study_abroad_interest_level')} isEditable={isEditable} />
+          <ProfileInfoRow title="希望時期" value={getDisplayValue('expected_timing', data['expected_timing'])} fieldKey="expected_timing" onEdit={() => handleEdit('expected_timing')} isEditable={isEditable} />
+          <ProfileInfoRow title="興味のある国" value={getDisplayValue('interested_countries', data['interested_countries'])} fieldKey="interested_countries" onEdit={() => handleEdit('interested_countries')} isEditable={isEditable}>
+            <ProfileInfoRow title="興味のある地域" value={getDisplayValue('interested_areas', data['interested_areas'])} fieldKey="interested_areas" onEdit={() => handleEdit('interested_areas')} isEditable={isEditable} />
+            <ProfileInfoRow title="希望する留学形態" value={getDisplayValue('interested_study_abroad_types', data['interested_study_abroad_types'])} fieldKey="interested_study_abroad_types" onEdit={() => handleEdit('interested_study_abroad_types')} isEditable={isEditable} />
+            <ProfileInfoRow title="興味のある専攻" value={getDisplayValue('interested_majors', data['interested_majors'])} fieldKey="interested_majors" onEdit={() => handleEdit('interested_majors')} isEditable={isEditable} />
+          </ProfileInfoRow>
+        </>
+      )}
+
+      {/* 留学中 (Current) の表示項目 */}
+      {activeStage === "留学中" && (
+        <>
+          <ProfileInfoRow title="留学先（国）" value={getDisplayValue('study_abroad_country', data['study_abroad_country'])} fieldKey="study_abroad_country" onEdit={() => handleEdit('study_abroad_country')} isEditable={isEditable}>
+            <ProfileInfoRow title="留学先（都市）" value={getDisplayValue('study_abroad_city', data['study_abroad_city'])} fieldKey="study_abroad_city" onEdit={() => handleEdit('study_abroad_city')} isEditable={isEditable} />
+            <ProfileInfoRow title="留学形態" value={getDisplayValue('study_abroad_type', data['study_abroad_type'])} fieldKey="study_abroad_type" onEdit={() => handleEdit('study_abroad_type')} isEditable={isEditable} />
+            <ProfileInfoRow title="留学歴" value={getDisplayValue('study_abroad_history', data['study_abroad_history'])} fieldKey="study_abroad_history" onEdit={() => handleEdit('study_abroad_history')} isEditable={isEditable} />
+            <ProfileInfoRow title="語学学校" value={getDisplayValue('english_school', data['english_school'])} fieldKey="english_school" onEdit={() => handleEdit('english_school')} isEditable={isEditable} />
+          </ProfileInfoRow>
+          <ProfileInfoRow title="現在の学校" value={getDisplayValue('current_school', data['current_school'])} fieldKey="current_school" onEdit={() => handleEdit('current_school')} isEditable={isEditable}>
+            <ProfileInfoRow title="学歴" value={getDisplayValue('school_history', data['school_history'])} fieldKey="school_history" onEdit={() => handleEdit('school_history')} isEditable={isEditable} />
+          </ProfileInfoRow>
+          <ProfileInfoRow title="専攻" value={getDisplayValue('majors', data['majors'])} fieldKey="majors" onEdit={() => handleEdit('majors')} isEditable={isEditable}>
+            <ProfileInfoRow title="副専攻" value={getDisplayValue('minors', data['minors'])} fieldKey="minors" onEdit={() => handleEdit('minors')} isEditable={isEditable} />
+            <ProfileInfoRow title="専攻歴" value={getDisplayValue('major_history', data['major_history'])} fieldKey="major_history" onEdit={() => handleEdit('major_history')} isEditable={isEditable} />
+          </ProfileInfoRow>
+        </>
+      )}
+
+      {/* 留学後 (Post) の表示項目 */}
+      {activeStage === "留学後" && (
+        <>
+          <ProfileInfoRow title="留学先（国）" value={getDisplayValue('study_abroad_country', data['study_abroad_country'])} fieldKey="study_abroad_country" onEdit={() => handleEdit('study_abroad_country')} isEditable={isEditable}>
+            <ProfileInfoRow title="留学先（都市）" value={getDisplayValue('study_abroad_city', data['study_abroad_city'])} fieldKey="study_abroad_city" onEdit={() => handleEdit('study_abroad_city')} isEditable={isEditable} />
+            <ProfileInfoRow title="留学形態" value={getDisplayValue('study_abroad_type', data['study_abroad_type'])} fieldKey="study_abroad_type" onEdit={() => handleEdit('study_abroad_type')} isEditable={isEditable} />
+            <ProfileInfoRow title="留学歴" value={getDisplayValue('study_abroad_history', data['study_abroad_history'])} fieldKey="study_abroad_history" onEdit={() => handleEdit('study_abroad_history')} isEditable={isEditable} />
+            <ProfileInfoRow title="語学学校" value={getDisplayValue('english_school', data['english_school'])} fieldKey="english_school" onEdit={() => handleEdit('english_school')} isEditable={isEditable} />
+          </ProfileInfoRow>
+          <ProfileInfoRow title="卒業した海外大学" value={getDisplayValue('last_overseas_university', data['last_overseas_university'])} fieldKey="last_overseas_university" onEdit={() => handleEdit('last_overseas_university')} isEditable={isEditable}>
+            <ProfileInfoRow title="学歴" value={getDisplayValue('school_history', data['school_history'])} fieldKey="school_history" onEdit={() => handleEdit('school_history')} isEditable={isEditable} />
+          </ProfileInfoRow>
+          <ProfileInfoRow title="専攻" value={getDisplayValue('majors', data['majors'])} fieldKey="majors" onEdit={() => handleEdit('majors')} isEditable={isEditable}>
+            <ProfileInfoRow title="副専攻" value={getDisplayValue('minors', data['minors'])} fieldKey="minors" onEdit={() => handleEdit('minors')} isEditable={isEditable} />
+            <ProfileInfoRow title="専攻歴" value={getDisplayValue('major_history', data['major_history'])} fieldKey="major_history" onEdit={() => handleEdit('major_history')} isEditable={isEditable} />
+          </ProfileInfoRow>
+        </>
+      )}
+
+      {/* 保護者 (Guardian) の表示項目 */}
+      {activeStage === "保護者" && (
+        <>
+          <ProfileInfoRow title="お子様のユーザーID" value={getDisplayValue('child_id', data['child_id'])} fieldKey="child_id" onEdit={() => handleEdit('child_id')} isEditable={isEditable} />
+          <ProfileInfoRow title="懸念点・関心事" value={getDisplayValue('concerns', data['concerns'])} fieldKey="concerns" onEdit={() => handleEdit('concerns')} isEditable={isEditable} />
+        </>
+      )}
 
       {/* Edit Modal */}
       {editingFieldKey && BASIC_INFO_FIELDS[editingFieldKey] && (

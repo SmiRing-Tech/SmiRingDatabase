@@ -6,6 +6,7 @@ import multer from 'multer';
 import sharp from 'sharp';
 import { analyzeImageWithGemini } from '../lib/ai';
 import { queueGalleryImageIndexWork, deleteSearchIndex } from '../lib/vectorIndexer';
+import { authenticate } from '../middleware/authenticate';
 
 const heicConvert = require('heic-convert');
 
@@ -66,13 +67,8 @@ const attachmentUpload = multer({
 // ==========================================
 // フロントエンドからファイルをバックエンドが受け取り、R2へ転送してDBに登録する
 // CORS問題を回避するため、ブラウザがR2に直接アクセスしない設計
-router.post('/api/gallery/upload', upload.single('file'), async (req: Request, res: Response) => {
+router.post('/api/gallery/upload', authenticate, upload.single('file'), async (req: Request, res: Response) => {
   try {
-    // 🔐 JWT検証
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) return res.status(401).json({ error: '認証に失敗しました' });
 
     // ファイルの存在チェック
     if (!req.file) {
@@ -87,8 +83,8 @@ router.post('/api/gallery/upload', upload.single('file'), async (req: Request, r
 
     // ファイル名を一意にする
     const timestamp = Date.now();
-    const largeKey = `gallery/large/${user.id}/${timestamp}.jpg`;
-    const thumbKey = `gallery/thumbnails/${user.id}/${timestamp}.webp`;
+    const largeKey = `gallery/large/${req.user!.id}/${timestamp}.jpg`;
+    const thumbKey = `gallery/thumbnails/${req.user!.id}/${timestamp}.webp`;
 
     // Step 1: ラージ画像 (1920px) & サムネイル (400px) 生成
     const largeBuffer = await sharp(processedBuffer)
@@ -122,7 +118,7 @@ router.post('/api/gallery/upload', upload.single('file'), async (req: Request, r
     const { data: gallery, error: insertError } = await supabase
       .from('gallery')
       .insert({
-        user_id: user.id,
+        user_id: req.user!.id,
         storage_path: largeKey,
         thumbnail_path: thumbKey,
         image_type: image_type || null,
@@ -149,13 +145,8 @@ router.post('/api/gallery/upload', upload.single('file'), async (req: Request, r
 // ==========================================
 // 🖼️ ギャラリー一覧取得 API
 // ==========================================
-router.get('/api/gallery', async (req: Request, res: Response) => {
+router.get('/api/gallery', authenticate, async (req: Request, res: Response) => {
   try {
-    // 🔐 JWT検証（ログイン済み = 全員組織メンバーとして扱う）
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) return res.status(401).json({ error: '認証に失敗しました' });
 
     // クエリパラメータでアバターを含めるかどうかを判定（デフォルトは除外）
     const includeAvatars = req.query.includeAvatars === 'true';
@@ -265,15 +256,11 @@ router.get('/api/gallery', async (req: Request, res: Response) => {
 // ==========================================
 // 👤 特定ユーザーのギャラリー一覧取得 API
 // ==========================================
-router.get('/api/gallery/user/:userId', async (req: Request, res: Response) => {
+router.get('/api/gallery/user/:userId', authenticate, async (req: Request, res: Response) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) return res.status(401).json({ error: '認証に失敗しました' });
 
     const targetUserId = req.params.userId;
-    const isOwner = user.id === targetUserId;
+    const isOwner = req.user!.id === targetUserId;
 
     let query = supabase.from('gallery').select('*').eq('user_id', targetUserId);
 
@@ -324,13 +311,8 @@ router.get('/api/gallery/user/:userId', async (req: Request, res: Response) => {
 // ==========================================
 // 🔍 ギャラリー個別取得 API
 // ==========================================
-router.get('/api/gallery/:id', async (req: Request, res: Response) => {
+router.get('/api/gallery/:id', authenticate, async (req: Request, res: Response) => {
   try {
-    // 🔐 JWT検証
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) return res.status(401).json({ error: '認証に失敗しました' });
 
     const { id } = req.params;
 
@@ -364,13 +346,8 @@ router.get('/api/gallery/:id', async (req: Request, res: Response) => {
 // ==========================================
 // ✏️ ギャラリー情報更新 API
 // ==========================================
-router.patch('/api/gallery/:id', async (req: Request, res: Response) => {
+router.patch('/api/gallery/:id', authenticate, async (req: Request, res: Response) => {
   try {
-    // 🔐 JWT検証
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) return res.status(401).json({ error: '認証に失敗しました' });
 
     const { id } = req.params;
     const { image_type, visibility, description } = req.body;
@@ -387,7 +364,7 @@ router.patch('/api/gallery/:id', async (req: Request, res: Response) => {
     }
 
     // 自分がアップロードした画像のみ編集可能
-    if (gallery.user_id !== user.id) {
+    if (gallery.user_id !== req.user!.id) {
       return res.status(403).json({ error: 'この画像を編集する権限がありません' });
     }
 
@@ -416,13 +393,8 @@ router.patch('/api/gallery/:id', async (req: Request, res: Response) => {
 // ==========================================
 // 🗑️ ギャラリー削除 API
 // ==========================================
-router.delete('/api/gallery/:id', async (req: Request, res: Response) => {
+router.delete('/api/gallery/:id', authenticate, async (req: Request, res: Response) => {
   try {
-    // 🔐 JWT検証
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) return res.status(401).json({ error: '認証に失敗しました' });
 
     const { id } = req.params;
 
@@ -438,7 +410,7 @@ router.delete('/api/gallery/:id', async (req: Request, res: Response) => {
     }
 
     // 自分がアップロードした画像のみ削除可能
-    if (gallery.user_id !== user.id) {
+    if (gallery.user_id !== req.user!.id) {
       return res.status(403).json({ error: 'この画像を削除する権限がありません' });
     }
 
@@ -470,13 +442,8 @@ router.delete('/api/gallery/:id', async (req: Request, res: Response) => {
 // ==========================================
 // 📎 フォーム添付ファイルアップロード API
 // ==========================================
-router.post('/api/forms/attachments/upload', attachmentUpload.single('file'), async (req: Request, res: Response) => {
+router.post('/api/forms/attachments/upload', authenticate, attachmentUpload.single('file'), async (req: Request, res: Response) => {
   try {
-    // 🔐 JWT検証
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: '認証トークンがありません' });
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) return res.status(401).json({ error: '認証に失敗しました' });
 
     if (!req.file) return res.status(400).json({ error: 'ファイルがありません' });
 
@@ -495,8 +462,8 @@ router.post('/api/forms/attachments/upload', attachmentUpload.single('file'), as
       // 🌟 バックエンドでの HEIC フォールバック変換
       const processedBuffer = await ensureJpegBuffer(file.buffer, file.mimetype, file.originalname);
 
-      const largeKey = `gallery/large/${user.id}/${timestamp}.jpg`;
-      const thumbKey = `gallery/thumbnails/${user.id}/${timestamp}.webp`;
+      const largeKey = `gallery/large/${req.user!.id}/${timestamp}.jpg`;
+      const thumbKey = `gallery/thumbnails/${req.user!.id}/${timestamp}.webp`;
 
       // Step 1: ラージ画像 (1920px) & サムネイル (400px) 生成
       const largeBuffer = await sharp(processedBuffer)
@@ -542,7 +509,7 @@ router.post('/api/forms/attachments/upload', attachmentUpload.single('file'), as
       const { data: gallery, error: insertError } = await supabase
         .from('gallery')
         .insert({
-          user_id: user.id,
+          user_id: req.user!.id,
           storage_path: largeKey,
           thumbnail_path: thumbKey,
           image_type: 'form_attachment',
@@ -571,7 +538,7 @@ router.post('/api/forms/attachments/upload', attachmentUpload.single('file'), as
     } else {
       // 📎 画像以外は通常の添付ファイルとして処理
       const safeFileName = file.originalname.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
-      const storagePath = `form_attachments/${form_id}/${user.id}/${timestamp}_${safeFileName}`;
+      const storagePath = `form_attachments/${form_id}/${req.user!.id}/${timestamp}_${safeFileName}`;
 
       await r2.send(new PutObjectCommand({
         Bucket: BUCKET_NAME,
