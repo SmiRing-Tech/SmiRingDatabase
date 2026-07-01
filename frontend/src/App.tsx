@@ -94,7 +94,26 @@ const RequirePermission = ({
 };
 
 // ==========================================
-// ルーターの設定 (Flutterの routes リストに相当)
+// ロールベースのルートガード（内部メンバー専用）
+// ==========================================
+const RequireInternalRole = ({ children }: { children: React.ReactNode }) => {
+  const { roles, isPermissionsLoading, isLoading } = useAuth();
+
+  if (isLoading || isPermissionsLoading) return null;
+
+  const hasInternalAccess = roles.some(r =>
+    ['smiring_member', 'admin', 'smiring_core'].includes(r)
+  );
+
+  if (!hasInternalAccess) {
+    return <Navigate to="/profile" replace />;
+  }
+
+  return <>{children}</>;
+};
+
+// ==========================================
+// ルーターの設定 (Flutter前のに相当)
 // ==========================================
 const router = createBrowserRouter([
   // 1. 公開ルート
@@ -112,21 +131,27 @@ const router = createBrowserRouter([
       </ProtectedRoute>
     ),
     children: [
-      { path: '/home', element: <HomePage /> },
+      { path: '/home', element: <RequireInternalRole><HomePage /></RequireInternalRole> },
       { path: '/profile', element: <ProfilePage /> },
-      { path: '/members', element: <MembersPage /> },
+      { path: '/members', element: <RequireInternalRole><MembersPage /></RequireInternalRole> },
       { path: '/members/:id', element: <ProfilePage /> },
-      { path: '/gallery', element: <GalleryPage /> },
-      { path: '/form-list', element: <FormListPage /> },
-      { path: '/form-editor/:id', element: <FormEditorPage /> },
-      { path: '/form-preview/:id', element: <FormAnswerPage /> },
+      { path: '/gallery', element: <RequireInternalRole><GalleryPage /></RequireInternalRole> },
+      { path: '/form-list', element: <RequireInternalRole><FormListPage /></RequireInternalRole> },
+      { path: '/form-editor/:id', element: <RequireInternalRole><FormEditorPage /></RequireInternalRole> },
+      { path: '/form-preview/:id', element: <RequireInternalRole><FormAnswerPage /></RequireInternalRole> },
       { path: '/form-answer/:id', element: <FormAnswerPage /> },
       { path: '/feedback', element: <FeedbackPage /> },
-      { path: '/form-responses/:responseId', element: <FormResponseDetailPage /> },
-      { path: '/search', element: <SearchPage /> },
-      { path: '/search/chat', element: <ChatPage /> },
-      { path: '/apps', element: <AppsPage /> },
-      { path: '/management', element: <RequirePermission resource="management" action="read"><ManagementConsolePage /></RequirePermission> },
+      { path: '/form-responses/:responseId', element: <RequireInternalRole><FormResponseDetailPage /></RequireInternalRole> },
+      { path: '/search', element: <RequireInternalRole><SearchPage /></RequireInternalRole> },
+      { path: '/search/chat', element: <RequireInternalRole><ChatPage /></RequireInternalRole> },
+      { path: '/apps', element: <RequireInternalRole><AppsPage /></RequireInternalRole> },
+      { path: '/management', element: (
+        <RequireInternalRole>
+          <RequirePermission resource="management" action="read">
+            <ManagementConsolePage />
+          </RequirePermission>
+        </RequireInternalRole>
+      ) },
     ],
   },
 ]);

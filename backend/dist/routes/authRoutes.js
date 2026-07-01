@@ -37,12 +37,28 @@ router.post('/api/auth/check-invitation-code', async (req, res) => {
  */
 router.get('/api/me/permissions', authenticate_1.authenticate, async (req, res) => {
     try {
-        const { data, error } = await supabase_1.supabase.rpc('get_user_permissions', {
+        const { data: permissions, error: permError } = await supabase_1.supabase.rpc('get_user_permissions', {
             p_user_id: req.user.id,
         });
-        if (error)
-            throw error;
-        res.json(data ?? []);
+        if (permError)
+            throw permError;
+        const { data: roleMappings, error: rolesError } = await supabase_1.supabase
+            .from('user_role_mappings')
+            .select(`
+        user_roles (
+          role_name
+        )
+      `)
+            .eq('user_id', req.user.id);
+        if (rolesError)
+            throw rolesError;
+        const roles = (roleMappings || [])
+            .map(rm => rm.user_roles?.role_name)
+            .filter(Boolean);
+        res.json({
+            permissions: permissions ?? [],
+            roles
+        });
     }
     catch (error) {
         console.error('権限取得エラー:', error);

@@ -17,6 +17,7 @@ interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   permissions: Permission[];
+  roles: string[];
   isPermissionsLoading: boolean;
   hasPermission: (resource: string, action: PermissionAction) => boolean;
   signOut: () => Promise<void>;
@@ -31,19 +32,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [roles, setRoles] = useState<string[]>([]);
   const [isPermissionsLoading, setIsPermissionsLoading] = useState(false);
 
   // ユーザーIDが変わったタイミングで権限を取得・クリア
   useEffect(() => {
     if (!session?.user.id) {
       setPermissions([]);
+      setRoles([]);
       return;
     }
 
     setIsPermissionsLoading(true);
     apiClient.get('/api/me/permissions')
       .then(res => res.json())
-      .then((data: Permission[]) => setPermissions(data))
+      .then((data: { permissions: Permission[]; roles: string[] }) => {
+        setPermissions(data.permissions || []);
+        setRoles(data.roles || []);
+      })
       .catch(err => console.error('[Auth] Permissions fetch failed:', err))
       .finally(() => setIsPermissionsLoading(false));
   }, [session?.user.id]);
@@ -59,7 +65,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setSession(session);
       setUser(session?.user ?? null);
       setIsLoading(false);
-
+ 
       if (_event === 'SIGNED_OUT') {
         console.log('[Auth] User signed out');
       }
@@ -87,6 +93,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSession(null);
     setUser(null);
     setPermissions([]);
+    setRoles([]);
   };
 
   const refreshSession = async () => {
@@ -106,8 +113,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsPermissionsLoading(true);
     try {
       const res = await apiClient.get('/api/me/permissions');
-      const data: Permission[] = await res.json();
-      setPermissions(data);
+      const data: { permissions: Permission[]; roles: string[] } = await res.json();
+      setPermissions(data.permissions || []);
+      setRoles(data.roles || []);
     } catch (err) {
       console.error('[Auth] Permissions refresh failed:', err);
     } finally {
@@ -118,7 +126,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   return (
     <AuthContext.Provider value={{
       session, user, isLoading,
-      permissions, isPermissionsLoading, hasPermission,
+      permissions, roles, isPermissionsLoading, hasPermission,
       signOut, refreshSession, refreshPermissions,
     }}>
       {children}

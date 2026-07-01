@@ -44,13 +44,31 @@ router.post('/api/auth/check-invitation-code', async (req: Request, res: Respons
  */
 router.get('/api/me/permissions', authenticate, async (req: Request, res: Response) => {
   try {
-    const { data, error } = await supabase.rpc('get_user_permissions', {
+    const { data: permissions, error: permError } = await supabase.rpc('get_user_permissions', {
       p_user_id: req.user!.id,
     });
 
-    if (error) throw error;
+    if (permError) throw permError;
 
-    res.json(data ?? []);
+    const { data: roleMappings, error: rolesError } = await supabase
+      .from('user_role_mappings')
+      .select(`
+        user_roles (
+          role_name
+        )
+      `)
+      .eq('user_id', req.user!.id);
+
+    if (rolesError) throw rolesError;
+
+    const roles = (roleMappings || [])
+      .map(rm => (rm.user_roles as any)?.role_name)
+      .filter(Boolean);
+
+    res.json({
+      permissions: permissions ?? [],
+      roles
+    });
   } catch (error: any) {
     console.error('権限取得エラー:', error);
     res.status(500).json({ error: '権限の取得中にエラーが発生しました' });

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../context/AuthContext';
 import BasicInfoPage from './BasicInfoTab';
 import DetailInfoTab from './DetailInfoTab';
 import AccountSettingTab from './AccountSettingTab';
@@ -23,6 +24,8 @@ type GalleryItem = {
 
 export default function ProfilePage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { user, roles, isLoading: authLoading } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = (searchParams.get('tab') as 'basic' | 'detail' | 'account') || 'basic';
 
@@ -52,6 +55,19 @@ export default function ProfilePage() {
   // 写真拡大表示モーダル
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState<GalleryItem | null>(null);
+
+  // 外部メンバーが他人のプロフィールページに直接アクセスした場合は自分のプロフィールに強制リダイレクト
+  useEffect(() => {
+    if (authLoading) return;
+    const myUserId = user?.id;
+    const hasInternalAccess = roles.some(r =>
+      ['smiring_member', 'admin', 'smiring_core'].includes(r)
+    );
+
+    if (id && id !== myUserId && !hasInternalAccess) {
+      navigate('/profile', { replace: true });
+    }
+  }, [id, user, roles, authLoading, navigate]);
 
   const fetchProfile = useCallback(async () => {
     try {
