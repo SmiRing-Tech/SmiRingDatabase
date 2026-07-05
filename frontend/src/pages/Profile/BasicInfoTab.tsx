@@ -20,7 +20,7 @@ type Props = {
 };
 
 // --- 値の表示 ---
-function ValueDisplay({ value, fieldKey }: { value: any, fieldKey?: string }) {
+export function ValueDisplay({ value, fieldKey }: { value: any, fieldKey?: string }) {
   if (value === null || value === undefined || value === '' || (Array.isArray(value) && value.length === 0)) {
     return (
       <span className="text-[14px] sm:text-[15px] text-gray-300 italic font-normal">—</span>
@@ -128,7 +128,7 @@ type ProfileInfoRowProps = {
   fieldKey?: string;
 };
 
-function ProfileInfoRow({
+export function ProfileInfoRow({
   title,
   value,
   onEdit,
@@ -219,7 +219,7 @@ function ProfileInfoRow({
 }
 
 // --- セクションタイトル ---
-function SectionTitle({ title }: { title: string }) {
+export function SectionTitle({ title }: { title: string }) {
   return (
     <h3 className="text-[12px] font-bold tracking-widest uppercase text-gray-500 mt-8 mb-2 px-3 pb-2 border-b border-gray-100 first:mt-0">
       {title}

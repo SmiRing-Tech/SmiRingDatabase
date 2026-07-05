@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthContext';
 import BasicInfoPage from './BasicInfoTab';
 import DetailInfoTab from './DetailInfoTab';
 import AccountSettingTab from './AccountSettingTab';
+import Ryugakusai2026Tab from './Ryugakusai2026Tab';
 import PhotoUploadModal from '../../components/ui/PhotoUploadModal';
 import PhotoViewModal from '../../components/ui/PhotoViewModal';
 import { Settings, User } from 'lucide-react';
@@ -27,9 +28,9 @@ export default function ProfilePage() {
   const navigate = useNavigate();
   const { user, roles, isLoading: authLoading } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
-  const activeTab = (searchParams.get('tab') as 'basic' | 'detail' | 'account') || 'basic';
+  const activeTab = (searchParams.get('tab') as 'basic' | 'detail' | 'account' | 'ryugakusai2026') || 'basic';
 
-  const setActiveTab = (tab: 'basic' | 'detail' | 'account') => {
+  const setActiveTab = (tab: 'basic' | 'detail' | 'account' | 'ryugakusai2026') => {
     setSearchParams(prev => {
       const next = new URLSearchParams(prev);
       if (tab === 'basic') {
@@ -316,6 +317,13 @@ export default function ProfilePage() {
                 詳細情報
                 {activeTab === 'detail' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
               </button>
+              <button
+                className={`pb-3 font-medium text-base md:text-lg transition-colors relative whitespace-nowrap ${activeTab === 'ryugakusai2026' ? 'text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                onClick={() => setActiveTab('ryugakusai2026')}
+              >
+                留学祭2026プロフィール情報
+                {activeTab === 'ryugakusai2026' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
+              </button>
             </div>
           </div>
         )}
@@ -327,6 +335,9 @@ export default function ProfilePage() {
           )}
           {activeTab === 'detail' && (
             <DetailInfoTab userId={profileData?.id} isEditable={isEditable} />
+          )}
+          {activeTab === 'ryugakusai2026' && (
+            <Ryugakusai2026Tab userId={profileData?.id} isEditable={isEditable} onDataChange={fetchProfile} />
           )}
           {activeTab === 'account' && (
             <AccountSettingTab onBack={() => setActiveTab('basic')} />

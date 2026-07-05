@@ -732,5 +732,23 @@ export const BASIC_INFO_FIELDS: Record<string, QuestionData> = {
     dateTimeSettings: defaultDateTimeSettings,
     dropdownSettings: defaultDropdownSettings,
     fileUploadSettings: defaultFileUploadSettings
+  },
+  short_message: {
+    id: 'short_message',
+    title: '一言メッセージ',
+    description: '',
+    type: 'short_text',
+    options: [],
+    allowCustomAnswer: false,
+    scale: { min: 1, max: 5, minLabel: '', maxLabel: '' },
+    gridRows: [],
+    gridCols: [],
+    gridInputType: 'radio',
+    shortTextValidation: { enabled: false, type: 'text', condition: '', value1: '', value2: '', errorMsg: '' },
+    checkboxValidation: { enabled: false, min: '', max: '', errorMsg: '' },
+    shortTextMultiple: { enabled: false, style: 'none' },
+    dateTimeSettings: defaultDateTimeSettings,
+    dropdownSettings: defaultDropdownSettings,
+    fileUploadSettings: defaultFileUploadSettings
   }
 };

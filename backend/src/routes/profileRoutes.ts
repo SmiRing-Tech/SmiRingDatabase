@@ -637,4 +637,216 @@ router.delete('/api/account/me', authenticate, async (req: Request, res: Respons
   }
 });
 
+
+// ==========================================
+// 🎟️ 留学祭2026プロフィール専用エンドポイント
+// ==========================================
+
+// 自分の留学祭2026プロフィール情報を取得 (basic_profile_info + current_study_abroad_profiles)
+router.get('/api/profile/ryugakusai2026/me', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { data: basicInfo, error: basicError } = await supabase
+      .from('basic_profile_info')
+      .select('*')
+      .eq('id', req.user!.id)
+      .single();
+
+    if (basicError) throw basicError;
+
+    const { data: currentStudyInfo, error: currentStudyError } = await supabase
+      .from('current_study_abroad_profiles')
+      .select('*')
+      .eq('user_id', req.user!.id)
+      .maybeSingle();
+
+    if (currentStudyError) throw currentStudyError;
+
+    const profile = {
+      ...basicInfo,
+      ...(currentStudyInfo || {}),
+      id: basicInfo.id // 確実にユーザーIDを保つ
+    };
+
+    const avatarUrl = await resolveAvatarUrl(profile.avatar_id);
+    res.json({ ...profile, avatar_link: avatarUrl });
+
+  } catch (error: any) {
+    console.error('留学祭2026プロフィール取得エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 指定したIDのユーザーの留学祭2026プロフィール情報を取得
+router.get('/api/profile/ryugakusai2026/:id', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const { data: basicInfo, error: basicError } = await supabase
+      .from('basic_profile_info')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (basicError) {
+      if (basicError.code === 'PGRST116') {
+        return res.status(404).json({ error: 'プロフィールが見つかりません' });
+      }
+      throw basicError;
+    }
+
+    const { data: currentStudyInfo, error: currentStudyError } = await supabase
+      .from('current_study_abroad_profiles')
+      .select('*')
+      .eq('user_id', id)
+      .maybeSingle();
+
+    if (currentStudyError) throw currentStudyError;
+
+    const profile = {
+      ...basicInfo,
+      ...(currentStudyInfo || {}),
+      id: basicInfo.id
+    };
+
+    const avatarUrl = await resolveAvatarUrl(profile.avatar_id);
+    res.json({ ...profile, avatar_link: avatarUrl });
+
+  } catch (error: any) {
+    console.error('指定した留学祭2026プロフィール取得エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 自分の留学祭2026プロフィール情報を更新
+router.patch('/api/profile/ryugakusai2026/me', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { _ai_metadata, ...updates } = req.body;
+
+    const basicFields = ['name_english', 'name_kanji', 'grade_level', 'hometown', 'short_message'];
+    const currentStudyFields = [
+      'current_school',
+      'study_abroad_country',
+      'study_abroad_city',
+      'study_abroad_type',
+      'english_school',
+      'majors',
+      'minors'
+    ];
+
+    const basicUpdates: any = {};
+    const currentStudyUpdates: any = {};
+
+    for (const [key, value] of Object.entries(updates)) {
+      if (basicFields.includes(key)) {
+        basicUpdates[key] = value;
+      } else if (currentStudyFields.includes(key)) {
+        currentStudyUpdates[key] = value;
+      }
+    }
+
+    // 1. basic_profile_info の更新 (更新内容がある場合のみ)
+    if (Object.keys(basicUpdates).length > 0) {
+      const { error: basicError } = await supabase
+        .from('basic_profile_info')
+        .update(basicUpdates)
+        .eq('id', req.user!.id);
+      if (basicError) throw basicError;
+    }
+
+    // 2. current_study_abroad_profiles の更新または挿入 (更新内容がある場合のみ)
+    if (Object.keys(currentStudyUpdates).length > 0) {
+      const { data: existing, error: fetchError } = await supabase
+        .from('current_study_abroad_profiles')
+        .select('id')
+        .eq('user_id', req.user!.id)
+        .maybeSingle();
+
+      if (fetchError) throw fetchError;
+
+      if (existing) {
+        const { error: stageError } = await supabase
+          .from('current_study_abroad_profiles')
+          .update(currentStudyUpdates)
+          .eq('user_id', req.user!.id);
+        if (stageError) throw stageError;
+      } else {
+        const { error: stageError } = await supabase
+          .from('current_study_abroad_profiles')
+          .insert({ user_id: req.user!.id, ...currentStudyUpdates });
+        if (stageError) throw stageError;
+      }
+    }
+
+    // 最新の結合情報を取得して返す
+    const { data: basicInfo, error: fetchBasicError } = await supabase
+      .from('basic_profile_info')
+      .select('*')
+      .eq('id', req.user!.id)
+      .single();
+
+    if (fetchBasicError || !basicInfo) throw fetchBasicError || new Error('Profile not found');
+
+    const { data: currentStudyInfo, error: fetchCurrentStudyError } = await supabase
+      .from('current_study_abroad_profiles')
+      .select('*')
+      .eq('user_id', req.user!.id)
+      .maybeSingle();
+
+    if (fetchCurrentStudyError) throw fetchCurrentStudyError;
+
+    const profile = {
+      ...basicInfo,
+      ...(currentStudyInfo || {}),
+      id: basicInfo.id
+    };
+
+    const avatarUrl = await resolveAvatarUrl(profile.avatar_id);
+    res.json({ ...profile, avatar_link: avatarUrl });
+
+    // 🤖 バックグラウンドでAIベクトル化を実行
+    (async () => {
+      try {
+        const user_id = req.user!.id;
+        
+        if (_ai_metadata) {
+          const { label, type, options, formattedValue } = _ai_metadata;
+          const field_key = _ai_metadata.field_key || Object.keys(updates)[0];
+          const value = updates[field_key];
+
+          const q = { id: field_key, title: label, type: type, options: options, formattedValue: formattedValue };
+          const text = answerToText([q], { [field_key]: value });
+
+          if (text) {
+            await queueIndexWork({
+              source_type: 'basic_profile',
+              source_id: user_id,
+              content: text,
+              metadata: { user_id, field_key, label }
+            });
+          }
+        } else {
+          for (const [key, value] of Object.entries(updates)) {
+            if (['updated_at', 'timezone', 'avatar_id'].includes(key)) continue;
+            
+            const text = `${key}: ${Array.isArray(value) ? value.join(', ') : value}`;
+            await queueIndexWork({
+              source_type: 'basic_profile',
+              source_id: user_id,
+              content: text,
+              metadata: { user_id, field_key: key }
+            });
+          }
+        }
+      } catch (err) {
+        console.error('[AI Indexer] ❌ Profile indexing failed:', err);
+      }
+    })();
+
+  } catch (error: any) {
+    console.error('留学祭2026プロフィール更新エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;
+
