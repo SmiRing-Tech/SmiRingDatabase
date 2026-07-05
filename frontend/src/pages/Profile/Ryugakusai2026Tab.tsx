@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import ProfileEditModal from './components/ProfileEditModal';
 import { BASIC_INFO_FIELDS } from './basicInfoFields';
 import { supabase } from '../../lib/supabase';
