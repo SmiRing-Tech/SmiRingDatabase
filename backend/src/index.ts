@@ -11,6 +11,7 @@ import storageRoutes from './routes/storageRoutes';
 import authRoutes from './routes/authRoutes';
 import workerRoutes from './routes/workerRoutes';
 import managementRoutes from './routes/managementRoutes';
+import connectRoutes from './routes/connectRoutes';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -37,6 +38,7 @@ app.use(storageRoutes); // ☁️ ストレージ（R2）系
 app.use(authRoutes);    // 🔐 認証系
 app.use(workerRoutes);  // 🤖 ワーカー系
 app.use('/api/management', managementRoutes); // ⚙️ 管理・設定系
+app.use(connectRoutes); // 🎥 SmiRing Connect (video calls)
 
 // ==========================================
 // サーバー起動

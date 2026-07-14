@@ -21,6 +21,8 @@ import FormResponseDetailPage from './pages/Form/Response/FormResponseDetailPage
 import SearchPage from './pages/Search/SearchPage';
 import ChatPage from './pages/Search/ChatPage';
 import AppsPage from './pages/Apps/AppsPage';
+import SmiRingConnectPage from './pages/Connect/SmiRingConnectPage';
+import ConnectRoomPage from './pages/Connect/ConnectRoomPage';
 import ManagementConsolePage from './pages/Management/ManagementConsolePage';
 import { FeedbackProvider } from './context/FeedbackContext';
 import FeedbackSystem from './components/ui/FeedbackSystem';
@@ -145,6 +147,8 @@ const router = createBrowserRouter([
       { path: '/search', element: <RequireInternalRole><SearchPage /></RequireInternalRole> },
       { path: '/search/chat', element: <RequireInternalRole><ChatPage /></RequireInternalRole> },
       { path: '/apps', element: <RequireInternalRole><AppsPage /></RequireInternalRole> },
+      { path: '/connect', element: <RequireInternalRole><SmiRingConnectPage /></RequireInternalRole> },
+      { path: '/connect/room/:roomId', element: <RequireInternalRole><ConnectRoomPage /></RequireInternalRole> },
       { path: '/management', element: (
         <RequireInternalRole>
           <RequirePermission resource="management" action="read">

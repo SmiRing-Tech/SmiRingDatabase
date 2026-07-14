@@ -6,6 +6,7 @@ import {
   User,
   ArrowLeft,
   Lock,
+  Video,
 } from 'lucide-react';
 import { usePermission } from '../../hooks/usePermission';
 
@@ -51,6 +52,13 @@ export default function AppsPage() {
       path: '/profile',
       icon: <User className="w-6 h-6 text-rose-600" />,
       colorClass: 'from-rose-50 to-rose-100/80 border-rose-200 text-rose-600'
+    },
+    {
+      name: 'SmiRing Connect',
+      description: 'メンバー同士でつながるビデオ通話',
+      path: '/connect',
+      icon: <Video className="w-6 h-6 text-indigo-600" />,
+      colorClass: 'from-indigo-50 to-indigo-100/80 border-indigo-200 text-indigo-600'
     },
     ...(canAccessManagement ? [{
       name: 'Management Console',
