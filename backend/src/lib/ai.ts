@@ -14,25 +14,40 @@ import { image_to_text_prompt } from './prompt/image_to_text_prompt';
 
 // ローカルモデル用の変数
 let localExtractor: any = null;
+let modelLoadingPromise: Promise<any> | null = null;
 
 // ==========================================
-// 1. サーバー起動時に呼び出す初期化関数
+// 1. サーバー起動直後に呼び出す初期化関数（非ブロッキング）
+//    app.listen をブロックせず、バックグラウンドでロードを開始するために使う。
+//    2回目以降に呼ばれても同じPromiseを使い回すので二重ロードは起きない。
 // ==========================================
-export async function initAIModel() {
-  if (!localExtractor) {
+export function initAIModel(): Promise<any> {
+  if (!modelLoadingPromise) {
     console.log('🤖 ローカルAIモデルを事前ロードしています... (数秒かかります)');
-    localExtractor = await pipeline('feature-extraction', 'Xenova/multilingual-e5-small');
-    console.log('✅ ローカルAIモデルの準備完了！');
+    modelLoadingPromise = pipeline('feature-extraction', 'Xenova/multilingual-e5-small')
+      .then((extractor) => {
+        localExtractor = extractor;
+        console.log('✅ ローカルAIモデルの準備完了！');
+        return extractor;
+      })
+      .catch((error) => {
+        // 失敗した場合は次回呼び出しで再試行できるようにリセットする
+        modelLoadingPromise = null;
+        console.error('❌ ローカルAIモデルのロードに失敗しました:', error);
+        throw error;
+      });
   }
+  return modelLoadingPromise;
 }
 
 // ==========================================
 // 2. ローカルAIでのベクトル化 (384次元)
 // ==========================================
 export async function getLocalEmbedding(text: string, isQuery: boolean = true): Promise<number[]> {
-  // すでに起動時にロードされているはずなので、ここではチェックのみ
+  // 起動直後の呼び出しでまだロード中の場合は、ロード完了を待つ
+  // (サーバー起動時に initAIModel() は既に呼ばれている前提なので、通常はここで新規ロードは走らない)
   if (!localExtractor) {
-    throw new Error("サーバーエラー: AIモデルがまだ準備されていません。サーバー起動時の initAIModel() の呼び出しを確認してください。");
+    await initAIModel();
   }
 
   // E5モデルの精度向上のため、クエリなら "query: ", 文書なら "passage: " を付与する

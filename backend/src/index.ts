@@ -43,21 +43,20 @@ app.use(connectRoutes); // 🎥 SmiRing Connect (video calls)
 // ==========================================
 // サーバー起動
 // ==========================================
-async function startServer() {
-  try {
-    console.log('サーバーの起動準備中...');
-    
-    // 🌟 3. リクエストを受け付ける前に、AIモデルを確実にロードする
-    await initAIModel();
+function startServer() {
+  console.log('サーバーの起動準備中...');
 
-    // 🌟 4. AIの準備が完了したら、はじめてポートを開放する
-    app.listen(port, () => {
-      console.log(`🚀 サーバーが起動しました: ${port}`);
-    });
-  } catch (error) {
-    console.error('❌ サーバー起動エラー:', error);
-    process.exit(1); // エラーが起きたらプロセスを終了させる
-  }
+  // 🌟 3. ポートは即座に開放し、起動プローブ（コールドスタート判定）をブロックしない
+  app.listen(port, () => {
+    console.log(`🚀 サーバーが起動しました: ${port}`);
+  });
+
+  // 🌟 4. AIモデルはバックグラウンドでロードを開始する。
+  //    データ表示系のリクエストはこれを待たずに処理できる。
+  //    検索など getLocalEmbedding を呼ぶリクエストだけ、ロード中ならその完了を待つ。
+  initAIModel().catch(() => {
+    // エラーは initAIModel 内でログ済み。次回 getLocalEmbedding 呼び出し時に再試行される。
+  });
 }
 
 startServer();
