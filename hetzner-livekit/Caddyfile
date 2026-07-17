@@ -1,3 +1,10 @@
 {$LIVEKIT_DOMAIN} {
 	reverse_proxy 127.0.0.1:7880
 }
+
+# No real traffic is served here — this block exists only so Caddy obtains
+# and renews a TLS cert for the TURN domain, which livekit-server reads
+# directly from Caddy's certificate storage (see docker-compose.yml).
+{$TURN_DOMAIN} {
+	respond "OK"
+}

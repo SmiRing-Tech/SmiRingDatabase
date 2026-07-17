@@ -1,16 +1,91 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   LiveKitRoom,
   VideoConference,
   PreJoin,
+  useLocalParticipant,
   type LocalUserChoices,
 } from '@livekit/components-react';
-import { VideoPresets, type RoomOptions } from 'livekit-client';
+import {
+  VideoPresets,
+  Track,
+  ParticipantEvent,
+  type RoomOptions,
+  type LocalVideoTrack,
+  type LocalAudioTrack,
+} from 'livekit-client';
+import { BackgroundBlur } from '@livekit/track-processors';
+import { KrispNoiseFilter, isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter';
 import '@livekit/components-styles';
-import { ArrowLeft, Video, AlertTriangle, Loader2, Copy, Check } from 'lucide-react';
+import { ArrowLeft, Video, AlertTriangle, Loader2, Copy, Check, Sparkles } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import { useAuth } from '../../context/AuthContext';
+
+/**
+ * Applies Krisp AI noise cancellation to the local mic track as soon as it's
+ * published, and exposes a toggle button for background blur on the camera
+ * track. Rendered inside <LiveKitRoom> so it has access to RoomContext.
+ */
+function MediaEnhancements() {
+  const { localParticipant } = useLocalParticipant();
+  const [blurred, setBlurred] = useState(false);
+  const [blurLoading, setBlurLoading] = useState(false);
+
+  // Noise cancellation: apply once per mic track publish, no user toggle needed.
+  useEffect(() => {
+    if (!isKrispNoiseFilterSupported()) return;
+
+    const applyToMicTrack = () => {
+      const pub = localParticipant.getTrackPublication(Track.Source.Microphone);
+      const track = pub?.track as LocalAudioTrack | undefined;
+      if (track && !track.getProcessor()) {
+        track.setProcessor(KrispNoiseFilter());
+      }
+    };
+
+    applyToMicTrack();
+    localParticipant.on(ParticipantEvent.LocalTrackPublished, applyToMicTrack);
+    return () => {
+      localParticipant.off(ParticipantEvent.LocalTrackPublished, applyToMicTrack);
+    };
+  }, [localParticipant]);
+
+  const toggleBlur = useCallback(async () => {
+    const pub = localParticipant.getTrackPublication(Track.Source.Camera);
+    const track = pub?.track as LocalVideoTrack | undefined;
+    if (!track) return;
+    setBlurLoading(true);
+    try {
+      if (blurred) {
+        await track.stopProcessor();
+        setBlurred(false);
+      } else {
+        await track.setProcessor(BackgroundBlur(10));
+        setBlurred(true);
+      }
+    } catch (e) {
+      console.error('[Connect] failed to toggle background blur:', e);
+    } finally {
+      setBlurLoading(false);
+    }
+  }, [localParticipant, blurred]);
+
+  return (
+    <button
+      onClick={toggleBlur}
+      disabled={blurLoading}
+      className={`absolute top-3 right-3 z-10 flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold shadow-md transition-all active:scale-95 disabled:opacity-50 ${
+        blurred
+          ? 'bg-indigo-500 text-white'
+          : 'bg-white/90 text-gray-700 hover:bg-white'
+      }`}
+    >
+      <Sparkles className="w-3.5 h-3.5" />
+      {blurLoading ? '切り替え中...' : blurred ? '背景ブラー: ON' : '背景ブラー: OFF'}
+    </button>
+  );
+}
 
 type Phase = 'prejoin' | 'connecting' | 'in-room' | 'error';
 
@@ -37,6 +112,12 @@ export default function ConnectRoomPage() {
       },
       audioCaptureDefaults: {
         deviceId: choices?.audioDeviceId || undefined,
+        // Native browser AEC/NS/AGC — this is what actually prevents howling
+        // (it references the exact uncompressed local playback buffer, which
+        // a server-side approach cannot access).
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
       },
       publishDefaults: {
         videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360],
@@ -108,7 +189,7 @@ export default function ConnectRoomPage() {
   // In-call (full screen)
   if (phase === 'in-room' && token && serverUrl) {
     return (
-      <div className="h-full w-full bg-[#0f1115]" data-lk-theme="default">
+      <div className="h-full w-full bg-[#0f1115] relative" data-lk-theme="default">
         <LiveKitRoom
           token={token}
           serverUrl={serverUrl}
@@ -123,6 +204,7 @@ export default function ConnectRoomPage() {
           }}
           style={{ height: '100%' }}
         >
+          <MediaEnhancements />
           <VideoConference />
         </LiveKitRoom>
       </div>

@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
     environment:
       LIVEKIT_DOMAIN: ${LIVEKIT_DOMAIN}
+      TURN_DOMAIN: ${TURN_DOMAIN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
@@ -19,6 +20,7 @@ services:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml
+      - caddy_data:/caddy-data:ro
     depends_on:
       - redis
 

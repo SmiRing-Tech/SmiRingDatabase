@@ -13,6 +13,8 @@
     "@hello-pangea/dnd": "^18.0.1",
     "@livekit/components-react": "^2.9.23",
     "@livekit/components-styles": "^1.2.0",
+    "@livekit/krisp-noise-filter": "^0.4.3",
+    "@livekit/track-processors": "^0.7.2",
     "@marsidev/react-turnstile": "^1.5.0",
     "@supabase/supabase-js": "^2.100.1",
     "@tailwindcss/typography": "^0.5.19",

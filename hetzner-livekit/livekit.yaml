@@ -9,4 +9,17 @@ rtc:
 redis:
   address: 127.0.0.1:6379
 
+# TURN/TLS relay — lets clients on restrictive NATs (e.g. mobile carrier
+# CGNAT with symmetric NAT) reach us over a standard TLS port instead of
+# needing direct UDP. Cert is issued by Caddy for turn.<LIVEKIT_DOMAIN> and
+# read from Caddy's shared certificate volume (see docker-compose.yml).
+turn:
+  enabled: true
+  domain: turn.smiring-ryugaku.com
+  tls_port: 5349
+  udp_port: 3478
+  external_tls: false
+  cert_file: /caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/turn.smiring-ryugaku.com/turn.smiring-ryugaku.com.crt
+  key_file: /caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/turn.smiring-ryugaku.com/turn.smiring-ryugaku.com.key
+
 log_level: info
