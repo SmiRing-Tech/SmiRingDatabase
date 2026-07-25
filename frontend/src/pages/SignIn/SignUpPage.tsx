@@ -41,6 +41,7 @@ export default function SignUpPage() {
         email: email.trim(),
         password,
         options: {
+          emailRedirectTo: `${window.location.origin}/sign-in`,
           data: {
             display_name: username.trim(),
             signup_code: signupCode.trim(),
