@@ -48,6 +48,7 @@ const storageRoutes_1 = __importDefault(require("./routes/storageRoutes"));
 const authRoutes_1 = __importDefault(require("./routes/authRoutes"));
 const workerRoutes_1 = __importDefault(require("./routes/workerRoutes"));
 const managementRoutes_1 = __importDefault(require("./routes/managementRoutes"));
+const connectRoutes_1 = __importDefault(require("./routes/connectRoutes"));
 const app = (0, express_1.default)();
 const port = process.env.PORT || 3000;
 // ミドルウェアの設定
@@ -70,22 +71,21 @@ app.use(storageRoutes_1.default); // ☁️ ストレージ（R2）系
 app.use(authRoutes_1.default); // 🔐 認証系
 app.use(workerRoutes_1.default); // 🤖 ワーカー系
 app.use('/api/management', managementRoutes_1.default); // ⚙️ 管理・設定系
+app.use(connectRoutes_1.default); // 🎥 SmiRing Connect (video calls)
 // ==========================================
 // サーバー起動
 // ==========================================
-async function startServer() {
-    try {
-        console.log('サーバーの起動準備中...');
-        // 🌟 3. リクエストを受け付ける前に、AIモデルを確実にロードする
-        await (0, ai_1.initAIModel)();
-        // 🌟 4. AIの準備が完了したら、はじめてポートを開放する
-        app.listen(port, () => {
-            console.log(`🚀 サーバーが起動しました: ${port}`);
-        });
-    }
-    catch (error) {
-        console.error('❌ サーバー起動エラー:', error);
-        process.exit(1); // エラーが起きたらプロセスを終了させる
-    }
+function startServer() {
+    console.log('サーバーの起動準備中...');
+    // 🌟 3. ポートは即座に開放し、起動プローブ（コールドスタート判定）をブロックしない
+    app.listen(port, () => {
+        console.log(`🚀 サーバーが起動しました: ${port}`);
+    });
+    // 🌟 4. AIモデルはバックグラウンドでロードを開始する。
+    //    データ表示系のリクエストはこれを待たずに処理できる。
+    //    検索など getLocalEmbedding を呼ぶリクエストだけ、ロード中ならその完了を待つ。
+    (0, ai_1.initAIModel)().catch(() => {
+        // エラーは initAIModel 内でログ済み。次回 getLocalEmbedding 呼び出し時に再試行される。
+    });
 }
 startServer();

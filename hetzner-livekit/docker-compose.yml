@@ -30,6 +30,17 @@ services:
     restart: unless-stopped
     command: redis-server --port 6379 --save "" --appendonly no
 
+  noise-agent:
+    build: ./agent
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      LIVEKIT_URL: ws://127.0.0.1:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+    depends_on:
+      - livekit
+
 volumes:
   caddy_data:
   caddy_config:

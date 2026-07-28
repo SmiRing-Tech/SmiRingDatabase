@@ -5,51 +5,79 @@ import {
   VideoConference,
   PreJoin,
   useLocalParticipant,
+  useRoomContext,
   type LocalUserChoices,
 } from '@livekit/components-react';
 import {
   VideoPresets,
   Track,
-  ParticipantEvent,
+  RoomEvent,
   type RoomOptions,
   type LocalVideoTrack,
-  type LocalAudioTrack,
+  type RemoteTrackPublication,
+  type RemoteParticipant,
 } from 'livekit-client';
 import { BackgroundBlur } from '@livekit/track-processors';
-import { KrispNoiseFilter, isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter';
 import '@livekit/components-styles';
-import { ArrowLeft, Video, AlertTriangle, Loader2, Copy, Check, Sparkles } from 'lucide-react';
+import { ArrowLeft, Video, AlertTriangle, Loader2, Copy, Check, Sparkles, Settings, Sliders, ShieldCheck, X } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import { useAuth } from '../../context/AuthContext';
 
+// Must match AGENT_IDENTITY in hetzner-livekit/agent/main.py.
+const NOISE_CANCEL_AGENT_IDENTITY = 'noise-cancel-agent';
+
 /**
- * Applies Krisp AI noise cancellation to the local mic track as soon as it's
- * published, and exposes a toggle button for background blur on the camera
- * track. Rendered inside <LiveKitRoom> so it has access to RoomContext.
+ * The server-side noise-cancel agent (see hetzner-livekit/agent) publishes a
+ * cleaned `enhanced-<identity>` copy of every participant's mic. We don't
+ * want the browser to also play the raw mic — that would double up the
+ * audio — so <LiveKitRoom> is configured with `autoSubscribe: false` and
+ * this component is the thing that decides what actually gets subscribed:
+ * all video, and only microphone tracks published by the agent itself.
+ * Raw human mic tracks are left unsubscribed by the browser (the agent
+ * still gets them independently via its own room connection).
  */
-function MediaEnhancements() {
-  const { localParticipant } = useLocalParticipant();
-  const [blurred, setBlurred] = useState(false);
-  const [blurLoading, setBlurLoading] = useState(false);
+function SelectiveSubscriber() {
+  const room = useRoomContext();
 
-  // Noise cancellation: apply once per mic track publish, no user toggle needed.
   useEffect(() => {
-    if (!isKrispNoiseFilterSupported()) return;
-
-    const applyToMicTrack = () => {
-      const pub = localParticipant.getTrackPublication(Track.Source.Microphone);
-      const track = pub?.track as LocalAudioTrack | undefined;
-      if (track && !track.getProcessor()) {
-        track.setProcessor(KrispNoiseFilter());
+    const maybeSubscribe = (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+      const isAgentMic =
+        publication.source === Track.Source.Microphone && participant.identity === NOISE_CANCEL_AGENT_IDENTITY;
+      const isRawHumanMic =
+        publication.source === Track.Source.Microphone && participant.identity !== NOISE_CANCEL_AGENT_IDENTITY;
+      if (isRawHumanMic) return;
+      if (publication.kind === Track.Kind.Video || isAgentMic) {
+        publication.setSubscribed(true);
       }
     };
 
-    applyToMicTrack();
-    localParticipant.on(ParticipantEvent.LocalTrackPublished, applyToMicTrack);
+    // Tracks published before this listener attached (e.g. the agent joined
+    // first) need to be caught here; ones published afterward come through
+    // the event below.
+    room.remoteParticipants.forEach((participant) => {
+      participant.trackPublications.forEach((publication) => maybeSubscribe(publication, participant));
+    });
+
+    room.on(RoomEvent.TrackPublished, maybeSubscribe);
     return () => {
-      localParticipant.off(ParticipantEvent.LocalTrackPublished, applyToMicTrack);
+      room.off(RoomEvent.TrackPublished, maybeSubscribe);
     };
-  }, [localParticipant]);
+  }, [room]);
+
+  return null;
+}
+
+/**
+ * Provides a media enhancements settings popover at the bottom-right of the video room.
+ * Allows users to toggle Background Blur ON/OFF. AI noise cancellation runs
+ * server-side (see SelectiveSubscriber above) and is always on, so there's
+ * nothing to toggle for it here.
+ */
+function MediaEnhancements() {
+  const { localParticipant } = useLocalParticipant();
+  const [isOpen, setIsOpen] = useState(false);
+  const [blurred, setBlurred] = useState(false);
+  const [blurLoading, setBlurLoading] = useState(false);
 
   const toggleBlur = useCallback(async () => {
     const pub = localParticipant.getTrackPublication(Track.Source.Camera);
@@ -72,18 +100,96 @@ function MediaEnhancements() {
   }, [localParticipant, blurred]);
 
   return (
-    <button
-      onClick={toggleBlur}
-      disabled={blurLoading}
-      className={`absolute top-3 right-3 z-10 flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold shadow-md transition-all active:scale-95 disabled:opacity-50 ${
-        blurred
-          ? 'bg-indigo-500 text-white'
-          : 'bg-white/90 text-gray-700 hover:bg-white'
-      }`}
-    >
-      <Sparkles className="w-3.5 h-3.5" />
-      {blurLoading ? '切り替え中...' : blurred ? '背景ブラー: ON' : '背景ブラー: OFF'}
-    </button>
+    <>
+      {/* Floating Settings Button at Bottom-Right */}
+      <div className="fixed bottom-5 right-5 z-40">
+        <button
+          onClick={() => setIsOpen((prev) => !prev)}
+          className={`p-3 rounded-2xl shadow-xl backdrop-blur-md border transition-all duration-200 active:scale-95 flex items-center justify-center relative ${
+            isOpen || blurred
+              ? 'bg-indigo-600/90 text-white border-indigo-400/50 hover:bg-indigo-600'
+              : 'bg-gray-900/80 text-gray-200 border-gray-700/80 hover:bg-gray-800'
+          }`}
+          title="メディア設定 (ブラー / ノイズ除去)"
+        >
+          <Settings className={`w-5 h-5 transition-transform duration-300 ${isOpen ? 'rotate-90' : ''}`} />
+          {/* AI noise cancellation runs server-side and is always on, so this dot is unconditional */}
+          <span className="absolute -top-1 -right-1 w-3 h-3 bg-emerald-400 border-2 border-gray-900 rounded-full animate-pulse" />
+        </button>
+      </div>
+
+      {/* Popover / Modal Panel */}
+      {isOpen && (
+        <>
+          {/* Backdrop overlay */}
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setIsOpen(false)}
+          />
+
+          <div className="fixed bottom-20 right-5 z-50 w-80 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl p-5 text-white space-y-4 animate-in fade-in slide-in-from-bottom-3 duration-200">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-gray-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Sliders className="w-4 h-4 text-indigo-400" />
+                <h3 className="font-bold text-sm text-gray-100">エフェクト & ノイズ設定</h3>
+              </div>
+              <button
+                onClick={() => setIsOpen(false)}
+                className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-gray-800 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* AI Noise Cancellation status (server-side, always on — nothing to toggle) */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-indigo-400" />
+                  <div>
+                    <p className="text-xs font-bold text-gray-200">AI ノイズ除去（サーバー側）</p>
+                    <p className="text-[10px] text-gray-400">全参加者の音声を常時クリア化</p>
+                  </div>
+                </div>
+                <span className="text-[10px] bg-emerald-900/60 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-700/60 font-bold">
+                  常時有効
+                </span>
+              </div>
+            </div>
+
+            {/* Background Blur Toggle */}
+            <div className="space-y-2 border-t border-gray-800/80 pt-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-indigo-400" />
+                  <div>
+                    <p className="text-xs font-bold text-gray-200">背景ブラー</p>
+                    <p className="text-[10px] text-gray-400">カメラの背景をぼかしてプライバシー保護</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={toggleBlur}
+                  disabled={blurLoading}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
+                    blurred ? 'bg-indigo-500' : 'bg-gray-700'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out flex items-center justify-center ${
+                      blurred ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  >
+                    {blurLoading && <Loader2 className="w-3 h-3 animate-spin text-gray-600" />}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </>
   );
 }
 
@@ -97,9 +203,24 @@ export default function ConnectRoomPage() {
   const [phase, setPhase] = useState<Phase>('prejoin');
   const [token, setToken] = useState('');
   const [serverUrl, setServerUrl] = useState('');
+  const [roomTitle, setRoomTitle] = useState('');
   const [choices, setChoices] = useState<LocalUserChoices | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [copied, setCopied] = useState(false);
+
+  // Fetch room title info early if available
+  useEffect(() => {
+    if (!roomId) return;
+    apiClient.get('/api/connect/rooms').then(async (res) => {
+      if (res.ok) {
+        const data = await res.json();
+        const found = data.rooms?.find((r: any) => r.room_id === roomId);
+        if (found?.room_title) {
+          setRoomTitle(found.room_title);
+        }
+      }
+    }).catch(() => {});
+  }, [roomId]);
 
   // Low-bitrate defaults; adaptiveStream/dynacast auto-scale to bandwidth.
   const roomOptions: RoomOptions = useMemo(
@@ -112,11 +233,15 @@ export default function ConnectRoomPage() {
       },
       audioCaptureDefaults: {
         deviceId: choices?.audioDeviceId || undefined,
-        // Native browser AEC/NS/AGC — this is what actually prevents howling
-        // (it references the exact uncompressed local playback buffer, which
-        // a server-side approach cannot access).
+        // echoCancellation/autoGainControl stay on the browser — this is what
+        // actually prevents howling (it references the exact uncompressed
+        // local playback buffer, which a server-side approach can't access).
+        // noiseSuppression is off: the server-side DeepFilterNet agent (see
+        // hetzner-livekit/agent) needs the raw mic signal, and running the
+        // browser's own suppressor first would strip information before it
+        // gets there.
         echoCancellation: true,
-        noiseSuppression: true,
+        noiseSuppression: false,
         autoGainControl: true,
       },
       publishDefaults: {
@@ -166,6 +291,9 @@ export default function ConnectRoomPage() {
         const data = await res.json();
         setToken(data.token);
         setServerUrl(data.url);
+        if (data.roomTitle) {
+          setRoomTitle(data.roomTitle);
+        }
         setPhase('in-room');
       } catch (e: any) {
         setErrorMsg(e?.message || '接続中にエラーが発生しました');
@@ -190,6 +318,17 @@ export default function ConnectRoomPage() {
   if (phase === 'in-room' && token && serverUrl) {
     return (
       <div className="h-full w-full bg-[#0f1115] relative" data-lk-theme="default">
+        {/* Top-left Room Title Header */}
+        <div className="absolute top-4 left-4 z-40 flex items-center gap-2.5 bg-gray-900/85 border border-gray-700/80 backdrop-blur-md px-4 py-2 rounded-2xl text-white shadow-xl pointer-events-auto">
+          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+          <span className="font-black text-xs md:text-sm tracking-tight text-gray-100">
+            {roomTitle || 'SmiRing Connect'}
+          </span>
+          <span className="text-[10px] font-mono text-gray-400 bg-gray-800/90 px-2 py-0.5 rounded-lg border border-gray-700">
+            {roomId}
+          </span>
+        </div>
+
         <LiveKitRoom
           token={token}
           serverUrl={serverUrl}
@@ -197,6 +336,9 @@ export default function ConnectRoomPage() {
           video={choices?.videoEnabled ?? true}
           audio={choices?.audioEnabled ?? true}
           options={roomOptions}
+          // Subscriptions are chosen manually by SelectiveSubscriber so raw
+          // human mic tracks never reach the browser's audio renderer.
+          connectOptions={{ autoSubscribe: false }}
           onDisconnected={() => navigate('/connect')}
           onError={(e) => {
             setErrorMsg(e.message);
@@ -204,6 +346,7 @@ export default function ConnectRoomPage() {
           }}
           style={{ height: '100%' }}
         >
+          <SelectiveSubscriber />
           <MediaEnhancements />
           <VideoConference />
         </LiveKitRoom>
@@ -226,7 +369,7 @@ export default function ConnectRoomPage() {
               <span>SmiRing Connect</span>
             </div>
             <h1 className="text-2xl md:text-3xl font-black text-gray-900 tracking-tight">
-              ミーティングに参加
+              {roomTitle ? roomTitle : 'ミーティングに参加'}
             </h1>
             {/* Room code */}
             <button

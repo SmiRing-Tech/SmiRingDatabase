@@ -63,9 +63,129 @@ router.post('/api/connect/token', authenticate, async (req: Request, res: Respon
 
     const token = await at.toJwt();
 
-    return res.status(200).json({ token, url: LIVEKIT_URL, identity: userId });
+    // Look up room_title if this room_id is registered in connect_rooms
+    let roomTitle: string | null = null;
+    try {
+      const { data: roomData } = await supabase
+        .from('connect_rooms')
+        .select('room_title')
+        .eq('room_id', room)
+        .maybeSingle();
+      if (roomData?.room_title) {
+        roomTitle = roomData.room_title;
+      }
+    } catch (e) {
+      // Ignore DB lookup error
+    }
+
+    return res.status(200).json({ token, url: LIVEKIT_URL, identity: userId, roomTitle });
   } catch (error: any) {
     console.error('[Connect] token issue failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+/** Helper to generate random room id for fixed meetings if omitted */
+function generateDefaultRoomId(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let id = '';
+  for (let i = 0; i < 9; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return `${id.slice(0, 3)}-${id.slice(3, 6)}-${id.slice(6, 9)}`;
+}
+
+// GET /api/connect/rooms - List all fixed meetings
+router.get('/api/connect/rooms', authenticate, async (_req: Request, res: Response) => {
+  try {
+    const { data, error } = await supabase
+      .from('connect_rooms')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[Connect] Failed to fetch connect_rooms:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.status(200).json({ rooms: data ?? [] });
+  } catch (error: any) {
+    console.error('[Connect] GET /api/connect/rooms failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/rooms - Create a fixed meeting
+router.post('/api/connect/rooms', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { room_title, room_id: requestedRoomId } = req.body ?? {};
+
+    if (!room_title || typeof room_title !== 'string' || !room_title.trim()) {
+      return res.status(400).json({ error: 'ミーティング名を入力してください' });
+    }
+
+    let finalRoomId = requestedRoomId?.trim();
+    if (!finalRoomId) {
+      finalRoomId = generateDefaultRoomId();
+    } else if (!isValidRoomName(finalRoomId)) {
+      return res.status(400).json({ error: 'ルームIDは半角英数字・ハイフン・アンダースコア（1〜64文字）で入力してください' });
+    }
+
+    // Check duplicate
+    const { data: existing } = await supabase
+      .from('connect_rooms')
+      .select('id')
+      .eq('room_id', finalRoomId)
+      .maybeSingle();
+
+    if (existing) {
+      return res.status(400).json({ error: `ルームID「${finalRoomId}」は既に登録されています` });
+    }
+
+    const { data, error } = await supabase
+      .from('connect_rooms')
+      .insert([
+        {
+          room_id: finalRoomId,
+          room_title: room_title.trim(),
+        },
+      ])
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[Connect] Failed to insert connect_rooms:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.status(201).json({ room: data });
+  } catch (error: any) {
+    console.error('[Connect] POST /api/connect/rooms failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /api/connect/rooms/:id - Delete a fixed meeting
+router.delete('/api/connect/rooms/:id', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ error: 'IDが指定されていません' });
+    }
+
+    const { error } = await supabase
+      .from('connect_rooms')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('[Connect] Failed to delete connect_room:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.status(200).json({ success: true });
+  } catch (error: any) {
+    console.error('[Connect] DELETE /api/connect/rooms/:id failed:', error);
     return res.status(500).json({ error: error.message });
   }
 });

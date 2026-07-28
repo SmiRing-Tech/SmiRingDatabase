@@ -560,4 +560,623 @@ router.put('/members/:userId/departments', (0, requirePermission_1.requirePermis
         res.status(500).json({ error: error.message });
     }
 });
+// ------------------------------------------
+// E. システム権限 CRUD
+// ------------------------------------------
+// 1. 権限一覧取得（カテゴリ情報結合）
+router.get('/permissions', (0, requirePermission_1.requirePermission)('management', 'read'), async (_req, res) => {
+    try {
+        const { data: permissions, error } = await supabase_1.supabase
+            .from('permissions')
+            .select('*, permission_types(type, description)')
+            .order('name', { ascending: true });
+        if (error)
+            throw error;
+        res.json(permissions || []);
+    }
+    catch (error) {
+        console.error('権限一覧取得エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 2. 権限カテゴリ（タイプ）一覧取得
+router.get('/permission-types', (0, requirePermission_1.requirePermission)('management', 'read'), async (_req, res) => {
+    try {
+        const { data: types, error } = await supabase_1.supabase
+            .from('permission_types')
+            .select('*')
+            .order('type', { ascending: true });
+        if (error)
+            throw error;
+        res.json(types || []);
+    }
+    catch (error) {
+        console.error('権限タイプ一覧取得エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 3. 新規権限追加
+router.post('/permissions', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { name, description, resource, action, type } = req.body;
+        if (!name || !resource || !action || !type) {
+            return res.status(400).json({ error: '必須項目が不足しています（name, resource, action, type）' });
+        }
+        const { data: newPerm, error } = await supabase_1.supabase
+            .from('permissions')
+            .insert({ name, description, resource, action, type })
+            .select()
+            .single();
+        if (error)
+            throw error;
+        res.status(201).json(newPerm);
+    }
+    catch (error) {
+        console.error('権限作成エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 4. 権限更新
+router.patch('/permissions/:id', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, description, resource, action, type } = req.body;
+        const { data: updatedPerm, error } = await supabase_1.supabase
+            .from('permissions')
+            .update({ name, description, resource, action, type })
+            .eq('id', id)
+            .select()
+            .single();
+        if (error)
+            throw error;
+        res.json(updatedPerm);
+    }
+    catch (error) {
+        console.error('権限更新エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 5. 権限削除
+router.delete('/permissions/:id', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        // マッピングレコードを削除
+        const { error: mappingError } = await supabase_1.supabase
+            .from('permission_mappings')
+            .delete()
+            .eq('permission_id', id);
+        if (mappingError)
+            throw mappingError;
+        // 権限本体を削除
+        const { error: permError } = await supabase_1.supabase
+            .from('permissions')
+            .delete()
+            .eq('id', id);
+        if (permError)
+            throw permError;
+        res.json({ message: '権限を削除しました' });
+    }
+    catch (error) {
+        console.error('権限削除エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// ------------------------------------------
+// F. メンバーへの個別権限割り当て
+// ------------------------------------------
+// 1. メンバー一覧と直接付与されている権限（grantee_type = 'user'）の取得
+router.get('/members/permissions', (0, requirePermission_1.requirePermission)('management', 'read'), async (_req, res) => {
+    try {
+        // smiring_member ロールを持つユーザーIDのリストを取得
+        const { data: roleMappings, error: roleError } = await supabase_1.supabase
+            .from('user_role_mappings')
+            .select('user_id')
+            .eq('user_role', ROLE_MEMBER);
+        if (roleError)
+            throw roleError;
+        const memberUserIds = (roleMappings || []).map(rm => rm.user_id);
+        if (memberUserIds.length === 0) {
+            return res.json([]);
+        }
+        // 対象ユーザーの基本情報を取得
+        const { data: members, error: memberError } = await supabase_1.supabase
+            .from('basic_profile_info')
+            .select('id, name_english, name_kanji, avatar_id')
+            .in('id', memberUserIds)
+            .order('name_english', { ascending: true });
+        if (memberError)
+            throw memberError;
+        const memberList = members || [];
+        // アバターURLの一括解決
+        const avatarIds = memberList.map(m => m.avatar_id).filter(Boolean);
+        let avatarPathMap = {};
+        if (avatarIds.length > 0) {
+            const { data: avatarItems } = await supabase_1.supabase
+                .from('gallery')
+                .select('id, thumbnail_path, storage_path')
+                .in('id', avatarIds);
+            if (avatarItems) {
+                for (const item of avatarItems) {
+                    avatarPathMap[item.id] = item.thumbnail_path || item.storage_path;
+                }
+            }
+        }
+        const membersWithAvatars = await Promise.all(memberList.map(async (m) => {
+            const key = m.avatar_id ? avatarPathMap[m.avatar_id] : null;
+            const avatarUrl = key ? await (0, r2_1.getSignedFileUrl)(key) : null;
+            return {
+                id: m.id,
+                name_english: m.name_english,
+                name_kanji: m.name_kanji,
+                avatar_link: avatarUrl
+            };
+        }));
+        // permission_mappings から直接付与されている権限マッピングを取得
+        const { data: permMappings, error: permMapError } = await supabase_1.supabase
+            .from('permission_mappings')
+            .select('grantee_id, permission_id')
+            .eq('grantee_type', 'user')
+            .in('grantee_id', memberUserIds);
+        if (permMapError)
+            throw permMapError;
+        const userPermsMap = new Map();
+        (permMappings || []).forEach(pm => {
+            const list = userPermsMap.get(pm.grantee_id) || [];
+            list.push(pm.permission_id);
+            userPermsMap.set(pm.grantee_id, list);
+        });
+        const enrichedMembers = membersWithAvatars.map(m => ({
+            ...m,
+            permission_ids: userPermsMap.get(m.id) || []
+        }));
+        res.json(enrichedMembers);
+    }
+    catch (error) {
+        console.error('メンバー権限取得エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 2. メンバーの個別権限更新 (洗い替え)
+router.put('/members/:userId/permissions', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { permissionIds } = req.body; // 権限IDの配列
+        if (!Array.isArray(permissionIds)) {
+            return res.status(400).json({ error: 'permissionIdsは配列である必要があります' });
+        }
+        // 既存の直接付与（grantee_type = 'user'）マッピングを全削除
+        const { error: deleteError } = await supabase_1.supabase
+            .from('permission_mappings')
+            .delete()
+            .eq('grantee_type', 'user')
+            .eq('grantee_id', userId);
+        if (deleteError)
+            throw deleteError;
+        // 新規登録
+        if (permissionIds.length > 0) {
+            const inserts = permissionIds.map((permId) => ({
+                grantee_type: 'user',
+                grantee_id: userId,
+                permission_id: permId
+            }));
+            const { error: insertError } = await supabase_1.supabase
+                .from('permission_mappings')
+                .insert(inserts);
+            if (insertError)
+                throw insertError;
+        }
+        res.json({ message: '権限を更新しました' });
+    }
+    catch (error) {
+        console.error('メンバー権限更新エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 3. ロール別権限の取得
+router.get('/roles/permissions', (0, requirePermission_1.requirePermission)('management', 'read'), async (_req, res) => {
+    try {
+        const { data: roles, error: rolesError } = await supabase_1.supabase
+            .from('user_roles')
+            .select('*')
+            .not('id', 'in', `(${ROLE_PRE},${ROLE_CURRENT},${ROLE_POST},${ROLE_GUARDIAN})`)
+            .order('created_at', { ascending: true });
+        if (rolesError)
+            throw rolesError;
+        const roleList = roles || [];
+        const roleIds = roleList.map(r => r.id);
+        if (roleIds.length === 0)
+            return res.json([]);
+        const { data: mappings, error: mapError } = await supabase_1.supabase
+            .from('permission_mappings')
+            .select('grantee_id, permission_id')
+            .eq('grantee_type', 'role')
+            .in('grantee_id', roleIds);
+        if (mapError)
+            throw mapError;
+        const rolePermsMap = new Map();
+        (mappings || []).forEach(m => {
+            const list = rolePermsMap.get(m.grantee_id) || [];
+            list.push(m.permission_id);
+            rolePermsMap.set(m.grantee_id, list);
+        });
+        res.json(roleList.map(r => ({
+            ...r,
+            permission_ids: rolePermsMap.get(r.id) || []
+        })));
+    }
+    catch (error) {
+        console.error('ロール権限取得エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 4. ロール別権限の更新 (洗い替え)
+router.put('/roles/:roleId/permissions', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { roleId } = req.params;
+        const { permissionIds } = req.body;
+        if (!Array.isArray(permissionIds)) {
+            return res.status(400).json({ error: 'permissionIdsは配列である必要があります' });
+        }
+        const { error: deleteError } = await supabase_1.supabase
+            .from('permission_mappings')
+            .delete()
+            .eq('grantee_type', 'role')
+            .eq('grantee_id', roleId);
+        if (deleteError)
+            throw deleteError;
+        if (permissionIds.length > 0) {
+            const inserts = permissionIds.map((pId) => ({
+                grantee_type: 'role',
+                grantee_id: roleId,
+                permission_id: pId
+            }));
+            const { error: insertError } = await supabase_1.supabase.from('permission_mappings').insert(inserts);
+            if (insertError)
+                throw insertError;
+        }
+        res.json({ message: 'ロールの権限を更新しました' });
+    }
+    catch (error) {
+        console.error('ロール権限更新エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 5. 部署別権限の取得
+router.get('/departments/permissions', (0, requirePermission_1.requirePermission)('management', 'read'), async (_req, res) => {
+    try {
+        const { data: depts, error: deptsError } = await supabase_1.supabase
+            .from('departments')
+            .select('*')
+            .order('name', { ascending: true });
+        if (deptsError)
+            throw deptsError;
+        const deptList = depts || [];
+        const deptIds = deptList.map(d => d.id);
+        if (deptIds.length === 0)
+            return res.json([]);
+        const { data: mappings, error: mapError } = await supabase_1.supabase
+            .from('permission_mappings')
+            .select('grantee_id, permission_id')
+            .eq('grantee_type', 'department')
+            .in('grantee_id', deptIds);
+        if (mapError)
+            throw mapError;
+        const deptPermsMap = new Map();
+        (mappings || []).forEach(m => {
+            const list = deptPermsMap.get(m.grantee_id) || [];
+            list.push(m.permission_id);
+            deptPermsMap.set(m.grantee_id, list);
+        });
+        res.json(deptList.map(d => ({
+            ...d,
+            permission_ids: deptPermsMap.get(d.id) || []
+        })));
+    }
+    catch (error) {
+        console.error('部署権限取得エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 6. 部署別権限の更新 (洗い替え)
+router.put('/departments/:departmentId/permissions', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { departmentId } = req.params;
+        const { permissionIds } = req.body;
+        if (!Array.isArray(permissionIds)) {
+            return res.status(400).json({ error: 'permissionIdsは配列である必要があります' });
+        }
+        const { error: deleteError } = await supabase_1.supabase
+            .from('permission_mappings')
+            .delete()
+            .eq('grantee_type', 'department')
+            .eq('grantee_id', departmentId);
+        if (deleteError)
+            throw deleteError;
+        if (permissionIds.length > 0) {
+            const inserts = permissionIds.map((pId) => ({
+                grantee_type: 'department',
+                grantee_id: departmentId,
+                permission_id: pId
+            }));
+            const { error: insertError } = await supabase_1.supabase.from('permission_mappings').insert(inserts);
+            if (insertError)
+                throw insertError;
+        }
+        res.json({ message: '部署の権限を更新しました' });
+    }
+    catch (error) {
+        console.error('部署権限更新エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 7. グループ別権限の取得
+router.get('/groups/permissions', (0, requirePermission_1.requirePermission)('management', 'read'), async (_req, res) => {
+    try {
+        const { data: groups, error: groupsError } = await supabase_1.supabase
+            .from('groups')
+            .select('*')
+            .is('deleted_at', null)
+            .order('name', { ascending: true });
+        if (groupsError)
+            throw groupsError;
+        const groupList = groups || [];
+        const groupIds = groupList.map(g => g.id);
+        if (groupIds.length === 0)
+            return res.json([]);
+        const { data: mappings, error: mapError } = await supabase_1.supabase
+            .from('permission_mappings')
+            .select('grantee_id, permission_id')
+            .eq('grantee_type', 'group')
+            .in('grantee_id', groupIds);
+        if (mapError)
+            throw mapError;
+        const groupPermsMap = new Map();
+        (mappings || []).forEach(m => {
+            const list = groupPermsMap.get(m.grantee_id) || [];
+            list.push(m.permission_id);
+            groupPermsMap.set(m.grantee_id, list);
+        });
+        res.json(groupList.map(g => ({
+            ...g,
+            permission_ids: groupPermsMap.get(g.id) || []
+        })));
+    }
+    catch (error) {
+        console.error('グループ権限取得エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 8. グループ別権限の更新 (洗い替え)
+router.put('/groups/:groupId/permissions', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { groupId } = req.params;
+        const { permissionIds } = req.body;
+        if (!Array.isArray(permissionIds)) {
+            return res.status(400).json({ error: 'permissionIdsは配列である必要があります' });
+        }
+        const { error: deleteError } = await supabase_1.supabase
+            .from('permission_mappings')
+            .delete()
+            .eq('grantee_type', 'group')
+            .eq('grantee_id', groupId);
+        if (deleteError)
+            throw deleteError;
+        if (permissionIds.length > 0) {
+            const inserts = permissionIds.map((pId) => ({
+                grantee_type: 'group',
+                grantee_id: groupId,
+                permission_id: pId
+            }));
+            const { error: insertError } = await supabase_1.supabase.from('permission_mappings').insert(inserts);
+            if (insertError)
+                throw insertError;
+        }
+        res.json({ message: 'グループの権限を更新しました' });
+    }
+    catch (error) {
+        console.error('グループ権限更新エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// ------------------------------------------
+// G. グループ管理 CRUD
+// ------------------------------------------
+// 1. グループ一覧取得
+router.get('/groups', (0, requirePermission_1.requirePermission)('management', 'read'), async (_req, res) => {
+    try {
+        const { data, error } = await supabase_1.supabase
+            .from('groups')
+            .select('*')
+            .is('deleted_at', null)
+            .order('name', { ascending: true });
+        if (error)
+            throw error;
+        res.json(data || []);
+    }
+    catch (error) {
+        console.error('グループ一覧取得エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 2. 新規グループ追加
+router.post('/groups', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { name, description } = req.body;
+        if (!name)
+            return res.status(400).json({ error: 'グループ名は必須です' });
+        const { data, error } = await supabase_1.supabase
+            .from('groups')
+            .insert({ name, description })
+            .select()
+            .single();
+        if (error)
+            throw error;
+        res.status(201).json(data);
+    }
+    catch (error) {
+        console.error('グループ作成エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 3. グループ更新
+router.patch('/groups/:id', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, description } = req.body;
+        const { data, error } = await supabase_1.supabase
+            .from('groups')
+            .update({ name, description })
+            .eq('id', id)
+            .select()
+            .single();
+        if (error)
+            throw error;
+        res.json(data);
+    }
+    catch (error) {
+        console.error('グループ更新エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 4. グループ削除 (ソフトデリート & 紐付けクリーンアップ)
+router.delete('/groups/:id', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        // 1. user_group_mappings から該当グループの紐付けを削除
+        const { error: mapDelError } = await supabase_1.supabase
+            .from('user_group_mappings')
+            .delete()
+            .eq('group_id', id);
+        if (mapDelError)
+            throw mapDelError;
+        // 2. permission_mappings から該当グループの権限紐付け（grantee_type = 'group'）を削除
+        const { error: permDelError } = await supabase_1.supabase
+            .from('permission_mappings')
+            .delete()
+            .eq('grantee_type', 'group')
+            .eq('grantee_id', id);
+        if (permDelError)
+            throw permDelError;
+        // 3. groups 本体をソフトデリート (deleted_at に現在時刻を設定)
+        const { error: groupError } = await supabase_1.supabase
+            .from('groups')
+            .update({ deleted_at: new Date().toISOString() })
+            .eq('id', id);
+        if (groupError)
+            throw groupError;
+        res.json({ message: 'グループを削除しました' });
+    }
+    catch (error) {
+        console.error('グループ削除エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// ------------------------------------------
+// H. メンバーのグループ割り当て
+// ------------------------------------------
+// 1. smiring_member ロールを持つメンバーと所属グループIDの取得
+router.get('/members/groups', (0, requirePermission_1.requirePermission)('management', 'read'), async (_req, res) => {
+    try {
+        // smiring_member ロールを持つユーザーIDのリストを取得
+        const { data: roleMappings, error: roleError } = await supabase_1.supabase
+            .from('user_role_mappings')
+            .select('user_id')
+            .eq('user_role', ROLE_MEMBER);
+        if (roleError)
+            throw roleError;
+        const memberUserIds = (roleMappings || []).map(rm => rm.user_id);
+        if (memberUserIds.length === 0) {
+            return res.json([]);
+        }
+        // 対象ユーザーの基本情報を取得
+        const { data: members, error: memberError } = await supabase_1.supabase
+            .from('basic_profile_info')
+            .select('id, name_english, name_kanji, avatar_id')
+            .in('id', memberUserIds)
+            .order('name_english', { ascending: true });
+        if (memberError)
+            throw memberError;
+        const memberList = members || [];
+        // アバターURLの一括解決
+        const avatarIds = memberList.map(m => m.avatar_id).filter(Boolean);
+        let avatarPathMap = {};
+        if (avatarIds.length > 0) {
+            const { data: avatarItems } = await supabase_1.supabase
+                .from('gallery')
+                .select('id, thumbnail_path, storage_path')
+                .in('id', avatarIds);
+            if (avatarItems) {
+                for (const item of avatarItems) {
+                    avatarPathMap[item.id] = item.thumbnail_path || item.storage_path;
+                }
+            }
+        }
+        const membersWithAvatars = await Promise.all(memberList.map(async (m) => {
+            const key = m.avatar_id ? avatarPathMap[m.avatar_id] : null;
+            const avatarUrl = key ? await (0, r2_1.getSignedFileUrl)(key) : null;
+            return {
+                id: m.id,
+                name_english: m.name_english,
+                name_kanji: m.name_kanji,
+                avatar_link: avatarUrl
+            };
+        }));
+        // user_group_mappings からグループマッピングを取得
+        const { data: groupMappings, error: groupMapError } = await supabase_1.supabase
+            .from('user_group_mappings')
+            .select('user_id, group_id')
+            .in('user_id', memberUserIds);
+        if (groupMapError)
+            throw groupMapError;
+        const userGroupsMap = new Map();
+        (groupMappings || []).forEach(gm => {
+            const list = userGroupsMap.get(gm.user_id) || [];
+            list.push(gm.group_id);
+            userGroupsMap.set(gm.user_id, list);
+        });
+        const enrichedMembers = membersWithAvatars.map(m => ({
+            ...m,
+            group_ids: userGroupsMap.get(m.id) || []
+        }));
+        res.json(enrichedMembers);
+    }
+    catch (error) {
+        console.error('グループメンバー取得エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 2. メンバーのグループ更新 (洗い替え)
+router.put('/members/:userId/groups', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { groupIds } = req.body; // グループIDの配列
+        if (!Array.isArray(groupIds)) {
+            return res.status(400).json({ error: 'groupIdsは配列である必要があります' });
+        }
+        // 既存マッピングを全削除
+        const { error: deleteError } = await supabase_1.supabase
+            .from('user_group_mappings')
+            .delete()
+            .eq('user_id', userId);
+        if (deleteError)
+            throw deleteError;
+        // 新規登録
+        if (groupIds.length > 0) {
+            const inserts = groupIds.map((gId) => ({
+                user_id: userId,
+                group_id: gId
+            }));
+            const { error: insertError } = await supabase_1.supabase
+                .from('user_group_mappings')
+                .insert(inserts);
+            if (insertError)
+                throw insertError;
+        }
+        res.json({ message: 'グループを更新しました' });
+    }
+    catch (error) {
+        console.error('メンバーグループ更新エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 exports.default = router;
