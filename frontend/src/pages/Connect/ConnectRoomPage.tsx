@@ -46,6 +46,11 @@ function SelectiveSubscriber() {
       const isRawHumanMic =
         publication.source === Track.Source.Microphone && participant.identity !== NOISE_CANCEL_AGENT_IDENTITY;
       if (isRawHumanMic) return;
+      // The agent publishes one enhanced-<identity> track per human participant
+      // it hears, including us. Subscribing to our own would play our voice
+      // back to ourselves. Track name -> source identity is `enhanced-<id>`.
+      const isOwnEnhancedMic = isAgentMic && publication.trackName === `enhanced-${room.localParticipant.identity}`;
+      if (isOwnEnhancedMic) return;
       if (publication.kind === Track.Kind.Video || isAgentMic) {
         publication.setSubscribed(true);
       }

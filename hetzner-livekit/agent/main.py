@@ -1,103 +1,85 @@
 """LiveKit Agent that republishes every human participant's microphone as a
-DeepFilterNet3-denoised track (`enhanced-<identity>`), for the frontend to
-play instead of the raw mic. See hetzner-livekit/agent and the frontend's
-EnhancedAudioRenderer for the other half of this pipeline.
+DTLN-denoised track (`enhanced-<identity>`), for the frontend to play instead
+of the raw mic. See hetzner-livekit/agent and the frontend's
+SelectiveSubscriber for the other half of this pipeline.
 
-DeepFilterNet's Python package only exposes a batch `enhance(model, df_state,
-audio)` call (it resets the model's recurrent state on every call) rather
-than a persistent per-frame streaming API — see the plan doc for why we
-didn't go down the ONNX/libDF route instead. To turn that into something
-usable for a live call, we keep a rolling context window of raw audio per
-track and re-run `enhance()` on the whole window every CHUNK_SECONDS,
-emitting only the newest CHUNK_SECONDS tail of the output. Latency is
-roughly CHUNK_SECONDS + inference time; quality depends on CONTEXT_SECONDS
-giving the model enough history to produce a stable estimate by the time it
-reaches the tail. Both are tunable via env vars since they need to be
-verified against real CPU headroom on the Hetzner box, not guessed.
+We originally built this around DeepFilterNet3 (PyTorch), reprocessing a
+rolling context window on every chunk since the `df` package only exposes a
+batch `enhance()` call with no persistent per-frame state. That approach
+needed far more CPU than the 2 vCPU / 4GB Hetzner box has — inference
+couldn't keep up with real-time, causing a backlog that grew into multi-second
+delay and choppy audio no matter how the window/chunk sizes were tuned.
+
+livekit-plugins-dtln (self-hosted, ONNX Runtime, no PyTorch) is a true O(1)
+per-frame streaming processor — its LSTM hidden state persists across calls,
+so there's no window to reprocess. Measured locally: ~0.2ms average per
+10ms frame after the first call. It plugs directly into rtc.AudioStream's
+`noise_cancellation` hook, so this file no longer does any manual
+chunking/buffering/executor work — we just relay whatever AudioStream hands
+back.
 """
 
 import asyncio
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
 
-import numpy as np
-import torch
-from df.enhance import enhance, init_df
-from df.model import ModelParams
-from libdf import DF
-from livekit import agents, rtc
-from livekit.agents import AutoSubscribe, JobContext, JobProcess, JobRequest, WorkerOptions, cli
+import onnxruntime as ort
+
+# onnxruntime's default InferenceSession sizes its thread pool for the
+# host's full core count and spin-waits between calls (to minimize latency
+# for throughput-oriented workloads). DTLN's models are tiny (~0.2ms/call)
+# and called every 10ms per track, so that default trades a lot of CPU for
+# no real benefit — observed as noise-agent pinned at 140%+ CPU on the
+# 2 vCPU Hetzner box despite doing very little actual work per call. The
+# plugin doesn't expose SessionOptions, so we patch onnxruntime's session
+# constructor process-wide before it creates any sessions: single-threaded,
+# sequential execution, spinning disabled (blocking wait instead).
+_orig_ort_init = ort.InferenceSession.__init__
+
+
+def _patched_ort_init(self, *args, **kwargs):
+    if kwargs.get("sess_options") is None:
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = 1
+        so.inter_op_num_threads = 1
+        so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        so.add_session_config_entry("session.inter_op.allow_spinning", "0")
+        kwargs["sess_options"] = so
+    _orig_ort_init(self, *args, **kwargs)
+
+
+ort.InferenceSession.__init__ = _patched_ort_init
+
+from livekit import rtc  # noqa: E402
+from livekit.agents import AutoSubscribe, JobContext, JobRequest, WorkerOptions, cli  # noqa: E402
+from livekit.plugins import dtln  # noqa: E402
 
 logger = logging.getLogger("noise-cancel-agent")
 
 AGENT_IDENTITY = "noise-cancel-agent"
 SAMPLE_RATE = 48000
 NUM_CHANNELS = 1
-
-CONTEXT_SECONDS = float(os.environ.get("DFN_CONTEXT_SECONDS", "1.0"))
-CHUNK_SECONDS = float(os.environ.get("DFN_CHUNK_SECONDS", "0.1"))
-CONTEXT_SAMPLES = int(CONTEXT_SECONDS * SAMPLE_RATE)
-CHUNK_SAMPLES = int(CHUNK_SECONDS * SAMPLE_RATE)
-
-# All enhance() calls in this process must run on this single worker thread:
-# the loaded model resets/writes its recurrent hidden state as part of every
-# call, so two calls running concurrently on the same model instance would
-# corrupt each other's state. Each track gets its own DF (STFT/ISTFT) state
-# below, but the model itself is shared and must stay serialized.
-INFERENCE_EXECUTOR = ThreadPoolExecutor(max_workers=1)
-
-
-def prewarm(proc: JobProcess) -> None:
-    model, _df_state, _suffix = init_df()
-    proc.userdata["dfn_model"] = model
-    proc.userdata["dfn_params"] = ModelParams()
-
-
-def _run_inference(model, df_state: DF, context: np.ndarray, chunk_samples: int) -> bytes:
-    with torch.no_grad():
-        audio = torch.from_numpy(context).unsqueeze(0)
-        enhanced = enhance(model, df_state, audio, pad=True)
-    enhanced_np = enhanced.squeeze(0).numpy()
-    tail = enhanced_np[-chunk_samples:] if enhanced_np.shape[0] >= chunk_samples else enhanced_np
-    tail = np.clip(tail, -1.0, 1.0)
-    return (tail * 32767.0).astype(np.int16).tobytes()
+DTLN_STRENGTH = float(os.environ.get("DTLN_STRENGTH", "0.5"))
 
 
 async def _handle_track(ctx: JobContext, participant: rtc.RemoteParticipant, track: rtc.Track) -> None:
     identity = participant.identity
     logger.info("noise-cancel: start processing track for %s", identity)
 
-    model = ctx.proc.userdata["dfn_model"]
-    p: ModelParams = ctx.proc.userdata["dfn_params"]
-    df_state = DF(sr=p.sr, fft_size=p.fft_size, hop_size=p.hop_size, nb_bands=p.nb_erb, min_nb_erb_freqs=p.min_nb_freqs)
-
-    audio_stream = rtc.AudioStream(track, sample_rate=SAMPLE_RATE, num_channels=NUM_CHANNELS)
+    # Stateful (LSTM hidden state) — must be one instance per track, not shared.
+    denoiser = dtln.noise_suppression(strength=DTLN_STRENGTH)
+    audio_stream = rtc.AudioStream(
+        track, sample_rate=SAMPLE_RATE, num_channels=NUM_CHANNELS, noise_cancellation=denoiser
+    )
     source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS)
     pub_track = rtc.LocalAudioTrack.create_audio_track(f"enhanced-{identity}", source)
     options = rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
     publication = await ctx.room.local_participant.publish_track(pub_track, options)
 
-    loop = asyncio.get_event_loop()
-    context = np.zeros(0, dtype=np.float32)
-    pending = 0
-
     try:
         async for event in audio_stream:
-            frame = event.frame
-            samples = np.frombuffer(bytes(frame.data), dtype=np.int16).astype(np.float32) / 32768.0
-            context = np.concatenate([context, samples])
-            if context.shape[0] > CONTEXT_SAMPLES:
-                context = context[-CONTEXT_SAMPLES:]
-            pending += samples.shape[0]
-
-            while pending >= CHUNK_SAMPLES:
-                pcm_bytes = await loop.run_in_executor(
-                    INFERENCE_EXECUTOR, _run_inference, model, df_state, context.copy(), CHUNK_SAMPLES
-                )
-                out_frame = rtc.AudioFrame(pcm_bytes, SAMPLE_RATE, NUM_CHANNELS, len(pcm_bytes) // 2)
-                await source.capture_frame(out_frame)
-                pending -= CHUNK_SAMPLES
+            await source.capture_frame(event.frame)
     except Exception:
         logger.exception("noise-cancel: pipeline error for %s", identity)
     finally:
@@ -144,7 +126,6 @@ if __name__ == "__main__":
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             request_fnc=request_fnc,
-            prewarm_fnc=prewarm,
             num_idle_processes=int(os.environ.get("DFN_NUM_IDLE_PROCESSES", "1")),
         )
     )

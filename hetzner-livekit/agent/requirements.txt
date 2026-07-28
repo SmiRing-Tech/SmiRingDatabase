@@ -1,12 +1,2 @@
-# Pinned: DeepFilterNet (0.5.6, latest on PyPI as of 2026-07) imports
-# `torchaudio.backend.common.AudioMetaData`, which newer torchaudio releases
-# removed. torch/torchaudio 2.6.0 is the oldest pair still installable from
-# the PyPI CPU wheel index that still carries that (deprecated) shim.
-# Verified locally: `import df.enhance` succeeds with only a deprecation
-# warning on this pair; anything newer raises ModuleNotFoundError.
-torch==2.6.0
-torchaudio==2.6.0
-
-deepfilternet==0.5.6
 livekit-agents==1.6.7
-numpy
+livekit-plugins-dtln==0.1.5
