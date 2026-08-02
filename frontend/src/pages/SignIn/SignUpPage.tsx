@@ -54,6 +54,9 @@ export default function SignUpPage() {
       if (data.session === null) {
         showFeedback('確認メールを送信しました！メールを確認してください。', { type: 'success', mode: 'toast' });
         navigate('/sign-in');
+      } else {
+        showFeedback('アカウントを作成しました！', { type: 'success', mode: 'toast' });
+        navigate('/profile');
       }
     } catch (error: any) {
       showFeedback(`エラー: ${error.message}`, { type: 'error', mode: 'banner' });
