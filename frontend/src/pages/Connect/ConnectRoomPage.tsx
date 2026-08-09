@@ -5,84 +5,93 @@ import {
   VideoConference,
   PreJoin,
   useLocalParticipant,
-  useRoomContext,
   type LocalUserChoices,
 } from '@livekit/components-react';
 import {
   VideoPresets,
   Track,
-  RoomEvent,
+  ParticipantEvent,
   type RoomOptions,
   type LocalVideoTrack,
-  type RemoteTrackPublication,
-  type RemoteParticipant,
+  type LocalAudioTrack,
 } from 'livekit-client';
 import { BackgroundBlur } from '@livekit/track-processors';
+import { KrispNoiseFilter, isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter';
 import '@livekit/components-styles';
-import { ArrowLeft, Video, AlertTriangle, Loader2, Copy, Check, Sparkles, Settings, Sliders, ShieldCheck, X } from 'lucide-react';
+import { ArrowLeft, Video, AlertTriangle, Loader2, Copy, Check, Sparkles, Settings, Sliders, Volume2, X } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import { useAuth } from '../../context/AuthContext';
 
-// Must match AGENT_IDENTITY in hetzner-livekit/agent/main.py.
-const NOISE_CANCEL_AGENT_IDENTITY = 'noise-cancel-agent';
-
-/**
- * The server-side noise-cancel agent (see hetzner-livekit/agent) publishes a
- * cleaned `enhanced-<identity>` copy of every participant's mic. We don't
- * want the browser to also play the raw mic — that would double up the
- * audio — so <LiveKitRoom> is configured with `autoSubscribe: false` and
- * this component is the thing that decides what actually gets subscribed:
- * all video, and only microphone tracks published by the agent itself.
- * Raw human mic tracks are left unsubscribed by the browser (the agent
- * still gets them independently via its own room connection).
- */
-function SelectiveSubscriber() {
-  const room = useRoomContext();
-
-  useEffect(() => {
-    const maybeSubscribe = (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
-      const isAgentMic =
-        publication.source === Track.Source.Microphone && participant.identity === NOISE_CANCEL_AGENT_IDENTITY;
-      const isRawHumanMic =
-        publication.source === Track.Source.Microphone && participant.identity !== NOISE_CANCEL_AGENT_IDENTITY;
-      if (isRawHumanMic) return;
-      // The agent publishes one enhanced-<identity> track per human participant
-      // it hears, including us. Subscribing to our own would play our voice
-      // back to ourselves. Track name -> source identity is `enhanced-<id>`.
-      const isOwnEnhancedMic = isAgentMic && publication.trackName === `enhanced-${room.localParticipant.identity}`;
-      if (isOwnEnhancedMic) return;
-      if (publication.kind === Track.Kind.Video || isAgentMic) {
-        publication.setSubscribed(true);
-      }
-    };
-
-    // Tracks published before this listener attached (e.g. the agent joined
-    // first) need to be caught here; ones published afterward come through
-    // the event below.
-    room.remoteParticipants.forEach((participant) => {
-      participant.trackPublications.forEach((publication) => maybeSubscribe(publication, participant));
-    });
-
-    room.on(RoomEvent.TrackPublished, maybeSubscribe);
-    return () => {
-      room.off(RoomEvent.TrackPublished, maybeSubscribe);
-    };
-  }, [room]);
-
-  return null;
-}
-
 /**
  * Provides a media enhancements settings popover at the bottom-right of the video room.
- * Allows users to toggle Background Blur ON/OFF. AI noise cancellation runs
- * server-side (see SelectiveSubscriber above) and is always on, so there's
- * nothing to toggle for it here.
+ * Allows users to toggle Krisp AI Noise Cancellation and Background Blur ON/OFF.
+ *
+ * We tried server-side noise cancellation (Hetzner LiveKit Agent, see
+ * hetzner-livekit/agent) with both DeepFilterNet and DTLN — DeepFilterNet
+ * was too CPU-heavy for the 2 vCPU box (multi-second growing delay), and
+ * DTLN was CPU-feasible but sounded worse than unprocessed audio (crackly,
+ * still noisy). Reverted to client-side Krisp, which was already working
+ * well. The agent code is left in the repo in case a bigger server makes
+ * DeepFilterNet worth revisiting.
  */
 function MediaEnhancements() {
   const { localParticipant } = useLocalParticipant();
   const [isOpen, setIsOpen] = useState(false);
   const [blurred, setBlurred] = useState(false);
   const [blurLoading, setBlurLoading] = useState(false);
+  const [krispEnabled, setKrispEnabled] = useState(true);
+  const [krispLoading, setKrispLoading] = useState(false);
+
+  const isKrispSupported = isKrispNoiseFilterSupported();
+
+  // Krisp noise cancellation sync on mic track publish or toggle change
+  useEffect(() => {
+    if (!isKrispSupported) return;
+
+    const syncKrisp = async () => {
+      const pub = localParticipant.getTrackPublication(Track.Source.Microphone);
+      const track = pub?.track as LocalAudioTrack | undefined;
+      if (!track) return;
+
+      if (krispEnabled && !track.getProcessor()) {
+        try {
+          await track.setProcessor(KrispNoiseFilter());
+        } catch (e) {
+          console.error('[Connect] Failed to enable Krisp filter:', e);
+        }
+      }
+    };
+
+    syncKrisp();
+    localParticipant.on(ParticipantEvent.LocalTrackPublished, syncKrisp);
+    return () => {
+      localParticipant.off(ParticipantEvent.LocalTrackPublished, syncKrisp);
+    };
+  }, [localParticipant, krispEnabled, isKrispSupported]);
+
+  const toggleKrisp = useCallback(async () => {
+    if (!isKrispSupported) return;
+    const pub = localParticipant.getTrackPublication(Track.Source.Microphone);
+    const track = pub?.track as LocalAudioTrack | undefined;
+    setKrispLoading(true);
+    try {
+      if (krispEnabled) {
+        if (track && track.getProcessor()) {
+          await track.stopProcessor();
+        }
+        setKrispEnabled(false);
+      } else {
+        if (track && !track.getProcessor()) {
+          await track.setProcessor(KrispNoiseFilter());
+        }
+        setKrispEnabled(true);
+      }
+    } catch (e) {
+      console.error('[Connect] failed to toggle Krisp filter:', e);
+    } finally {
+      setKrispLoading(false);
+    }
+  }, [localParticipant, krispEnabled, isKrispSupported]);
 
   const toggleBlur = useCallback(async () => {
     const pub = localParticipant.getTrackPublication(Track.Source.Camera);
@@ -111,15 +120,16 @@ function MediaEnhancements() {
         <button
           onClick={() => setIsOpen((prev) => !prev)}
           className={`p-3 rounded-2xl shadow-xl backdrop-blur-md border transition-all duration-200 active:scale-95 flex items-center justify-center relative ${
-            isOpen || blurred
+            isOpen || blurred || krispEnabled
               ? 'bg-indigo-600/90 text-white border-indigo-400/50 hover:bg-indigo-600'
               : 'bg-gray-900/80 text-gray-200 border-gray-700/80 hover:bg-gray-800'
           }`}
           title="メディア設定 (ブラー / ノイズ除去)"
         >
           <Settings className={`w-5 h-5 transition-transform duration-300 ${isOpen ? 'rotate-90' : ''}`} />
-          {/* AI noise cancellation runs server-side and is always on, so this dot is unconditional */}
-          <span className="absolute -top-1 -right-1 w-3 h-3 bg-emerald-400 border-2 border-gray-900 rounded-full animate-pulse" />
+          {(blurred || krispEnabled) && (
+            <span className="absolute -top-1 -right-1 w-3 h-3 bg-emerald-400 border-2 border-gray-900 rounded-full animate-pulse" />
+          )}
         </button>
       </div>
 
@@ -147,19 +157,38 @@ function MediaEnhancements() {
               </button>
             </div>
 
-            {/* AI Noise Cancellation status (server-side, always on — nothing to toggle) */}
+            {/* Krisp AI Noise Cancellation Toggle */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <ShieldCheck className="w-4 h-4 text-indigo-400" />
+                  <Volume2 className="w-4 h-4 text-indigo-400" />
                   <div>
-                    <p className="text-xs font-bold text-gray-200">AI ノイズ除去（サーバー側）</p>
-                    <p className="text-[10px] text-gray-400">全参加者の音声を常時クリア化</p>
+                    <p className="text-xs font-bold text-gray-200">Krisp AI ノイズ除去</p>
+                    <p className="text-[10px] text-gray-400">マイクの周囲の雑音をクリアに除去</p>
                   </div>
                 </div>
-                <span className="text-[10px] bg-emerald-900/60 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-700/60 font-bold">
-                  常時有効
-                </span>
+
+                {isKrispSupported ? (
+                  <button
+                    onClick={toggleKrisp}
+                    disabled={krispLoading}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
+                      krispEnabled ? 'bg-indigo-500' : 'bg-gray-700'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out flex items-center justify-center ${
+                        krispEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    >
+                      {krispLoading && <Loader2 className="w-3 h-3 animate-spin text-gray-600" />}
+                    </span>
+                  </button>
+                ) : (
+                  <span className="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full border border-gray-700">
+                    非対応
+                  </span>
+                )}
               </div>
             </div>
 
@@ -238,15 +267,11 @@ export default function ConnectRoomPage() {
       },
       audioCaptureDefaults: {
         deviceId: choices?.audioDeviceId || undefined,
-        // echoCancellation/autoGainControl stay on the browser — this is what
-        // actually prevents howling (it references the exact uncompressed
-        // local playback buffer, which a server-side approach can't access).
-        // noiseSuppression is off: the server-side DeepFilterNet agent (see
-        // hetzner-livekit/agent) needs the raw mic signal, and running the
-        // browser's own suppressor first would strip information before it
-        // gets there.
+        // Native browser AEC/NS/AGC — this is what actually prevents howling
+        // (it references the exact uncompressed local playback buffer, which
+        // a server-side approach cannot access).
         echoCancellation: true,
-        noiseSuppression: false,
+        noiseSuppression: true,
         autoGainControl: true,
       },
       publishDefaults: {
@@ -341,9 +366,6 @@ export default function ConnectRoomPage() {
           video={choices?.videoEnabled ?? true}
           audio={choices?.audioEnabled ?? true}
           options={roomOptions}
-          // Subscriptions are chosen manually by SelectiveSubscriber so raw
-          // human mic tracks never reach the browser's audio renderer.
-          connectOptions={{ autoSubscribe: false }}
           onDisconnected={() => navigate('/connect')}
           onError={(e) => {
             setErrorMsg(e.message);
@@ -351,7 +373,6 @@ export default function ConnectRoomPage() {
           }}
           style={{ height: '100%' }}
         >
-          <SelectiveSubscriber />
           <MediaEnhancements />
           <VideoConference />
         </LiveKitRoom>
