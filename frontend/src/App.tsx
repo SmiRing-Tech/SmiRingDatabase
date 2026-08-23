@@ -9,10 +9,14 @@ import ForgotPasswordPage from './pages/SignIn/ForgotPasswordPage';
 import ResetPasswordPage from './pages/SignIn/ResetPasswordPage';
 import HomePage from './pages/Home/HomePage';
 import MainLayout from './components/layout/MainLayout';
+import ExternalLayout from './components/layout/ExternalLayout';
 import WelcomePage from './pages/Welcome/WelcomePage';
 import ProfilePage from './pages/Profile/ProfilePage';
 import MembersPage from './pages/Members/MembersPage';
 import GalleryPage from './pages/Gallery/GalleryPage';
+import EventsPage from './pages/Events/EventsPage';
+import StudyInfoPage from './pages/StudyInfo/StudyInfoPage';
+import SurveyPage from './pages/Survey/SurveyPage';
 import FormEditorPage from './pages/Form/FormEditor/FormEditorPage';
 import FormListPage from './pages/Form/FormList/FormListPage';
 import FormAnswerPage from './pages/Form/Answer/FormAnswerPage';
@@ -24,9 +28,12 @@ import AppsPage from './pages/Apps/AppsPage';
 import SmiRingConnectPage from './pages/Connect/SmiRingConnectPage';
 import ConnectRoomPage from './pages/Connect/ConnectRoomPage';
 import ManagementConsolePage from './pages/Management/ManagementConsolePage';
+import EventManagementPage from './pages/Management/EventManagement/EventManagementPage';
 import { FeedbackProvider } from './context/FeedbackContext';
 import FeedbackSystem from './components/ui/FeedbackSystem';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import LoadingScreen, { AuthErrorScreen } from './components/ui/LoadingScreen';
+import { useIsInternal } from './hooks/useIsInternal';
 import { apiClient } from './lib/apiClient';
 
 // ==========================================
@@ -63,8 +70,8 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
     }
   }, [session]);
 
-  // ロード中は何も出さない
-  if (isLoading) return null; 
+  // セッション確認中はローディングを表示する
+  if (isLoading) return <LoadingScreen />;
 
   // 未ログインならWelcome画面へ (元のパスを state に引き渡す)
   if (!session) {
@@ -87,10 +94,14 @@ const RequirePermission = ({
   action: PermissionAction;
   children: React.ReactNode;
 }) => {
-  const { hasPermission, isPermissionsLoading, isLoading } = useAuth();
+  const { hasPermission, isPermissionsReady, isLoading } = useAuth();
+  const isInternal = useIsInternal();
 
-  if (isLoading || isPermissionsLoading) return null;
-  if (!hasPermission(resource, action)) return <Navigate to="/home" replace />;
+  // 権限が判明する前にリダイレクトすると、リロード時に元のページを見失う
+  if (isLoading || !isPermissionsReady) return <LoadingScreen />;
+  if (!hasPermission(resource, action)) {
+    return <Navigate to={isInternal ? "/home" : "/events"} replace />;
+  }
 
   return <>{children}</>;
 };
@@ -99,19 +110,49 @@ const RequirePermission = ({
 // ロールベースのルートガード（内部メンバー専用）
 // ==========================================
 const RequireInternalRole = ({ children }: { children: React.ReactNode }) => {
-  const { roles, isPermissionsLoading, isLoading } = useAuth();
+  const { isPermissionsReady, isLoading } = useAuth();
+  const isInternal = useIsInternal();
 
-  if (isLoading || isPermissionsLoading) return null;
+  // ロールが判明する前にリダイレクトすると、リロード時に元のページを見失う
+  if (isLoading || !isPermissionsReady) return <LoadingScreen />;
 
-  const hasInternalAccess = roles.some(r =>
-    ['smiring_member', 'admin', 'smiring_core'].includes(r)
-  );
-
-  if (!hasInternalAccess) {
-    return <Navigate to="/profile" replace />;
+  if (!isInternal) {
+    return <Navigate to="/events" replace />;
   }
 
   return <>{children}</>;
+};
+
+// ==========================================
+// ロールベースのルートガード（外部メンバー専用）
+// ==========================================
+const RequireExternalRole = ({ children }: { children: React.ReactNode }) => {
+  const { isPermissionsReady, isLoading } = useAuth();
+  const isInternal = useIsInternal();
+
+  // ロールが判明する前にリダイレクトすると、リロード時に元のページを見失う
+  if (isLoading || !isPermissionsReady) return <LoadingScreen />;
+
+  if (isInternal) {
+    return <Navigate to="/home" replace />;
+  }
+
+  return <>{children}</>;
+};
+
+// ==========================================
+// レイアウトの出し分け（内部メンバー / 外部メンバー）
+// ==========================================
+const AppShell = () => {
+  const { isLoading, isPermissionsReady, permissionsError, refreshPermissions } = useAuth();
+  const isInternal = useIsInternal();
+
+  // 権限取得に失敗して判定材料が無い場合は、リダイレクトせず再試行を促す
+  // （空のロールで判定すると内部メンバーでも外部メンバー用ページに飛ばされてしまう）
+  if (permissionsError) return <AuthErrorScreen onRetry={() => { refreshPermissions(); }} />;
+  if (isLoading || !isPermissionsReady) return <LoadingScreen />;
+
+  return isInternal ? <MainLayout /> : <ExternalLayout />;
 };
 
 // ==========================================
@@ -125,11 +166,11 @@ const router = createBrowserRouter([
   { path: '/forgot-password', element: <ForgotPasswordPage /> },
   { path: '/reset-password', element: <ResetPasswordPage /> },
 
-  // 2. ログイン必須ルート (MainLayoutで囲む = ShellRoute相当)
+  // 2. ログイン必須ルート (内部/外部メンバーでレイアウトを出し分ける = ShellRoute相当)
   {
     element: (
       <ProtectedRoute>
-        <MainLayout />
+        <AppShell />
       </ProtectedRoute>
     ),
     children: [
@@ -138,6 +179,9 @@ const router = createBrowserRouter([
       { path: '/members', element: <RequireInternalRole><MembersPage /></RequireInternalRole> },
       { path: '/members/:id', element: <ProfilePage /> },
       { path: '/gallery', element: <RequireInternalRole><GalleryPage /></RequireInternalRole> },
+      { path: '/events', element: <RequireExternalRole><EventsPage /></RequireExternalRole> },
+      { path: '/study-info', element: <RequireExternalRole><StudyInfoPage /></RequireExternalRole> },
+      { path: '/survey', element: <RequireExternalRole><SurveyPage /></RequireExternalRole> },
       { path: '/form-list', element: <RequireInternalRole><FormListPage /></RequireInternalRole> },
       { path: '/form-editor/:id', element: <RequireInternalRole><FormEditorPage /></RequireInternalRole> },
       { path: '/form-preview/:id', element: <RequireInternalRole><FormAnswerPage /></RequireInternalRole> },
@@ -149,6 +193,13 @@ const router = createBrowserRouter([
       { path: '/apps', element: <RequireInternalRole><AppsPage /></RequireInternalRole> },
       { path: '/connect', element: <RequireInternalRole><SmiRingConnectPage /></RequireInternalRole> },
       { path: '/connect/room/:roomId', element: <RequireInternalRole><ConnectRoomPage /></RequireInternalRole> },
+      { path: '/event-management', element: (
+        <RequireInternalRole>
+          <RequirePermission resource="event-management" action="read">
+            <EventManagementPage />
+          </RequirePermission>
+        </RequireInternalRole>
+      ) },
       { path: '/management', element: (
         <RequireInternalRole>
           <RequirePermission resource="management" action="read">

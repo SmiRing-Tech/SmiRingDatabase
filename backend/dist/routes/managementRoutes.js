@@ -595,6 +595,79 @@ router.get('/permission-types', (0, requirePermission_1.requirePermission)('mana
         res.status(500).json({ error: error.message });
     }
 });
+// 2-1. 新規権限タイプ作成
+router.post('/permission-types', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { type, description } = req.body;
+        if (!type || !type.trim()) {
+            return res.status(400).json({ error: 'タイプ名は必須です' });
+        }
+        const { data: newType, error } = await supabase_1.supabase
+            .from('permission_types')
+            .insert({ type: type.trim(), description: description?.trim() || null })
+            .select()
+            .single();
+        if (error)
+            throw error;
+        res.status(201).json(newType);
+    }
+    catch (error) {
+        console.error('権限タイプ作成エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 2-2. 権限タイプ更新
+router.patch('/permission-types/:id', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { type, description } = req.body;
+        if (!type || !type.trim()) {
+            return res.status(400).json({ error: 'タイプ名は必須です' });
+        }
+        const { data: updatedType, error } = await supabase_1.supabase
+            .from('permission_types')
+            .update({ type: type.trim(), description: description?.trim() || null })
+            .eq('id', id)
+            .select()
+            .single();
+        if (error)
+            throw error;
+        res.json(updatedType);
+    }
+    catch (error) {
+        console.error('権限タイプ更新エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 2-3. 権限タイプ削除
+router.delete('/permission-types/:id', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        // 紐付く permissions が存在するかチェック
+        const { count, error: countError } = await supabase_1.supabase
+            .from('permissions')
+            .select('*', { count: 'exact', head: true })
+            .eq('type', id);
+        if (countError)
+            throw countError;
+        if (count && count > 0) {
+            return res.status(400).json({
+                error: `この権限タイプは ${count} 件の権限で使用されているため削除できません。先に該当する権限のタイプを変更または削除してください。`
+            });
+        }
+        const { error } = await supabase_1.supabase
+            .from('permission_types')
+            .delete()
+            .eq('id', id);
+        if (error)
+            throw error;
+        res.json({ message: '権限タイプを削除しました' });
+    }
+    catch (error) {
+        console.error('権限タイプ削除エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 // 3. 新規権限追加
 router.post('/permissions', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
     try {

@@ -49,6 +49,7 @@ const authRoutes_1 = __importDefault(require("./routes/authRoutes"));
 const workerRoutes_1 = __importDefault(require("./routes/workerRoutes"));
 const managementRoutes_1 = __importDefault(require("./routes/managementRoutes"));
 const connectRoutes_1 = __importDefault(require("./routes/connectRoutes"));
+const eventRoutes_1 = __importDefault(require("./routes/eventRoutes"));
 const app = (0, express_1.default)();
 const port = process.env.PORT || 3000;
 // ミドルウェアの設定
@@ -72,6 +73,7 @@ app.use(authRoutes_1.default); // 🔐 認証系
 app.use(workerRoutes_1.default); // 🤖 ワーカー系
 app.use('/api/management', managementRoutes_1.default); // ⚙️ 管理・設定系
 app.use(connectRoutes_1.default); // 🎥 SmiRing Connect (video calls)
+app.use(eventRoutes_1.default); // 📅 イベント系
 // ==========================================
 // サーバー起動
 // ==========================================

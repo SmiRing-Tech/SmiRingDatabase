@@ -28,6 +28,12 @@ export interface SmartDateTimePickerProps {
 
 type FieldType = 'timezone' | 'year' | 'month' | 'date' | 'hour' | 'minute' | 'second';
 
+// スクロールリストの1項目あたりの高さ(px)
+const ITEM_HEIGHT = 40;
+
+// ワンクリックで選べる分の候補
+const MINUTE_PRESETS = [0, 30];
+
 // 全角数字を半角に変換するユーティリティ
 const toHalfWidth = (str: string) => {
   return str.replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
@@ -154,28 +160,149 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
   useEffect(() => {
     if (isOpen && activeTab && ['hour', 'minute', 'second', 'ampm'].includes(activeTab)) {
       setTimeout(() => {
-        const itemHeight = 40;
         // 無限スクロール用に中央のセットにオフセットを乗せる
-        const getOffset = (max: number) => max * 5; 
+        const getOffset = (max: number) => max * 5;
 
         if (hourScrollRef.current) {
           const max = is24h ? 24 : 12;
           const h = is24h ? hour : (hour % 12 || 12) - 1;
-          hourScrollRef.current.scrollTop = (getOffset(max) + h) * itemHeight;
+          hourScrollRef.current.scrollTop = (getOffset(max) + h) * ITEM_HEIGHT;
         }
         if (minScrollRef.current) {
-          minScrollRef.current.scrollTop = (getOffset(60) + minute) * itemHeight;
+          minScrollRef.current.scrollTop = (getOffset(60) + minute) * ITEM_HEIGHT;
         }
         if (secScrollRef.current) {
-          secScrollRef.current.scrollTop = (getOffset(60) + second) * itemHeight;
+          secScrollRef.current.scrollTop = (getOffset(60) + second) * ITEM_HEIGHT;
         }
         if (ampmScrollRef.current && !is24h) {
           // AM/PM はループさせない
-          ampmScrollRef.current.scrollTop = (isPM ? 1 : 0) * itemHeight;
+          ampmScrollRef.current.scrollTop = (isPM ? 1 : 0) * ITEM_HEIGHT;
         }
       }, 50);
     }
   }, [isOpen, activeTab]);
+
+  // --- マウスドラッグによるスクロール ---
+  // ドラッグ中の状態（再レンダリングを挟まずに追従させたいので ref で持つ）
+  const dragRef = useRef({
+    active: false,
+    moved: false,
+    pointerId: -1,
+    lastY: 0,
+    lastTime: 0,
+    velocity: 0, // px/ms
+    el: null as HTMLDivElement | null
+  });
+  // ドラッグ直後のクリック（＝項目の選択）を無視するためのフラグ
+  const suppressClickRef = useRef(false);
+  const momentumRef = useRef<number | null>(null);
+
+  const stopMomentum = useCallback(() => {
+    if (momentumRef.current !== null) {
+      cancelAnimationFrame(momentumRef.current);
+      momentumRef.current = null;
+    }
+  }, []);
+
+  // スナップを戻して一番近い項目に吸着させる
+  const snapToNearest = useCallback((el: HTMLDivElement) => {
+    el.style.scrollSnapType = '';
+    const index = Math.round(el.scrollTop / ITEM_HEIGHT);
+    el.scrollTo({ top: index * ITEM_HEIGHT, behavior: 'smooth' });
+  }, []);
+
+  // 指を離した後の慣性スクロール
+  const startMomentum = useCallback((el: HTMLDivElement, initialVelocity: number) => {
+    let velocity = initialVelocity;
+    let last = performance.now();
+    const step = () => {
+      const now = performance.now();
+      const dt = Math.min(now - last, 32);
+      last = now;
+      el.scrollTop -= velocity * dt;
+      velocity *= Math.pow(0.94, dt / 16.67);
+      if (Math.abs(velocity) < 0.02) {
+        momentumRef.current = null;
+        snapToNearest(el);
+        return;
+      }
+      momentumRef.current = requestAnimationFrame(step);
+    };
+    momentumRef.current = requestAnimationFrame(step);
+  }, [snapToNearest]);
+
+  useEffect(() => stopMomentum, [stopMomentum]);
+
+  const handleDragStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    // タッチはブラウザ標準のスクロールに任せる
+    if (e.pointerType === 'touch' || e.button !== 0) return;
+    stopMomentum();
+    dragRef.current = {
+      active: true,
+      moved: false,
+      pointerId: e.pointerId,
+      lastY: e.clientY,
+      lastTime: performance.now(),
+      velocity: 0,
+      el: e.currentTarget
+    };
+  }, [stopMomentum]);
+
+  const handleDragMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag.active || drag.pointerId !== e.pointerId || !drag.el) return;
+    const dy = e.clientY - drag.lastY;
+
+    // 微小な動きはクリックとして扱いたいので、閾値を超えてからドラッグ開始とする
+    if (!drag.moved) {
+      if (Math.abs(dy) < 3) return;
+      drag.moved = true;
+      drag.el.style.scrollSnapType = 'none';
+      drag.el.setPointerCapture(e.pointerId);
+    }
+
+    const now = performance.now();
+    const dt = now - drag.lastTime;
+    if (dt > 0) {
+      // 直近の速度を少し均して慣性が暴れないようにする
+      drag.velocity = drag.velocity * 0.2 + (dy / dt) * 0.8;
+    }
+    drag.lastY = e.clientY;
+    drag.lastTime = now;
+    // 無限ループ用のワープが挟まっても破綻しないよう、差分で動かす
+    drag.el.scrollTop -= dy;
+  }, []);
+
+  const handleDragEnd = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag.active || !drag.el) return;
+    const el = drag.el;
+    const moved = drag.moved;
+    const velocity = drag.velocity;
+    drag.active = false;
+    drag.el = null;
+
+    if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+
+    if (moved) {
+      suppressClickRef.current = true;
+      setTimeout(() => { suppressClickRef.current = false; }, 0);
+      if (Math.abs(velocity) > 0.1) startMomentum(el, velocity);
+      else snapToNearest(el);
+    }
+  }, [startMomentum, snapToNearest]);
+
+  // 分をワンクリックで指定する（00 / 30 ボタン用）
+  const selectMinutePreset = useCallback((val: number) => {
+    stopMomentum();
+    setMinute(val);
+    setActiveTab('minute');
+    const el = minScrollRef.current;
+    if (el) {
+      el.style.scrollSnapType = '';
+      el.scrollTo({ top: (60 * 5 + val) * ITEM_HEIGHT, behavior: 'smooth' });
+    }
+  }, [stopMomentum]);
 
   // キーボード入力の一時バッファ
   const [inputBuffer, setInputBuffer] = useState<string>('');
@@ -461,13 +588,12 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
   );
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>, type: string, max: number, setter: (val: number) => void, start: number = 0) => {
-    const itemHeight = 40;
     const container = e.currentTarget;
     const scrollTop = container.scrollTop;
 
     // AM/PM 以外は無限ループ処理を行う
     if (type !== 'ampm') {
-      const totalHeight = max * itemHeight;
+      const totalHeight = max * ITEM_HEIGHT;
       // 端に近づいたら中央セットにワープさせる
       if (scrollTop < totalHeight * 2) {
         container.scrollTop = scrollTop + totalHeight * 5;
@@ -478,7 +604,7 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
       }
     }
 
-    const index = Math.round(scrollTop / itemHeight);
+    const index = Math.round(scrollTop / ITEM_HEIGHT);
     const val = (index % max) + start;
 
     if (type === 'ampm') {
@@ -501,7 +627,6 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
   };
 
   const renderScrollList = (type: string, max: number, currentValue: number, setter: (val: number) => void, start: number = 0, items?: string[]) => {
-    const itemHeight = 40;
     const isActive = activeTab === (type as any);
     const ref = type === 'hour' ? hourScrollRef : type === 'minute' ? minScrollRef : type === 'second' ? secScrollRef : ampmScrollRef;
 
@@ -512,18 +637,24 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
         <div
           ref={ref}
           onScroll={(e) => handleScroll(e, type, max, setter, start)}
-          className={`h-60 overflow-y-auto snap-y snap-mandatory no-scrollbar py-[100px] transition-colors ${isActive ? 'bg-blue-50/30' : ''}`}
+          onPointerDown={handleDragStart}
+          onPointerMove={handleDragMove}
+          onPointerUp={handleDragEnd}
+          onPointerCancel={handleDragEnd}
+          className={`h-60 overflow-y-auto snap-y snap-mandatory no-scrollbar py-[100px] transition-colors select-none cursor-grab active:cursor-grabbing ${isActive ? 'bg-blue-50/30' : ''}`}
           style={{ scrollPaddingTop: '100px', scrollPaddingBottom: '100px' }}
         >
           {Array.from({ length: type === 'ampm' ? max : max * 10 }, (_, i) => i).map((i) => {
             const val = (i % max) + start;
             const isSelected = type === 'ampm' ? currentValue === val : (currentValue % max) === (val % max);
-            
+
             return (
               <div
                 key={i}
                 onClick={() => {
-                  if (ref.current) ref.current.scrollTo({ top: i * itemHeight, behavior: 'smooth' });
+                  // ドラッグ終了直後のクリックは選択とみなさない
+                  if (suppressClickRef.current) return;
+                  if (ref.current) ref.current.scrollTo({ top: i * ITEM_HEIGHT, behavior: 'smooth' });
                   setActiveTab(type as any);
                 }}
                 className={`h-10 flex items-center justify-center snap-center snap-always cursor-pointer transition-all ${isSelected
@@ -713,6 +844,26 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
                       {format.minute && renderScrollList('minute', 60, minute, setMinute)}
                       {format.second && renderScrollList('second', 60, second, setSecond)}
                     </div>
+
+                    {format.minute && (
+                      <div className="flex items-center justify-center gap-2 mt-3">
+                        <span className="text-[10px] font-black text-gray-300 uppercase tracking-widest mr-1">MIN</span>
+                        {MINUTE_PRESETS.map(m => (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => selectMinutePreset(m)}
+                            className={`px-4 py-1.5 rounded-full text-xs font-bold border transition-all ${
+                              minute === m
+                                ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-100'
+                                : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300 hover:text-blue-600'
+                            }`}
+                          >
+                            :{String(m).padStart(2, '0')}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

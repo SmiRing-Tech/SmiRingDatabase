@@ -22,6 +22,8 @@ interface CustomDropdownProps<T extends boolean> {
   placeholder?: string;
   className?: string;
   fontSize?: string; // 🌟 文字サイズを指定できるように
+  minMenuWidth?: number; // 🌟 メニューの最小幅 (px)
+  customTrigger?: React.ReactNode | ((isOpen: boolean) => React.ReactNode); // 🌟 カスタムトリガー
 }
 // -------------
 
@@ -33,11 +35,13 @@ export const CustomDropdown = <T extends boolean = false>({
   searchable = false,
   placeholder = "選択してください",
   className = "",
-  fontSize = "text-sm" // デフォルトは従来通りのサイズ
+  fontSize = "text-sm", // デフォルトは従来通りのサイズ
+  minMenuWidth = 180,
+  customTrigger,
 }: CustomDropdownProps<T>) => {
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [coords, setCoords] = useState({ top: 0, bottom: 0, left: 0, width: 0, isBottomHalf: false });
+  const [coords, setCoords] = useState({ top: 0, bottom: 0, left: 0, width: 0, right: 0, isBottomHalf: false });
   const [tempValues, setTempValues] = useState<string[]>([]);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -56,6 +60,7 @@ export const CustomDropdown = <T extends boolean = false>({
         top: rect.top,
         bottom: rect.bottom,
         left: rect.left,
+        right: rect.right,
         width: rect.width,
         isBottomHalf: rect.top > window.innerHeight / 2
       });
@@ -174,42 +179,59 @@ export const CustomDropdown = <T extends boolean = false>({
 
   return (
     <div className={`relative w-full ${fontSize}`} ref={dropdownRef}>
-      <button
-        type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className={`w-full bg-white border border-gray-300 rounded-xl text-left px-4 py-2.5 flex justify-between items-center shadow-sm hover:border-gray-400 hover:shadow transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${className}`}
-      >
-        <span className="truncate pr-4 select-none text-gray-700">
-          {getDisplayText()}
-        </span>
-        <ChevronDown className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
-      </button>
+      {customTrigger ? (
+        <div
+          onClick={() => setIsOpen(!isOpen)}
+          className="cursor-pointer h-full w-full flex items-center justify-center"
+        >
+          {typeof customTrigger === 'function' ? customTrigger(isOpen) : customTrigger}
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setIsOpen(!isOpen)}
+          className={`w-full bg-white border border-gray-300 rounded-xl text-left px-4 py-2.5 flex justify-between items-center shadow-sm hover:border-gray-400 hover:shadow transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${className}`}
+        >
+          <span className="truncate pr-4 select-none text-gray-700">
+            {getDisplayText()}
+          </span>
+          <ChevronDown className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
+        </button>
+      )}
 
       {/* ポータルを使用してメニューを body 直下にレンダリング */}
       {createPortal(
         <AnimatePresence>
-          {isOpen && (
-            <motion.div
-              key="dropdown-menu"
-              ref={menuRef}
-              initial={{ opacity: 0, y: coords.isBottomHalf ? 10 : -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: coords.isBottomHalf ? 10 : -10 }}
-              transition={{ duration: 0.15, ease: "easeOut" }}
-              style={{
-                position: 'fixed',
-                ...(coords.isBottomHalf
-                  ? { bottom: window.innerHeight - coords.top + 8 }
-                  : { top: coords.bottom + 8 }),
-                left: coords.left,
-                width: coords.width,
-                zIndex: 9999,
-              }}
-              className={`bg-white/95 backdrop-blur-md border border-gray-200 rounded-xl shadow-lg overflow-hidden flex flex-col ${fontSize}`}
-            >
+          {isOpen && (() => {
+            const menuWidth = Math.max(coords.width, minMenuWidth);
+            // 画面右端からはみ出さないよう、右端揃えで左に広げる
+            const rightEdge = coords.right || (coords.left + coords.width);
+            const calculatedLeft = rightEdge - menuWidth < 16
+              ? Math.max(16, coords.left)
+              : Math.max(16, Math.min(coords.left, rightEdge - menuWidth));
 
-              {searchable && (
-                <div className="p-2 border-b border-gray-100 bg-white/50 sticky top-0">
+            return (
+              <motion.div
+                key="dropdown-menu"
+                ref={menuRef}
+                initial={{ opacity: 0, y: coords.isBottomHalf ? 10 : -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: coords.isBottomHalf ? 10 : -10 }}
+                transition={{ duration: 0.15, ease: "easeOut" }}
+                style={{
+                  position: 'fixed',
+                  ...(coords.isBottomHalf
+                    ? { bottom: window.innerHeight - coords.top + 8 }
+                    : { top: coords.bottom + 8 }),
+                  left: calculatedLeft,
+                  width: menuWidth,
+                  zIndex: 9999,
+                }}
+                className={`bg-white/95 backdrop-blur-md border border-gray-200 rounded-xl shadow-xl overflow-hidden flex flex-col ${fontSize}`}
+              >
+
+                {searchable && (
+                  <div className="p-2 border-b border-gray-100 bg-white/50 sticky top-0">
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
                     <input
@@ -304,7 +326,8 @@ export const CustomDropdown = <T extends boolean = false>({
                 </div>
               )}
             </motion.div>
-          )}
+            );
+          })()}
         </AnimatePresence>,
         document.body
       )}

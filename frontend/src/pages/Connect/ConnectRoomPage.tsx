@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   LiveKitRoom,
@@ -26,13 +26,12 @@ import { useAuth } from '../../context/AuthContext';
  * Provides a media enhancements settings popover at the bottom-right of the video room.
  * Allows users to toggle Krisp AI Noise Cancellation and Background Blur ON/OFF.
  *
- * We tried server-side noise cancellation (Hetzner LiveKit Agent, see
- * hetzner-livekit/agent) with both DeepFilterNet and DTLN — DeepFilterNet
- * was too CPU-heavy for the 2 vCPU box (multi-second growing delay), and
- * DTLN was CPU-feasible but sounded worse than unprocessed audio (crackly,
- * still noisy). Reverted to client-side Krisp, which was already working
- * well. The agent code is left in the repo in case a bigger server makes
- * DeepFilterNet worth revisiting.
+ * We evaluated alternatives to Krisp: server-side noise cancellation (Hetzner
+ * LiveKit Agent) with DeepFilterNet (too CPU-heavy for the 2 vCPU box) and
+ * DTLN (CPU-feasible but sounded worse than unprocessed audio), and
+ * client-side DeepFilterNet3 via WASM (deepfilternet3-noise-filter — crashes
+ * reliably with a WASM panic in this environment, unrelated to our code).
+ * Krisp remains the best working option.
  */
 function MediaEnhancements() {
   const { localParticipant } = useLocalParticipant();
@@ -44,7 +43,26 @@ function MediaEnhancements() {
 
   const isKrispSupported = isKrispNoiseFilterSupported();
 
-  // Krisp noise cancellation sync on mic track publish or toggle change
+  // Tracks which enabled-state is actually applied to which track instance,
+  // so we don't tear down and recreate the processor every time
+  // LocalTrackPublished fires (e.g. on every mute/unmute republish).
+  const appliedRef = useRef<{ track: LocalAudioTrack | null; enabled: boolean | null }>({
+    track: null,
+    enabled: null,
+  });
+
+  const applyKrisp = useCallback(async (enabled: boolean, track: LocalAudioTrack) => {
+    if (enabled) {
+      if (!track.getProcessor()) {
+        await track.setProcessor(KrispNoiseFilter());
+      }
+    } else if (track.getProcessor()) {
+      await track.stopProcessor();
+    }
+  }, []);
+
+  // Re-apply the desired Krisp state on mic track publish (e.g. device switch) —
+  // but only if it isn't already applied to this exact track, see appliedRef above.
   useEffect(() => {
     if (!isKrispSupported) return;
 
@@ -52,13 +70,13 @@ function MediaEnhancements() {
       const pub = localParticipant.getTrackPublication(Track.Source.Microphone);
       const track = pub?.track as LocalAudioTrack | undefined;
       if (!track) return;
-
-      if (krispEnabled && !track.getProcessor()) {
-        try {
-          await track.setProcessor(KrispNoiseFilter());
-        } catch (e) {
-          console.error('[Connect] Failed to enable Krisp filter:', e);
-        }
+      const already = appliedRef.current;
+      if (already.track === track && already.enabled === krispEnabled) return;
+      try {
+        await applyKrisp(krispEnabled, track);
+        appliedRef.current = { track, enabled: krispEnabled };
+      } catch (e) {
+        console.error('[Connect] Failed to enable Krisp filter:', e);
       }
     };
 
@@ -67,31 +85,26 @@ function MediaEnhancements() {
     return () => {
       localParticipant.off(ParticipantEvent.LocalTrackPublished, syncKrisp);
     };
-  }, [localParticipant, krispEnabled, isKrispSupported]);
+  }, [localParticipant, krispEnabled, isKrispSupported, applyKrisp]);
 
   const toggleKrisp = useCallback(async () => {
     if (!isKrispSupported) return;
     const pub = localParticipant.getTrackPublication(Track.Source.Microphone);
     const track = pub?.track as LocalAudioTrack | undefined;
+    const nextEnabled = !krispEnabled;
     setKrispLoading(true);
     try {
-      if (krispEnabled) {
-        if (track && track.getProcessor()) {
-          await track.stopProcessor();
-        }
-        setKrispEnabled(false);
-      } else {
-        if (track && !track.getProcessor()) {
-          await track.setProcessor(KrispNoiseFilter());
-        }
-        setKrispEnabled(true);
+      if (track) {
+        await applyKrisp(nextEnabled, track);
+        appliedRef.current = { track, enabled: nextEnabled };
       }
+      setKrispEnabled(nextEnabled);
     } catch (e) {
       console.error('[Connect] failed to toggle Krisp filter:', e);
     } finally {
       setKrispLoading(false);
     }
-  }, [localParticipant, krispEnabled, isKrispSupported]);
+  }, [localParticipant, krispEnabled, isKrispSupported, applyKrisp]);
 
   const toggleBlur = useCallback(async () => {
     const pub = localParticipant.getTrackPublication(Track.Source.Camera);

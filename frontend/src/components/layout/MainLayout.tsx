@@ -2,16 +2,16 @@ import { useState } from 'react';
 import { Outlet, useNavigate, Link } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useInactivityLogout } from '../../hooks/useInactivityLogout';
-import { 
-  Menu, 
-  X, 
-  Home, 
-  Users, 
-  Image as ImageIcon, 
-  FileText, 
-  User, 
+import AppHeader from './AppHeader';
+import {
+  X,
+  Home,
+  Users,
+  Image as ImageIcon,
+  FileText,
+  User,
   LogOut,
-  MessageSquare 
+  MessageSquare
 } from 'lucide-react';
 
 export default function MainLayout() {
@@ -35,41 +35,7 @@ export default function MainLayout() {
     <div className="flex flex-col h-screen w-full bg-slate-50/50 text-gray-900 font-sans">
       
       {/* --- 1. Global Nav Bar --- */}
-      <header className="h-16 bg-sky-100 backdrop-blur-md flex items-center px-6 shrink-0 border-b border-sky-100 sticky top-0 z-30">
-        
-        {/* ハンバーガーメニューボタン */}
-        <button
-          onClick={() => setIsDrawerOpen(true)}
-          className="p-2.5 -ml-2 mr-3 text-sky-600 hover:bg-sky-100/50 rounded-xl transition-all duration-200 active:scale-95"
-        >
-          <Menu className="w-5 h-5" />
-        </button>
-
-        {/* タイトル */}
-        <Link 
-          to="/home" 
-          className="text-lg font-black tracking-tight text-sky-900 hover:text-sky-600 transition-colors flex items-center gap-2"
-        >
-          <div className="w-7 h-7 rounded-lg overflow-hidden bg-white/50 flex items-center justify-center border border-sky-100 shadow-sm">
-            <img src="/assets/images/SmiRing_logo_temp.png" alt="Logo" className="w-5 h-5 object-contain rounded-sm" />
-          </div>
-          SmiRing Database
-        </Link>
-
-        {/* スペーサー */}
-        <div className="flex-1" />
-
-        {/* 右側アイコン群 */}
-        <div className="flex items-center gap-2">
-          <Link
-            to="/feedback"
-            className="p-2.5 text-sky-600 hover:bg-sky-100/50 rounded-xl transition-all duration-200 active:scale-95"
-            title="フィードバックを送る"
-          >
-            <MessageSquare className="w-5 h-5" />
-          </Link>
-        </div>
-      </header>
+      <AppHeader onMenuClick={() => setIsDrawerOpen(true)} />
 
       {/* --- 2. ボディ --- */}
       <main className="flex-1 overflow-y-auto relative bg-white/50">
