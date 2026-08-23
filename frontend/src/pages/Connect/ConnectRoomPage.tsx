@@ -54,7 +54,12 @@ function MediaEnhancements() {
   const applyKrisp = useCallback(async (enabled: boolean, track: LocalAudioTrack) => {
     if (enabled) {
       if (!track.getProcessor()) {
-        await track.setProcessor(KrispNoiseFilter());
+        // Defaults are quality: "medium" and useBVC: false (plain NC), which
+        // is Krisp's weakest preset — bumping both. BVC additionally removes
+        // background voices/reverb on top of NC's non-human-noise handling
+        // (keyboard clicks, fans, etc.), and only activates itself when the
+        // capture sample rate is high enough, silently no-oping otherwise.
+        await track.setProcessor(KrispNoiseFilter({ quality: 'high', useBVC: true }));
       }
     } else if (track.getProcessor()) {
       await track.stopProcessor();
