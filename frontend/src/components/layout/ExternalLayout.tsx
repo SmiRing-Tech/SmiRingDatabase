@@ -1,12 +1,14 @@
 import { useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router-dom';
 import { useInactivityLogout } from '../../hooks/useInactivityLogout';
 import AppHeader from './AppHeader';
 import ExternalSidebar from './ExternalSidebar';
 
 export default function ExternalLayout() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  useInactivityLogout();
+  const location = useLocation();
+  const isInConnectRoom = location.pathname.startsWith('/connect/room/');
+  useInactivityLogout(!isInConnectRoom);
 
   return (
     <div className="flex flex-col h-screen w-full bg-slate-50/50 text-gray-900 font-sans">

@@ -4,6 +4,7 @@ const express_1 = require("express");
 const livekit_server_sdk_1 = require("livekit-server-sdk");
 const authenticate_1 = require("../middleware/authenticate");
 const supabase_1 = require("../lib/supabase");
+const r2_1 = require("../lib/r2");
 const router = (0, express_1.Router)();
 // LiveKit connection info (set in .env)
 const LIVEKIT_URL = process.env.LIVEKIT_URL; // e.g. wss://livekit.smiring-ryugaku.com
@@ -13,7 +14,7 @@ const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
 function isValidRoomName(room) {
     return typeof room === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(room);
 }
-// POST /api/connect/token  { room } -> { token, url, identity }
+// POST /api/connect/token  { room, username? } -> { token, url, identity, roomTitle, avatarUrl, displayName }
 router.post('/api/connect/token', authenticate_1.authenticate, async (req, res) => {
     try {
         // Not configured yet: tell the frontend clearly.
@@ -23,30 +24,46 @@ router.post('/api/connect/token', authenticate_1.authenticate, async (req, res) 
                 detail: 'サーバー側で LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET が未設定です。',
             });
         }
-        const { room } = req.body ?? {};
+        const { room, username } = req.body ?? {};
         if (!isValidRoomName(room)) {
             return res.status(400).json({ error: 'ルーム名が不正です（英数字・ハイフン・アンダースコアのみ、1〜64文字）' });
         }
         const userId = req.user.id;
-        // Display name from profile, fallback to email, then userId.
-        let displayName = req.user.email ?? userId;
+        // Display name & avatar from profile
+        let displayName = username?.trim() || req.user.email?.split('@')[0] || userId;
+        let avatarUrl = null;
+        let nameEnglish = null;
+        let nameKanji = null;
         try {
             const { data: profile } = await supabase_1.supabase
                 .from('basic_profile_info')
-                .select('name_english, name_kanji')
+                .select('name_english, name_kanji, avatar_id')
                 .eq('id', userId)
                 .single();
             if (profile) {
-                displayName = profile.name_kanji || profile.name_english || displayName;
+                nameEnglish = profile.name_english || null;
+                nameKanji = profile.name_kanji || null;
+                if (!username?.trim()) {
+                    displayName = profile.name_english || profile.name_kanji || displayName;
+                }
+                if (profile.avatar_id) {
+                    avatarUrl = await (0, r2_1.resolveAvatarUrl)(profile.avatar_id);
+                }
             }
         }
         catch {
             // Ignore profile lookup failure; still issue the token.
         }
+        const metadata = JSON.stringify({
+            avatar_url: avatarUrl,
+            name_english: nameEnglish,
+            name_kanji: nameKanji,
+        });
         // Issue access token (identity is unique per user).
         const at = new livekit_server_sdk_1.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
             identity: userId,
             name: displayName,
+            metadata,
             ttl: '1h',
         });
         at.addGrant({

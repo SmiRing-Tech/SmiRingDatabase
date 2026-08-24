@@ -27,6 +27,7 @@ import ChatPage from './pages/Search/ChatPage';
 import AppsPage from './pages/Apps/AppsPage';
 import SmiRingConnectPage from './pages/Connect/SmiRingConnectPage';
 import ConnectRoomPage from './pages/Connect/ConnectRoomPage';
+import CallRoomPage from './pages/Connect/CallRoomPage';
 import ManagementConsolePage from './pages/Management/ManagementConsolePage';
 import EventManagementPage from './pages/Management/EventManagement/EventManagementPage';
 import OnboardingPage from './pages/Onboarding/OnboardingPage';
@@ -198,6 +199,18 @@ const router = createBrowserRouter([
     element: (
       <ProtectedRoute>
         <ApplyMemberPage />
+      </ProtectedRoute>
+    ),
+  },
+
+  // 2-3. 通話専用画面（ログイン必須・レイアウト無し・別タブで全画面起動）
+  {
+    path: '/connect/call/:roomId',
+    element: (
+      <ProtectedRoute>
+        <RequireInternalRole>
+          <CallRoomPage />
+        </RequireInternalRole>
       </ProtectedRoute>
     ),
   },

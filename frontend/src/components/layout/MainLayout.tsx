@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Outlet, useNavigate, Link } from 'react-router-dom';
+import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useInactivityLogout } from '../../hooks/useInactivityLogout';
 import AppHeader from './AppHeader';
@@ -17,7 +17,9 @@ import {
 export default function MainLayout() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const navigate = useNavigate();
-  useInactivityLogout();
+  const location = useLocation();
+  const isInConnectRoom = location.pathname.startsWith('/connect/room/');
+  useInactivityLogout(!isInConnectRoom);
 
   const handleLogout = async () => {
     try {

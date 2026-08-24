@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { AccessToken } from 'livekit-server-sdk';
 import { authenticate } from '../middleware/authenticate';
 import { supabase } from '../lib/supabase';
+import { resolveAvatarUrl } from '../lib/r2';
 
 const router = Router();
 
@@ -15,7 +16,7 @@ function isValidRoomName(room: unknown): room is string {
   return typeof room === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(room);
 }
 
-// POST /api/connect/token  { room } -> { token, url, identity }
+// POST /api/connect/token  { room, username? } -> { token, url, identity, roomTitle, avatarUrl, displayName }
 router.post('/api/connect/token', authenticate, async (req: Request, res: Response) => {
   try {
     // Not configured yet: tell the frontend clearly.
@@ -26,32 +27,50 @@ router.post('/api/connect/token', authenticate, async (req: Request, res: Respon
       });
     }
 
-    const { room } = req.body ?? {};
+    const { room, username } = req.body ?? {};
     if (!isValidRoomName(room)) {
       return res.status(400).json({ error: 'ルーム名が不正です（英数字・ハイフン・アンダースコアのみ、1〜64文字）' });
     }
 
     const userId = req.user!.id;
 
-    // Display name from profile, fallback to email, then userId.
-    let displayName = req.user!.email ?? userId;
+    // Display name & avatar from profile
+    let displayName = username?.trim() || req.user!.email?.split('@')[0] || userId;
+    let avatarUrl: string | null = null;
+    let nameEnglish: string | null = null;
+    let nameKanji: string | null = null;
+
     try {
       const { data: profile } = await supabase
         .from('basic_profile_info')
-        .select('name_english, name_kanji')
+        .select('name_english, name_kanji, avatar_id')
         .eq('id', userId)
         .single();
       if (profile) {
-        displayName = profile.name_kanji || profile.name_english || displayName;
+        nameEnglish = profile.name_english || null;
+        nameKanji = profile.name_kanji || null;
+        if (!username?.trim()) {
+          displayName = profile.name_english || profile.name_kanji || displayName;
+        }
+        if (profile.avatar_id) {
+          avatarUrl = await resolveAvatarUrl(profile.avatar_id);
+        }
       }
     } catch {
       // Ignore profile lookup failure; still issue the token.
     }
 
+    const metadata = JSON.stringify({
+      avatar_url: avatarUrl,
+      name_english: nameEnglish,
+      name_kanji: nameKanji,
+    });
+
     // Issue access token (identity is unique per user).
     const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
       identity: userId,
       name: displayName,
+      metadata,
       ttl: '1h',
     });
     at.addGrant({
