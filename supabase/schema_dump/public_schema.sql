@@ -114,10 +114,21 @@ CREATE FUNCTION public.handle_new_user() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'public'
     AS $$
+DECLARE
+  v_name_english text;
 BEGIN
-  INSERT INTO public.basic_profile_info (id, updated_at)
-  VALUES (new.id, now())
-  ON CONFLICT (id) DO NOTHING;
+  v_name_english := COALESCE(
+    new.raw_user_meta_data->>'name_english',
+    new.raw_user_meta_data->>'display_name',
+    new.raw_user_meta_data->>'full_name',
+    new.raw_user_meta_data->>'name'
+  );
+
+  INSERT INTO public.basic_profile_info (id, name_english, updated_at)
+  VALUES (new.id, v_name_english, now())
+  ON CONFLICT (id) DO UPDATE
+    SET name_english = COALESCE(public.basic_profile_info.name_english, EXCLUDED.name_english),
+        updated_at = now();
 
   RETURN new;
 END;

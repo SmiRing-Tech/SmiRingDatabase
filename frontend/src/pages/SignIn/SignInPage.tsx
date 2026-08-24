@@ -25,12 +25,21 @@ export default function SignInPage() {
   React.useEffect(() => {
     if (session?.user?.id && !isAuthLoading) {
       (async () => {
-        // Google新規登録直後なら、遷移前に一時保存しておいたユーザー名を display_name として反映する
+        // Google新規登録直後なら、遷移前に一時保存しておいたお名前を name_english として反映する
         const pendingUsername = localStorage.getItem(PENDING_USERNAME_KEY);
         if (pendingUsername) {
           localStorage.removeItem(PENDING_USERNAME_KEY);
           try {
-            await supabase.auth.updateUser({ data: { display_name: pendingUsername } });
+            await supabase.auth.updateUser({
+              data: {
+                display_name: pendingUsername,
+                name_english: pendingUsername,
+              },
+            });
+            await supabase
+              .from('basic_profile_info')
+              .update({ name_english: pendingUsername })
+              .eq('id', session.user.id);
           } catch (err) {
             console.warn('[SignIn] Failed to apply pending username:', err);
           }

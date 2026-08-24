@@ -19,10 +19,10 @@ export default function SignUpPage() {
   const [isAgreed, setIsAgreed] = useState(false);
   const navigate = useNavigate();
 
-  // ユーザー名・利用規約への同意は登録方法（メール/Google）に共通の前提条件
+  // お名前（アルファベット）・利用規約への同意は登録方法（メール/Google）に共通の前提条件
   const validateCommonFields = () => {
     if (!username.trim()) {
-      showFeedback('ユーザー名を入力してください。', { type: 'error', mode: 'banner' });
+      showFeedback('お名前（アルファベット）を入力してください。', { type: 'error', mode: 'banner' });
       return false;
     }
     if (!isAgreed) {
@@ -50,6 +50,7 @@ export default function SignUpPage() {
           emailRedirectTo: `${window.location.origin}/sign-in`,
           data: {
             display_name: username.trim(),
+            name_english: username.trim(),
           },
         },
       });
@@ -76,7 +77,7 @@ export default function SignUpPage() {
     setIsGoogleLoading(true);
     try {
       // Googleの認証画面に遷移すると画面状態が失われるので、戻ってきた後に
-      // display_name として反映できるよう一時的に保存しておく
+      // name_english / display_name として反映できるよう一時的に保存しておく
       localStorage.setItem(PENDING_USERNAME_KEY, username.trim());
 
       const { error } = await supabase.auth.signInWithOAuth({
@@ -103,10 +104,10 @@ export default function SignUpPage() {
       </div>
 
       <form onSubmit={handleSignUp} className="space-y-4">
-        {/* Username */}
+        {/* Name English */}
         <div className="space-y-1.5">
           <label className="block text-[11px] font-black text-gray-500 uppercase tracking-wider">
-            ユーザー名
+            お名前（アルファベット）
           </label>
           <div className="relative group">
             <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300 group-focus-within:text-blue-500 transition-colors duration-200" />
@@ -114,7 +115,7 @@ export default function SignUpPage() {
               type="text"
               value={username}
               onChange={e => setUsername(e.target.value)}
-              placeholder="ユーザー名"
+              placeholder="Taro Yamada"
               className="w-full pl-11 pr-4 py-3.5 bg-gray-50 border border-gray-200 rounded-xl text-sm
                          focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-400 focus:bg-white
                          transition-all duration-200 placeholder:text-gray-300"
