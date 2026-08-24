@@ -24,11 +24,20 @@ interface AuthContextType {
   isPermissionsReady: boolean;
   /** 権限取得に失敗して判定材料が無い状態かどうか */
   permissionsError: boolean;
+  /** オンボーディング（初回プロフィール入力）を完了しているか。basic_profile_info.metadata 由来 */
+  onboardingCompleted: boolean;
   hasPermission: (resource: string, action: PermissionAction) => boolean;
   signOut: () => Promise<void>;
   refreshSession: () => Promise<Session | null>;
-  refreshPermissions: () => Promise<{ permissions: Permission[]; roles: string[]; roleIds: string[] }>;
-  fetchUserPermissions: (userId?: string) => Promise<{ permissions: Permission[]; roles: string[]; roleIds: string[] }>;
+  refreshPermissions: () => Promise<PermissionsFetchResult>;
+  fetchUserPermissions: (userId?: string) => Promise<PermissionsFetchResult>;
+}
+
+interface PermissionsFetchResult {
+  permissions: Permission[];
+  roles: string[];
+  roleIds: string[];
+  onboardingCompleted: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -43,6 +52,7 @@ interface AuthCache {
   permissions: Permission[];
   roles: string[];
   roleIds: string[];
+  onboardingCompleted: boolean;
 }
 
 const readAuthCache = (): AuthCache | null => {
@@ -82,6 +92,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [permissions, setPermissions] = useState<Permission[]>(() => readAuthCache()?.permissions ?? []);
   const [roles, setRoles] = useState<string[]>(() => readAuthCache()?.roles ?? []);
   const [roleIds, setRoleIds] = useState<string[]>(() => readAuthCache()?.roleIds ?? []);
+  // 未取得時は既存ユーザーへのちらつきを避けるため「完了済み」扱いにしておく（未完了の新規ユーザーは取得後すぐ false に更新される）
+  const [onboardingCompleted, setOnboardingCompleted] = useState<boolean>(() => readAuthCache()?.onboardingCompleted ?? true);
   // どのユーザーのロール・権限が今 state に入っているか（null = 判定材料なし）
   const [permissionsUserId, setPermissionsUserId] = useState<string | null>(() => readAuthCache()?.userId ?? null);
   const [isPermissionsLoading, setIsPermissionsLoading] = useState(false);
@@ -91,16 +103,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => { permissionsUserIdRef.current = permissionsUserId; }, [permissionsUserId]);
 
   // 権限・ロールを取得して状態に保存する関数
-  const fetchUserPermissions = useCallback(async (userId?: string): Promise<{ permissions: Permission[]; roles: string[]; roleIds: string[] }> => {
+  const fetchUserPermissions = useCallback(async (userId?: string): Promise<PermissionsFetchResult> => {
     const currentUserId = userId || session?.user.id;
     if (!currentUserId) {
       setPermissions([]);
       setRoles([]);
       setRoleIds([]);
+      setOnboardingCompleted(true);
       setPermissionsUserId(null);
       setPermissionsError(false);
       clearAuthCache();
-      return { permissions: [], roles: [], roleIds: [] };
+      return { permissions: [], roles: [], roleIds: [], onboardingCompleted: true };
     }
 
     setIsPermissionsLoading(true);
@@ -110,25 +123,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!res.ok) {
         throw new Error(`Failed to fetch permissions: ${res.statusText}`);
       }
-      const data: { permissions: Permission[]; roles: string[]; roleIds: string[] } = await res.json();
+      const data: PermissionsFetchResult = await res.json();
       const perms = data.permissions || [];
       const userRoles = data.roles || [];
       const userRoleIds = data.roleIds || [];
+      const isOnboarded = data.onboardingCompleted === true;
 
       setPermissions(perms);
       setRoles(userRoles);
       setRoleIds(userRoleIds);
+      setOnboardingCompleted(isOnboarded);
       setPermissionsUserId(currentUserId);
       setPermissionsError(false);
-      writeAuthCache({ userId: currentUserId, permissions: perms, roles: userRoles, roleIds: userRoleIds });
-      return { permissions: perms, roles: userRoles, roleIds: userRoleIds };
+      writeAuthCache({ userId: currentUserId, permissions: perms, roles: userRoles, roleIds: userRoleIds, onboardingCompleted: isOnboarded });
+      return { permissions: perms, roles: userRoles, roleIds: userRoleIds, onboardingCompleted: isOnboarded };
     } catch (err) {
       // 取得に失敗したときは「権限なし」と確定させない。
       // 空のロールで確定させるとルートガードが外部メンバー扱いでリダイレクトしてしまうため、
       // エラー状態として扱い、キャッシュがあればそれを使い続ける。
       console.error('[Auth] Permissions fetch failed:', err);
       setPermissionsError(true);
-      return { permissions: [], roles: [], roleIds: [] };
+      return { permissions: [], roles: [], roleIds: [], onboardingCompleted: true };
     } finally {
       setIsPermissionsLoading(false);
     }
@@ -144,6 +159,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setPermissions([]);
       setRoles([]);
       setRoleIds([]);
+      setOnboardingCompleted(true);
       setPermissionsUserId(null);
       setPermissionsError(false);
       clearAuthCache();
@@ -172,7 +188,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setSession(session);
       setUser(session?.user ?? null);
       setIsLoading(false);
- 
+
       if (_event === 'SIGNED_OUT') {
         console.log('[Auth] User signed out');
       }
@@ -202,6 +218,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setPermissions([]);
     setRoles([]);
     setRoleIds([]);
+    setOnboardingCompleted(true);
     setPermissionsUserId(null);
     setPermissionsError(false);
     clearAuthCache();
@@ -230,7 +247,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     <AuthContext.Provider value={{
       session, user, isLoading,
       permissions, roles, roleIds, isPermissionsLoading, isPermissionsReady,
-      permissionsError: permissionsError && !isPermissionsReady, hasPermission,
+      permissionsError: permissionsError && !isPermissionsReady, onboardingCompleted, hasPermission,
       signOut, refreshSession, refreshPermissions, fetchUserPermissions,
     }}>
       {children}

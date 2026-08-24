@@ -17,6 +17,8 @@ const ROLE_POST = 'aad63ee1-40de-4807-a0b0-5660fa68a1f6';
 const ROLE_GUARDIAN = 'c8fcb0bc-7cf1-4bd5-90ba-7bbb45f5fbbc';
 // 部署一覧の表示に必要な smiring_member ロールID
 const ROLE_MEMBER = 'c7f24039-c537-402e-91db-664684f5f8b3';
+// 外部協力者ロールID（メンバー申請の承認時に使用）
+const ROLE_PARTNER = 'e9b3b5b3-b95e-4c87-bf1c-6b65603189cf';
 // ------------------------------------------
 // A. ユーザーロール CRUD
 // ------------------------------------------
@@ -105,6 +107,142 @@ router.delete('/roles/:id', (0, requirePermission_1.requirePermission)('manageme
     }
     catch (error) {
         console.error('ユーザーロール削除エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// ------------------------------------------
+// A-2. メンバー申請（/apply-member から送信された承認待ちリクエスト）
+// ------------------------------------------
+// 1. 承認待ちの申請一覧取得
+router.get('/role-requests', (0, requirePermission_1.requirePermission)('management', 'read'), async (_req, res) => {
+    try {
+        const { data: nullRoleMappings, error } = await supabase_1.supabase
+            .from('user_role_mappings')
+            .select('id, user_id, metadata, created_at')
+            .is('user_role', null)
+            .order('created_at', { ascending: true });
+        if (error)
+            throw error;
+        // 申請由来のもの（metadata.requested_role が入っているもの）だけを対象にする
+        const pending = (nullRoleMappings || []).filter(m => m.metadata?.requested_role);
+        if (pending.length === 0)
+            return res.json([]);
+        const userIds = pending.map(p => p.user_id);
+        const { data: profiles, error: profileError } = await supabase_1.supabase
+            .from('basic_profile_info')
+            .select('id, name_english, name_kanji, avatar_id')
+            .in('id', userIds);
+        if (profileError)
+            throw profileError;
+        const avatarIds = (profiles || []).map(p => p.avatar_id).filter(Boolean);
+        let avatarPathMap = {};
+        if (avatarIds.length > 0) {
+            const { data: avatarItems } = await supabase_1.supabase
+                .from('gallery')
+                .select('id, thumbnail_path, storage_path')
+                .in('id', avatarIds);
+            if (avatarItems) {
+                for (const item of avatarItems) {
+                    avatarPathMap[item.id] = item.thumbnail_path || item.storage_path;
+                }
+            }
+        }
+        const profileMap = new Map((profiles || []).map(p => [p.id, p]));
+        // 希望部署名の解決
+        const allDeptIds = new Set();
+        pending.forEach(p => (p.metadata?.department_ids || []).forEach((id) => allDeptIds.add(id)));
+        let deptNameMap = {};
+        if (allDeptIds.size > 0) {
+            const { data: depts } = await supabase_1.supabase
+                .from('departments')
+                .select('id, name')
+                .in('id', Array.from(allDeptIds));
+            (depts || []).forEach(d => { deptNameMap[d.id] = d.name; });
+        }
+        const enriched = await Promise.all(pending.map(async (p) => {
+            const profile = profileMap.get(p.user_id);
+            const key = profile?.avatar_id ? avatarPathMap[profile.avatar_id] : null;
+            const avatarUrl = key ? await (0, r2_1.getSignedFileUrl)(key) : null;
+            const departmentIds = p.metadata?.department_ids || [];
+            return {
+                id: p.id,
+                user_id: p.user_id,
+                name_english: profile?.name_english || null,
+                name_kanji: profile?.name_kanji || null,
+                avatar_link: avatarUrl,
+                requested_role: p.metadata?.requested_role,
+                department_ids: departmentIds,
+                department_names: departmentIds.map(id => deptNameMap[id]).filter(Boolean),
+                description: p.metadata?.description || null,
+                requested_at: p.metadata?.requested_at || p.created_at,
+            };
+        }));
+        res.json(enriched);
+    }
+    catch (error) {
+        console.error('メンバー申請一覧取得エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 2. 申請の承認（実ロール付与 + 内部運営メンバーなら希望部署も登録）
+router.post('/role-requests/:id/approve', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { data: mapping, error: fetchError } = await supabase_1.supabase
+            .from('user_role_mappings')
+            .select('id, user_id, metadata')
+            .eq('id', id)
+            .maybeSingle();
+        if (fetchError)
+            throw fetchError;
+        if (!mapping || !mapping.metadata?.requested_role) {
+            return res.status(404).json({ error: '申請が見つかりません' });
+        }
+        const requestedRole = mapping.metadata.requested_role;
+        const targetRoleId = requestedRole === 'smiring_member' ? ROLE_MEMBER : ROLE_PARTNER;
+        const { error: updateError } = await supabase_1.supabase
+            .from('user_role_mappings')
+            .update({
+            user_role: targetRoleId,
+            // is_current_status は留学段階ロール専用のフラグなので、他の一般ロール付与と同様 false にする
+            is_current_status: false,
+            metadata: { ...mapping.metadata, approved_at: new Date().toISOString() }
+        })
+            .eq('id', id);
+        if (updateError)
+            throw updateError;
+        const departmentIds = mapping.metadata.department_ids || [];
+        if (requestedRole === 'smiring_member' && departmentIds.length > 0) {
+            const inserts = departmentIds.map((deptId) => ({
+                user_id: mapping.user_id,
+                department_id: deptId
+            }));
+            const { error: deptError } = await supabase_1.supabase.from('member_department_mappings').insert(inserts);
+            if (deptError)
+                throw deptError;
+        }
+        res.json({ message: '申請を承認しました' });
+    }
+    catch (error) {
+        console.error('メンバー申請承認エラー:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// 3. 申請の却下（削除。本人はまた申請し直せる）
+router.delete('/role-requests/:id', (0, requirePermission_1.requirePermission)('management', 'write'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { error } = await supabase_1.supabase
+            .from('user_role_mappings')
+            .delete()
+            .eq('id', id)
+            .is('user_role', null);
+        if (error)
+            throw error;
+        res.json({ message: '申請を却下しました' });
+    }
+    catch (error) {
+        console.error('メンバー申請却下エラー:', error);
         res.status(500).json({ error: error.message });
     }
 });

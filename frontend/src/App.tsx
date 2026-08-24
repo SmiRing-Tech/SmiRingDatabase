@@ -29,6 +29,8 @@ import SmiRingConnectPage from './pages/Connect/SmiRingConnectPage';
 import ConnectRoomPage from './pages/Connect/ConnectRoomPage';
 import ManagementConsolePage from './pages/Management/ManagementConsolePage';
 import EventManagementPage from './pages/Management/EventManagement/EventManagementPage';
+import OnboardingPage from './pages/Onboarding/OnboardingPage';
+import ApplyMemberPage from './pages/Apply/ApplyMemberPage';
 import { FeedbackProvider } from './context/FeedbackContext';
 import FeedbackSystem from './components/ui/FeedbackSystem';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -141,6 +143,20 @@ const RequireExternalRole = ({ children }: { children: React.ReactNode }) => {
 };
 
 // ==========================================
+// オンボーディング未完了なら強制的に /onboarding へ誘導するガード
+// ==========================================
+const RequireOnboarding = ({ children }: { children: React.ReactNode }) => {
+  const { isLoading, isPermissionsReady, onboardingCompleted } = useAuth();
+
+  if (isLoading || !isPermissionsReady) return <LoadingScreen />;
+  if (!onboardingCompleted) {
+    return <Navigate to="/onboarding" replace />;
+  }
+
+  return <>{children}</>;
+};
+
+// ==========================================
 // レイアウトの出し分け（内部メンバー / 外部メンバー）
 // ==========================================
 const AppShell = () => {
@@ -166,11 +182,33 @@ const router = createBrowserRouter([
   { path: '/forgot-password', element: <ForgotPasswordPage /> },
   { path: '/reset-password', element: <ResetPasswordPage /> },
 
-  // 2. ログイン必須ルート (内部/外部メンバーでレイアウトを出し分ける = ShellRoute相当)
+  // 2. オンボーディング（ログイン必須・レイアウト無し）
+  {
+    path: '/onboarding',
+    element: (
+      <ProtectedRoute>
+        <OnboardingPage />
+      </ProtectedRoute>
+    ),
+  },
+
+  // 2-2. メンバー申請（ログイン必須・レイアウト無し・ナビゲーションには一切表示しない）
+  {
+    path: '/apply-member',
+    element: (
+      <ProtectedRoute>
+        <ApplyMemberPage />
+      </ProtectedRoute>
+    ),
+  },
+
+  // 3. ログイン必須ルート (内部/外部メンバーでレイアウトを出し分ける = ShellRoute相当)
   {
     element: (
       <ProtectedRoute>
-        <AppShell />
+        <RequireOnboarding>
+          <AppShell />
+        </RequireOnboarding>
       </ProtectedRoute>
     ),
     children: [

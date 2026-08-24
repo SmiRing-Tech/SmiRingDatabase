@@ -4,7 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "copy:vad-assets": "node scripts/copy-vad-assets.mjs",
+    "predev": "npm run copy:vad-assets",
     "dev": "vite",
+    "prebuild": "npm run copy:vad-assets",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
@@ -16,6 +19,7 @@
     "@livekit/krisp-noise-filter": "^0.4.4",
     "@livekit/track-processors": "^0.7.2",
     "@marsidev/react-turnstile": "^1.5.0",
+    "@ricky0123/vad-web": "^0.0.30",
     "@supabase/supabase-js": "^2.100.1",
     "@tailwindcss/typography": "^0.5.19",
     "@tiptap/extension-placeholder": "^3.22.1",

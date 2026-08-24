@@ -36,10 +36,18 @@ router.get('/api/me/permissions', authenticate_1.authenticate, async (req, res) 
         const roleIds = (roleMappings || [])
             .map(rm => rm.user_role)
             .filter(Boolean);
+        const { data: profile, error: profileError } = await supabase_1.supabase
+            .from('basic_profile_info')
+            .select('metadata')
+            .eq('id', req.user.id)
+            .maybeSingle();
+        if (profileError)
+            throw profileError;
         res.json({
             permissions: permissions ?? [],
             roles,
-            roleIds
+            roleIds,
+            onboardingCompleted: profile?.metadata?.onboarding_completed === true
         });
     }
     catch (error) {

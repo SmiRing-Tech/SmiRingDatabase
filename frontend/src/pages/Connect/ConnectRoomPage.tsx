@@ -17,10 +17,140 @@ import {
 } from 'livekit-client';
 import { BackgroundBlur } from '@livekit/track-processors';
 import { KrispNoiseFilter, isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter';
+import { MicVAD } from '@ricky0123/vad-web';
+// onnxruntime-web dynamically imports its wasm loader at runtime, so Vite has
+// to emit these as assets and hand us the real URLs. They can't live in
+// public/ like the VAD model does — Vite refuses to serve files from there as
+// modules ("should not be imported from source code"), which fails the
+// dynamic import and leaves ORT with no backend.
+import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
+import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import '@livekit/components-styles';
-import { ArrowLeft, Video, AlertTriangle, Loader2, Copy, Check, Sparkles, Settings, Sliders, Volume2, X } from 'lucide-react';
+import { ArrowLeft, Video, AlertTriangle, Loader2, Copy, Check, Sparkles, Settings, Sliders, Volume2, X, MicOff } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import { useAuth } from '../../context/AuthContext';
+
+/**
+ * Silences outgoing audio whenever the local participant isn't actually
+ * speaking, so keyboard clicks, screenshot chimes and residual echo don't
+ * reach the room. Krisp only classifies *what* a sound is, which is exactly
+ * the hard part for transients like key presses — "is this person talking
+ * right now" is a much easier question, and everything we're trying to
+ * suppress happens while they're silent.
+ *
+ * Two details make this work:
+ *
+ * 1. We gate by flipping `enabled` on the MediaStreamTrack that LiveKit hands
+ *    to the RTCRtpSender, *not* via LiveKit's mute API. Muting would announce
+ *    itself over signaling, so every pause in speech would flicker the mic
+ *    icon on everyone else's screen.
+ * 2. The VAD listens to a `clone()` of that same track. A cloned track shares
+ *    the source but keeps its own `enabled` state, so it keeps delivering
+ *    audio while the gate is shut — otherwise closing the gate would starve
+ *    the detector and it could never re-open.
+ *
+ * Because the cloned track sits downstream of Krisp, the detector hears
+ * already-denoised audio, which also makes false triggers less likely.
+ */
+function useVadAutoGate(enabled: boolean) {
+  const { localParticipant } = useLocalParticipant();
+  const [loading, setLoading] = useState(false);
+  // Bumped on republish (device switch etc.) so we re-attach to the new track.
+  const [trackEpoch, setTrackEpoch] = useState(0);
+
+  useEffect(() => {
+    const bump = () => setTrackEpoch((n) => n + 1);
+    localParticipant.on(ParticipantEvent.LocalTrackPublished, bump);
+    return () => {
+      localParticipant.off(ParticipantEvent.LocalTrackPublished, bump);
+    };
+  }, [localParticipant]);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    let cancelled = false;
+    let vad: MicVAD | null = null;
+    let vadTrack: MediaStreamTrack | null = null;
+    let gatedTrack: MediaStreamTrack | null = null;
+
+    const setGate = (open: boolean) => {
+      if (gatedTrack && gatedTrack.readyState === 'live') {
+        gatedTrack.enabled = open;
+      }
+    };
+
+    const start = async () => {
+      const pub = localParticipant.getTrackPublication(Track.Source.Microphone);
+      const track = pub?.track as LocalAudioTrack | undefined;
+      if (!track) return;
+
+      gatedTrack = track.mediaStreamTrack;
+      vadTrack = gatedTrack.clone();
+      const vadStream = new MediaStream([vadTrack]);
+
+      setLoading(true);
+      try {
+        vad = await MicVAD.new({
+          // Worklet + Silero model are plain fetches, so public/ is fine for
+          // them (populated by scripts/copy-vad-assets.mjs).
+          baseAssetPath: '/vad/',
+          onnxWASMBasePath: '/vad/',
+          // ...but ORT's own runtime files must come from the bundler, see
+          // the imports above. MicVAD assigns wasmPaths from
+          // onnxWASMBasePath first and calls ortConfig after, so this wins.
+          ortConfig: (ort) => {
+            ort.env.logLevel = 'error';
+            ort.env.wasm.wasmPaths = { wasm: ortWasmUrl, mjs: ortMjsUrl };
+          },
+          // Supply our own stream so the library doesn't open a second mic
+          // capture. pauseStream/resumeStream default to stopping every track
+          // in it, which would kill the clone (and on some platforms disturb
+          // the shared source) — we manage its lifetime in the cleanup below.
+          getStream: async () => vadStream,
+          pauseStream: async () => {},
+          resumeStream: async () => vadStream,
+          onSpeechStart: () => setGate(true),
+          onSpeechEnd: () => setGate(false),
+          onVADMisfire: () => setGate(false),
+        });
+        if (cancelled) {
+          // Cleanup already ran while we were awaiting, so it saw a null vad.
+          // MicVAD.new() auto-starts, so without this the detector would keep
+          // running and holding the gate shut after the feature was turned off.
+          await vad.destroy();
+          vad = null;
+          return;
+        }
+        // Start closed: nothing should go out until speech is detected.
+        setGate(false);
+      } catch (e) {
+        console.error('[Connect] failed to start VAD auto-gate:', e);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    void start();
+
+    return () => {
+      cancelled = true;
+      setLoading(false);
+      void (async () => {
+        try {
+          await vad?.destroy();
+        } catch (e) {
+          console.error('[Connect] failed to destroy VAD:', e);
+        }
+        vadTrack?.stop();
+        // Never leave the mic gated shut after the feature is turned off.
+        setGate(true);
+      })();
+    };
+  }, [enabled, localParticipant, trackEpoch]);
+
+  return loading;
+}
 
 /**
  * Provides a media enhancements settings popover at the bottom-right of the video room.
@@ -40,6 +170,9 @@ function MediaEnhancements() {
   const [blurLoading, setBlurLoading] = useState(false);
   const [krispEnabled, setKrispEnabled] = useState(true);
   const [krispLoading, setKrispLoading] = useState(false);
+  // Opt-in: auto-gating changes the rhythm of a call, so don't impose it.
+  const [autoGateEnabled, setAutoGateEnabled] = useState(false);
+  const autoGateLoading = useVadAutoGate(autoGateEnabled);
 
   const isKrispSupported = isKrispNoiseFilterSupported();
 
@@ -145,7 +278,7 @@ function MediaEnhancements() {
           title="メディア設定 (ブラー / ノイズ除去)"
         >
           <Settings className={`w-5 h-5 transition-transform duration-300 ${isOpen ? 'rotate-90' : ''}`} />
-          {(blurred || krispEnabled) && (
+          {(blurred || krispEnabled || autoGateEnabled) && (
             <span className="absolute -top-1 -right-1 w-3 h-3 bg-emerald-400 border-2 border-gray-900 rounded-full animate-pulse" />
           )}
         </button>
@@ -207,6 +340,35 @@ function MediaEnhancements() {
                     非対応
                   </span>
                 )}
+              </div>
+            </div>
+
+            {/* VAD auto-gate toggle */}
+            <div className="space-y-2 border-t border-gray-800/80 pt-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <MicOff className="w-4 h-4 text-indigo-400" />
+                  <div>
+                    <p className="text-xs font-bold text-gray-200">自動ミュート（発話検知）</p>
+                    <p className="text-[10px] text-gray-400">話していない間は音声を送信しない</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setAutoGateEnabled((prev) => !prev)}
+                  disabled={autoGateLoading}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
+                    autoGateEnabled ? 'bg-indigo-500' : 'bg-gray-700'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out flex items-center justify-center ${
+                      autoGateEnabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  >
+                    {autoGateLoading && <Loader2 className="w-3 h-3 animate-spin text-gray-600" />}
+                  </span>
+                </button>
               </div>
             </div>
 
