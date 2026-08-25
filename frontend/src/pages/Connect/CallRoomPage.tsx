@@ -62,8 +62,6 @@ import {
   Copy,
   Check,
   Sparkles,
-  Settings,
-  Sliders,
   Volume2,
   X,
   Mic,
@@ -961,8 +959,19 @@ function CustomParticipantTile({ trackRef, ...htmlProps }: ParticipantTileProps)
   const isCameraOff =
     !isVideo || trackReference.publication?.isMuted || !trackReference.publication?.isSubscribed;
 
+  const micPub = participant?.getTrackPublication(Track.Source.Microphone);
+  const isMicMuted = !micPub || micPub.isMuted || !micPub.isSubscribed;
+
   return (
-    <ParticipantTile trackRef={trackReference} {...htmlProps}>
+    <ParticipantTile
+      trackRef={trackReference}
+      {...htmlProps}
+      className={`${
+        isMicMuted
+          ? '[&[data-lk-speaking="true"]]:!border-transparent [&[data-lk-speaking="true"]]:!ring-0 [&[data-lk-speaking="true"]]:!shadow-none'
+          : ''
+      } ${htmlProps.className || ''}`}
+    >
       {isVideo && (
         <ClampedVideoTrack
           trackRef={trackReference}

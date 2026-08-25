@@ -206,12 +206,16 @@ function PipParticipantTile({
   const isCameraOff =
     !isVideo || trackRef.publication?.isMuted || !trackRef.publication?.isSubscribed;
 
+  const micPub = participant.getTrackPublication(Track.Source.Microphone);
+  const isMicMuted = !micPub || micPub.isMuted || !micPub.isSubscribed;
+  const isEffectivelySpeaking = Boolean(isSpeaking && !isMicMuted);
+
   const displayName = participant.name || participant.identity || '参加者';
 
   return (
     <div
       className={`relative w-full h-full min-h-0 bg-slate-900 rounded-xl sm:rounded-2xl overflow-hidden border transition-all duration-200 flex flex-col items-center justify-center select-none ${
-        isSpeaking
+        isEffectivelySpeaking
           ? 'border-emerald-400 ring-2 ring-emerald-400/40 shadow-lg shadow-emerald-500/10'
           : 'border-slate-800/80 hover:border-slate-700'
       }`}
@@ -270,7 +274,7 @@ function PipParticipantTile({
             {isScreenShare && ' (共有中)'}
           </span>
         </div>
-        {isSpeaking && (
+        {isEffectivelySpeaking && (
           <span className="flex h-1.5 w-1.5 sm:h-2 sm:w-2 relative shrink-0">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
             <span className="relative inline-flex rounded-full h-1.5 w-1.5 sm:h-2 sm:w-2 bg-emerald-500"></span>
