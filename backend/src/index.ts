@@ -20,7 +20,15 @@ const port = process.env.PORT || 3000;
 
 // ミドルウェアの設定
 app.use(cors()); // Reactからの通信を許可
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({
+  limit: '50mb',
+  // Keep the exact raw bytes around so the LiveKit webhook handler can verify
+  // its HMAC signature (the signature is computed over the raw body, not the
+  // re-serialized JSON, which is not guaranteed to be byte-identical).
+  verify: (req: Request, _res, buf) => {
+    req.rawBody = buf;
+  },
+}));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ==========================================

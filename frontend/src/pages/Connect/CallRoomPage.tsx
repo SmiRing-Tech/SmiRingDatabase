@@ -732,9 +732,12 @@ function CallRoomInner({
 }) {
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const { user } = useAuth();
 
-  // Safe to call inside <LiveKitRoom>
-  const chat = useAdvancedChat();
+  // Safe to call inside <LiveKitRoom>. selfIdentity comes from the authenticated user id
+  // (same value the backend issues as the LiveKit participant identity) rather than
+  // localParticipant.identity, which is empty until the LiveKit connection completes.
+  const chat = useAdvancedChat({ roomId, selfIdentity: user?.id || '' });
 
   // Document Picture-in-Picture Hook
   const { isSupported: isPipSupported, isPipActive, pipWindow, openPip, closePip } = useDocumentPiP();

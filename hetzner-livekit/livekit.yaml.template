@@ -23,3 +23,14 @@ turn:
   key_file: /caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/turn.smiring-ryugaku.com/turn.smiring-ryugaku.com.key
 
 log_level: info
+
+# Notifies the backend when a room actually ends (room_finished), so it can wipe that
+# room's chat history (see backend/src/routes/connectRoutes.ts, POST /api/connect/webhook).
+# This file is a template (committed to git) — the real, deploy-specific values below are
+# filled in from .env by ./render-config.sh, which writes the result to livekit.yaml
+# (gitignored, actual file read by the container). Never edit livekit.yaml directly; it
+# gets overwritten the next time render-config.sh runs.
+webhook:
+  api_key: ${LIVEKIT_API_KEY}
+  urls:
+    - https://${BACKEND_WEBHOOK_HOST}/api/connect/webhook

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { AccessToken } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient, WebhookReceiver } from 'livekit-server-sdk';
 import { authenticate } from '../middleware/authenticate';
 import { supabase } from '../lib/supabase';
 import { resolveAvatarUrl } from '../lib/r2';
@@ -11,9 +11,47 @@ const LIVEKIT_URL = process.env.LIVEKIT_URL; // e.g. wss://livekit.smiring-ryuga
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
 
+const roomService =
+  LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET
+    ? new RoomServiceClient(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+    : null;
+
+const webhookReceiver =
+  LIVEKIT_API_KEY && LIVEKIT_API_SECRET
+    ? new WebhookReceiver(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+    : null;
+
 /** Allow only safe room names (alphanumeric, hyphen, underscore). */
 function isValidRoomName(room: unknown): room is string {
   return typeof room === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(room);
+}
+
+/** Deterministic thread id from a set of participant identities (server is the single source of truth). */
+function getCanonicalThreadId(identities: string[]): string {
+  const unique = Array.from(new Set(identities)).filter(Boolean).sort();
+  return `dm_${unique.join('_')}`;
+}
+
+/** Look up display name + avatar for a user, falling back gracefully. */
+async function getDisplayProfile(userId: string, fallback: string) {
+  let displayName = fallback;
+  let avatarUrl: string | null = null;
+  try {
+    const { data: profile } = await supabase
+      .from('basic_profile_info')
+      .select('name_english, name_kanji, avatar_id')
+      .eq('id', userId)
+      .single();
+    if (profile) {
+      displayName = profile.name_english || profile.name_kanji || fallback;
+      if (profile.avatar_id) {
+        avatarUrl = await resolveAvatarUrl(profile.avatar_id);
+      }
+    }
+  } catch {
+    // Ignore profile lookup failure; caller gets the fallback name.
+  }
+  return { displayName, avatarUrl };
 }
 
 // POST /api/connect/token  { room, username? } -> { token, url, identity, roomTitle, avatarUrl, displayName }
@@ -33,6 +71,23 @@ router.post('/api/connect/token', authenticate, async (req: Request, res: Respon
     }
 
     const userId = req.user!.id;
+
+    // Primary cleanup is the `room_finished` webhook below. This is just a fallback for
+    // if a webhook delivery was ever missed: if this room doesn't currently exist on the
+    // LiveKit server, the previous session (if any) has fully ended — wipe any leftover
+    // chat history for this room_id so a reused room name never resurrects a stale/unrelated
+    // conversation.
+    if (roomService) {
+      try {
+        const existingRooms = await roomService.listRooms([room]);
+        if (existingRooms.length === 0) {
+          await supabase.from('connect_chat_messages').delete().eq('room_id', room);
+        }
+      } catch (e) {
+        // Best-effort cleanup; never block token issuance on this.
+        console.warn('[Connect] Room-freshness cleanup check failed:', e);
+      }
+    }
 
     // Display name & avatar from profile
     let displayName = username?.trim() || req.user!.email?.split('@')[0] || userId;
@@ -206,6 +261,145 @@ router.delete('/api/connect/rooms/:id', authenticate, async (req: Request, res: 
   } catch (error: any) {
     console.error('[Connect] DELETE /api/connect/rooms/:id failed:', error);
     return res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/connect/rooms/:roomId/messages - Fetch chat history for a room (server is source of truth)
+router.get('/api/connect/rooms/:roomId/messages', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { roomId } = req.params;
+    if (!isValidRoomName(roomId)) {
+      return res.status(400).json({ error: 'ルーム名が不正です' });
+    }
+
+    const { data, error } = await supabase
+      .from('connect_chat_messages')
+      .select('*')
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: true })
+      .limit(500);
+
+    if (error) {
+      console.error('[Connect] Failed to fetch connect_chat_messages:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    const messages = (data ?? []).map((row) => ({
+      id: row.id,
+      threadId: row.thread_id,
+      text: row.text,
+      sender: {
+        identity: row.sender_identity,
+        name: row.sender_name,
+        avatarUrl: row.sender_avatar_url,
+      },
+      recipients: row.recipient_identities ?? [],
+      timestamp: new Date(row.created_at).getTime(),
+    }));
+
+    return res.status(200).json({ messages });
+  } catch (error: any) {
+    console.error('[Connect] GET .../messages failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/rooms/:roomId/messages - Send a chat message.
+// The server (not the client) decides sender identity/name/avatar and the canonical threadId,
+// so all connected clients converge on the same values regardless of local LiveKit connection state.
+router.post('/api/connect/rooms/:roomId/messages', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { roomId } = req.params;
+    if (!isValidRoomName(roomId)) {
+      return res.status(400).json({ error: 'ルーム名が不正です' });
+    }
+
+    const { text, recipientIdentities } = req.body ?? {};
+    if (typeof text !== 'string' || !text.trim()) {
+      return res.status(400).json({ error: 'メッセージが空です' });
+    }
+    const recipients: string[] = Array.isArray(recipientIdentities)
+      ? recipientIdentities.filter((id) => typeof id === 'string')
+      : [];
+
+    const userId = req.user!.id;
+    const fallbackName = req.user!.email?.split('@')[0] || userId;
+    const { displayName, avatarUrl } = await getDisplayProfile(userId, fallbackName);
+
+    const isEveryone = recipients.length === 0;
+    const threadId = isEveryone ? 'everyone' : getCanonicalThreadId([userId, ...recipients]);
+
+    const { data, error } = await supabase
+      .from('connect_chat_messages')
+      .insert([
+        {
+          room_id: roomId,
+          thread_id: threadId,
+          sender_identity: userId,
+          sender_name: displayName,
+          sender_avatar_url: avatarUrl,
+          recipient_identities: recipients,
+          text: text.trim(),
+        },
+      ])
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[Connect] Failed to insert connect_chat_messages:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    const message = {
+      id: data.id,
+      threadId: data.thread_id,
+      text: data.text,
+      sender: {
+        identity: data.sender_identity,
+        name: data.sender_name,
+        avatarUrl: data.sender_avatar_url,
+      },
+      recipients: data.recipient_identities ?? [],
+      timestamp: new Date(data.created_at).getTime(),
+    };
+
+    return res.status(201).json({ message });
+  } catch (error: any) {
+    console.error('[Connect] POST .../messages failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/webhook - LiveKit webhook receiver.
+// No `authenticate` here: this is called by the LiveKit server itself, not a logged-in
+// user. Authenticity is verified via the signed `Authorize` header instead (see
+// WebhookReceiver.receive below), which checks both the API key/secret and a SHA-256 of
+// the exact raw body — hence `req.rawBody` captured in index.ts's express.json() verify hook.
+router.post('/api/connect/webhook', async (req: Request, res: Response) => {
+  if (!webhookReceiver) {
+    console.error('[Connect] Webhook received but LIVEKIT_API_KEY/SECRET are not configured');
+    return res.status(503).end();
+  }
+
+  try {
+    const rawBody = req.rawBody?.toString('utf8') ?? '';
+    const event = await webhookReceiver.receive(rawBody, req.get('Authorize'));
+
+    if (event.event === 'room_finished' && event.room?.name) {
+      const { error } = await supabase
+        .from('connect_chat_messages')
+        .delete()
+        .eq('room_id', event.room.name);
+      if (error) {
+        console.error('[Connect] Failed to delete chat history on room_finished:', error);
+      }
+    }
+
+    return res.status(200).end();
+  } catch (error: any) {
+    // Invalid signature / malformed payload — reject, but don't leak details.
+    console.warn('[Connect] Webhook verification failed:', error.message);
+    return res.status(401).end();
   }
 });
 

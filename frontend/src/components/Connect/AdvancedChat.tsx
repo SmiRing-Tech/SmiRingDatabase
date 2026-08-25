@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { useParticipants, useLocalParticipant } from '@livekit/components-react';
+import { useParticipants } from '@livekit/components-react';
 import {
   Send,
   Plus,
   Users,
+  UsersRound,
   User,
   X,
   MessageSquare,
@@ -11,6 +12,8 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import type { useAdvancedChat } from '../../hooks/useAdvancedChat';
+import type { ChatThread } from '../../types/chat';
+import { useAuth } from '../../context/AuthContext';
 
 interface AdvancedChatProps {
   chat: ReturnType<typeof useAdvancedChat>;
@@ -32,7 +35,8 @@ export default function AdvancedChat({
     createOrOpenDmThread,
   } = chat;
 
-  const { localParticipant } = useLocalParticipant();
+  const { user } = useAuth();
+  const selfIdentity = user?.id || '';
   const participants = useParticipants();
 
   const [inputVal, setInputVal] = useState('');
@@ -42,8 +46,8 @@ export default function AdvancedChat({
 
   // Other participants in the room available for DM
   const otherParticipants = useMemo(() => {
-    return participants.filter((p) => p.identity !== localParticipant?.identity);
-  }, [participants, localParticipant?.identity]);
+    return participants.filter((p) => p.identity !== selfIdentity);
+  }, [participants, selfIdentity]);
 
   // Auto-scroll to bottom on messages change
   useEffect(() => {
@@ -101,6 +105,29 @@ export default function AdvancedChat({
     };
   };
 
+  // Everyone -> globe-ish "Users" icon; 1-on-1 DM -> the other person's avatar (falls back
+  // to a person icon); group DM (2+ others) -> a distinct "multiple people" icon, so the
+  // tab bar reads at a glance instead of every non-broadcast thread looking the same.
+  const renderThreadIcon = (t: ChatThread, sizeClass: string) => {
+    if (t.isEveryone) {
+      return <Users className={`${sizeClass} text-indigo-400 shrink-0`} />;
+    }
+    if (t.participantIdentities.length > 1) {
+      return <UsersRound className={`${sizeClass} text-emerald-400 shrink-0`} />;
+    }
+    const meta = getParticipantMeta(t.participantIdentities[0] ?? '');
+    if (meta.avatarUrl) {
+      return (
+        <img
+          src={meta.avatarUrl}
+          alt=""
+          className={`${sizeClass} rounded-full object-cover shrink-0`}
+        />
+      );
+    }
+    return <User className={`${sizeClass} text-emerald-400 shrink-0`} />;
+  };
+
   return (
     <div className="flex flex-col h-full w-full bg-[#0d0f14] text-gray-100 select-none overflow-hidden font-sans border-l border-gray-800/80">
       {/* Top Header: Thread Name & Back/Close */}
@@ -116,11 +143,7 @@ export default function AdvancedChat({
             </button>
           )}
           <div className="flex items-center gap-1.5 min-w-0">
-            {activeThread.isEveryone ? (
-              <Users className="w-4 h-4 text-indigo-400 shrink-0" />
-            ) : (
-              <MessageSquare className="w-4 h-4 text-emerald-400 shrink-0" />
-            )}
+            {renderThreadIcon(activeThread, 'w-4 h-4')}
             <h3 className="font-bold text-xs sm:text-sm text-gray-200 truncate">
               {activeThread.name}
             </h3>
@@ -152,6 +175,7 @@ export default function AdvancedChat({
                   : 'text-gray-400 hover:text-gray-200 hover:bg-gray-900/80'
               }`}
             >
+              {renderThreadIcon(t, 'w-3.5 h-3.5')}
               <span className="truncate max-w-[90px]">{t.name}</span>
               {t.unreadCount > 0 && (
                 <span className="px-1.5 py-0.2 bg-rose-500 text-white text-[10px] font-bold rounded-full animate-pulse">
@@ -267,7 +291,7 @@ export default function AdvancedChat({
           </div>
         ) : (
           messages.map((m) => {
-            const isMe = m.sender.identity === localParticipant?.identity;
+            const isMe = m.sender.identity === selfIdentity;
             const timeStr = new Date(m.timestamp).toLocaleTimeString([], {
               hour: '2-digit',
               minute: '2-digit',
