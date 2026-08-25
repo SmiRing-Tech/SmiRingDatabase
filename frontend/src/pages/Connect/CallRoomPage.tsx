@@ -108,9 +108,28 @@ function ControlButtonLabel({ children }: { children: ReactNode }) {
  * Silences outgoing audio whenever the local participant isn't actually speaking.
  */
 function useVadAutoGate(enabled: boolean) {
-  const { localParticipant } = useLocalParticipant();
+  const { localParticipant, isMicrophoneEnabled } = useLocalParticipant();
   const [loading, setLoading] = useState(false);
   const [trackEpoch, setTrackEpoch] = useState(0);
+
+  // Manual mute must always win. LiveKit's own setMicrophoneEnabled() toggles this
+  // exact same mediaStreamTrack.enabled flag, so without this ref, VAD hearing
+  // speech while manually muted would flip the flag back to enabled — that's what
+  // made a "muted" tile still light up as speaking.
+  const isMicrophoneEnabledRef = useRef(isMicrophoneEnabled);
+  const gatedTrackRef = useRef<MediaStreamTrack | null>(null);
+
+  useEffect(() => {
+    isMicrophoneEnabledRef.current = isMicrophoneEnabled;
+    // Close the gate the instant a manual mute happens, instead of waiting for
+    // VAD to notice silence on its own.
+    if (!isMicrophoneEnabled) {
+      const track = gatedTrackRef.current;
+      if (track && track.readyState === 'live') {
+        track.enabled = false;
+      }
+    }
+  }, [isMicrophoneEnabled]);
 
   useEffect(() => {
     // Only restart the VAD when the microphone track itself changes (e.g. device
@@ -134,12 +153,13 @@ function useVadAutoGate(enabled: boolean) {
     let cancelled = false;
     let vad: MicVAD | null = null;
     let vadTrack: MediaStreamTrack | null = null;
-    let gatedTrack: MediaStreamTrack | null = null;
 
     const setGate = (open: boolean) => {
-      if (gatedTrack && gatedTrack.readyState === 'live') {
-        gatedTrack.enabled = open;
-      }
+      const track = gatedTrackRef.current;
+      if (!track || track.readyState !== 'live') return;
+      // Never let VAD re-open a mic the user has manually muted.
+      if (open && !isMicrophoneEnabledRef.current) return;
+      track.enabled = open;
     };
 
     const start = async () => {
@@ -147,8 +167,8 @@ function useVadAutoGate(enabled: boolean) {
       const track = pub?.track as LocalAudioTrack | undefined;
       if (!track) return;
 
-      gatedTrack = track.mediaStreamTrack;
-      vadTrack = gatedTrack.clone();
+      gatedTrackRef.current = track.mediaStreamTrack;
+      vadTrack = gatedTrackRef.current.clone();
       const vadStream = new MediaStream([vadTrack]);
 
       setLoading(true);
@@ -935,9 +955,30 @@ function ClampedVideoTrack({
 }
 
 /**
- * Custom Participant Tile with Avatar rendering when camera is off
+ * `data-lk-speaking` border/ring/shadow should stay off while the mic is muted
+ * (speaking indicator would be misleading). Shared by both tile wrappers below.
  */
-function CustomParticipantTile({ trackRef, ...htmlProps }: ParticipantTileProps) {
+function micMutedTileClassName(trackReference: TrackReferenceOrPlaceholder) {
+  const participant = trackReference.participant;
+  const micPub = participant?.getTrackPublication(Track.Source.Microphone);
+  const isMicMuted = !micPub || micPub.isMuted || !micPub.isSubscribed;
+  return isMicMuted
+    ? '[&[data-lk-speaking="true"]]:!border-transparent [&[data-lk-speaking="true"]]:!ring-0 [&[data-lk-speaking="true"]]:!shadow-none'
+    : '';
+}
+
+/**
+ * The actual visual content of a tile (video/audio, camera-off avatar, name/mute
+ * bar, pin toggle) — deliberately NOT wrapped in LiveKit's `<ParticipantTile>`.
+ * `<ParticipantTile>` already renders `children ?? <its own default video>`, so a
+ * component meant to be used as its children must not wrap itself in a second
+ * `<ParticipantTile>`. `CustomParticipantTile` below does that wrapping for grid
+ * cells; `FocusLayout` (from @livekit/components-react) already does it for the
+ * focused/enlarged tile, so this same content can be handed to it directly.
+ * (Nesting two `<ParticipantTile>`s here previously caused the focused tile to
+ * double-mount its `<video>` element and briefly render solid black.)
+ */
+function ParticipantTileContent({ trackRef }: { trackRef: TrackReferenceOrPlaceholder }) {
   const trackReference = useEnsureTrackRef(trackRef);
   const participant = trackReference.participant;
   const isVideo =
@@ -959,19 +1000,8 @@ function CustomParticipantTile({ trackRef, ...htmlProps }: ParticipantTileProps)
   const isCameraOff =
     !isVideo || trackReference.publication?.isMuted || !trackReference.publication?.isSubscribed;
 
-  const micPub = participant?.getTrackPublication(Track.Source.Microphone);
-  const isMicMuted = !micPub || micPub.isMuted || !micPub.isSubscribed;
-
   return (
-    <ParticipantTile
-      trackRef={trackReference}
-      {...htmlProps}
-      className={`${
-        isMicMuted
-          ? '[&[data-lk-speaking="true"]]:!border-transparent [&[data-lk-speaking="true"]]:!ring-0 [&[data-lk-speaking="true"]]:!shadow-none'
-          : ''
-      } ${htmlProps.className || ''}`}
-    >
+    <>
       {isVideo && (
         <ClampedVideoTrack
           trackRef={trackReference}
@@ -1024,6 +1054,24 @@ function CustomParticipantTile({ trackRef, ...htmlProps }: ParticipantTileProps)
         <ConnectionQualityIndicator className="lk-participant-metadata-item" />
       </div>
       <FocusToggle trackRef={trackReference} />
+    </>
+  );
+}
+
+/**
+ * Grid/carousel tile: wraps `ParticipantTileContent` in LiveKit's `<ParticipantTile>`
+ * itself, since here (unlike `FocusLayout`) nothing else provides that wrapper.
+ */
+function CustomParticipantTile({ trackRef, ...htmlProps }: ParticipantTileProps) {
+  const trackReference = useEnsureTrackRef(trackRef);
+
+  return (
+    <ParticipantTile
+      trackRef={trackReference}
+      {...htmlProps}
+      className={`${micMutedTileClassName(trackReference)} ${htmlProps.className || ''}`}
+    >
+      <ParticipantTileContent trackRef={trackReference} />
     </ParticipantTile>
   );
 }
@@ -1244,8 +1292,11 @@ function CustomVideoConference({
                     <CustomParticipantTile />
                   </CarouselLayout>
                   {focusTrack && (
-                    <FocusLayout trackRef={focusTrack}>
-                      <CustomParticipantTile />
+                    <FocusLayout
+                      trackRef={focusTrack}
+                      className={micMutedTileClassName(focusTrack)}
+                    >
+                      <ParticipantTileContent trackRef={focusTrack} />
                     </FocusLayout>
                   )}
                 </FocusLayoutContainer>
