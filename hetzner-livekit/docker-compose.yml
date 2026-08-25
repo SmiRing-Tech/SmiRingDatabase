@@ -30,16 +30,11 @@ services:
     restart: unless-stopped
     command: redis-server --port 6379 --save "" --appendonly no
 
-  noise-agent:
-    build: ./agent
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      LIVEKIT_URL: ws://127.0.0.1:7880
-      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
-      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
-    depends_on:
-      - livekit
+  # noise-agent (server-side DTLN noise cancellation, ./agent) was tried and abandoned —
+  # not usable in practice. Deliberately not defined here anymore: `docker compose up -d`
+  # (no service name) brings up every service in this file, so leaving a stopped-but-still-
+  # defined service around is how it silently came back once already. The code is kept in
+  # ./agent for reference; re-add a service block here if it's ever revived on purpose.
 
 volumes:
   caddy_data:

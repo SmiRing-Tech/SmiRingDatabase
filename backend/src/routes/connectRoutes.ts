@@ -72,15 +72,14 @@ router.post('/api/connect/token', authenticate, async (req: Request, res: Respon
 
     const userId = req.user!.id;
 
-    // Primary cleanup is the `room_finished` webhook below. This is just a fallback for
-    // if a webhook delivery was ever missed: if this room doesn't currently exist on the
-    // LiveKit server, the previous session (if any) has fully ended — wipe any leftover
-    // chat history for this room_id so a reused room name never resurrects a stale/unrelated
-    // conversation.
+    // If this room doesn't currently exist on LiveKit or has 0 participants,
+    // the previous session has fully ended — wipe any leftover chat history for this room_id
+    // so a reused room name never resurrects a stale/unrelated conversation.
     if (roomService) {
       try {
         const existingRooms = await roomService.listRooms([room]);
-        if (existingRooms.length === 0) {
+        const currentRoom = existingRooms.find((r) => r.name === room);
+        if (!currentRoom || currentRoom.numParticipants === 0) {
           await supabase.from('connect_chat_messages').delete().eq('room_id', room);
         }
       } catch (e) {
@@ -272,6 +271,20 @@ router.get('/api/connect/rooms/:roomId/messages', authenticate, async (req: Requ
       return res.status(400).json({ error: 'ルーム名が不正です' });
     }
 
+    // If the room currently has 0 participants on LiveKit, wipe leftover messages
+    if (roomService) {
+      try {
+        const existingRooms = await roomService.listRooms([roomId]);
+        const currentRoom = existingRooms.find((r) => r.name === roomId);
+        if (!currentRoom || currentRoom.numParticipants === 0) {
+          await supabase.from('connect_chat_messages').delete().eq('room_id', roomId);
+          return res.status(200).json({ messages: [] });
+        }
+      } catch (e) {
+        console.warn('[Connect] Room check on GET messages failed:', e);
+      }
+    }
+
     const { data, error } = await supabase
       .from('connect_chat_messages')
       .select('*')
@@ -385,13 +398,17 @@ router.post('/api/connect/webhook', async (req: Request, res: Response) => {
     const rawBody = req.rawBody?.toString('utf8') ?? '';
     const event = await webhookReceiver.receive(rawBody, req.get('Authorize'));
 
-    if (event.event === 'room_finished' && event.room?.name) {
+    const shouldDelete =
+      (event.event === 'room_finished' && event.room?.name) ||
+      (event.event === 'participant_left' && event.room?.name && event.room.numParticipants === 0);
+
+    if (shouldDelete && event.room?.name) {
       const { error } = await supabase
         .from('connect_chat_messages')
         .delete()
         .eq('room_id', event.room.name);
       if (error) {
-        console.error('[Connect] Failed to delete chat history on room_finished:', error);
+        console.error('[Connect] Failed to delete chat history on webhook:', error);
       }
     }
 

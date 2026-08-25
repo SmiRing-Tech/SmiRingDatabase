@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   PreJoin,
@@ -10,6 +10,8 @@ import { apiClient } from '../../lib/apiClient';
 import { useAuth } from '../../context/AuthContext';
 
 type Phase = 'prejoin' | 'in-room' | 'error';
+
+const CUSTOM_USERNAME_KEY = 'smiring_connect_custom_username';
 
 export default function ConnectRoomPage() {
   const navigate = useNavigate();
@@ -25,8 +27,10 @@ export default function ConnectRoomPage() {
   const [defaultDisplayName, setDefaultDisplayName] = useState('');
   const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
   const [profileLoading, setProfileLoading] = useState(true);
+  const prejoinContainerRef = useRef<HTMLDivElement>(null);
 
   // Fetch basic_profile_info to get English name & Avatar URL
+  const userEmail = user?.email;
   useEffect(() => {
     let isMounted = true;
     apiClient
@@ -36,20 +40,21 @@ export default function ConnectRoomPage() {
           const data = await res.json();
           const nameEn = data.name_english?.trim();
           const nameJp = data.name_kanji?.trim();
-          const fallback = user?.email?.split('@')[0] ?? 'guest';
+          const fallback = userEmail?.split('@')[0] ?? 'guest';
           if (isMounted) {
-            setDefaultDisplayName(nameEn || nameJp || fallback);
+            const profileName = nameEn || nameJp || fallback;
+            setDefaultDisplayName(profileName);
             if (data.avatar_link) {
               setMyAvatarUrl(data.avatar_link);
             }
           }
         } else if (isMounted) {
-          setDefaultDisplayName(user?.email?.split('@')[0] ?? 'guest');
+          setDefaultDisplayName(userEmail?.split('@')[0] ?? 'guest');
         }
       })
       .catch(() => {
         if (isMounted) {
-          setDefaultDisplayName(user?.email?.split('@')[0] ?? 'guest');
+          setDefaultDisplayName(userEmail?.split('@')[0] ?? 'guest');
         }
       })
       .finally(() => {
@@ -61,7 +66,7 @@ export default function ConnectRoomPage() {
     return () => {
       isMounted = false;
     };
-  }, [user]);
+  }, [user?.id, userEmail]);
 
   // Fetch room title info early if available
   useEffect(() => {
@@ -80,14 +85,102 @@ export default function ConnectRoomPage() {
       .catch(() => {});
   }, [roomId]);
 
+  // Track whether a custom name is being used
+  const [isCustomName, setIsCustomName] = useState(false);
+
+  // Initial username calculation:
+  // 1. Custom entered name from localStorage if exists
+  // 2. Default profile name (name_english -> name_kanji -> email account -> guest)
+  const initialUsername = useMemo(() => {
+    if (!defaultDisplayName) return '';
+    try {
+      const savedCustom = localStorage.getItem(CUSTOM_USERNAME_KEY);
+      if (savedCustom && savedCustom.trim() && savedCustom.trim() !== defaultDisplayName) {
+        return savedCustom.trim();
+      }
+    } catch {
+      /* ignore */
+    }
+    return defaultDisplayName;
+  }, [defaultDisplayName]);
+
+  useEffect(() => {
+    if (!defaultDisplayName) return;
+    try {
+      const savedCustom = localStorage.getItem(CUSTOM_USERNAME_KEY);
+      setIsCustomName(Boolean(savedCustom && savedCustom.trim() && savedCustom.trim() !== defaultDisplayName));
+    } catch {
+      setIsCustomName(false);
+    }
+  }, [defaultDisplayName]);
+
+  const userFallback = userEmail?.split('@')[0] || 'guest';
   const preJoinDefaults = useMemo(
     () => ({
-      username: defaultDisplayName || user?.email?.split('@')[0] || 'guest',
+      username: initialUsername || userFallback,
       videoEnabled: true,
       audioEnabled: true,
     }),
-    [defaultDisplayName, user],
+    [initialUsername, userFallback],
   );
+
+  // Prevent credit card autofill suggestions on the PreJoin input safely without MutationObserver loops
+  useEffect(() => {
+    if (profileLoading || phase !== 'prejoin') return;
+
+    const timer = setTimeout(() => {
+      const container = prejoinContainerRef.current;
+      if (!container) return;
+
+      const input = container.querySelector<HTMLInputElement>('.lk-username-container input');
+      if (!input) return;
+
+      // Disable browser credit card / password manager autofill heuristics
+      input.setAttribute('name', 'smiring_connect_display_name_no_autofill');
+      input.setAttribute('autocomplete', 'one-time-code');
+      input.setAttribute('data-1p-ignore', 'true');
+      input.setAttribute('data-lpignore', 'true');
+      input.setAttribute('data-form-type', 'other');
+      input.setAttribute('autocorrect', 'off');
+      input.setAttribute('spellcheck', 'false');
+
+      const handleInput = () => {
+        const val = input.value.trim();
+        const nextIsCustom = Boolean(defaultDisplayName && val && val !== defaultDisplayName);
+        if (nextIsCustom) {
+          try {
+            localStorage.setItem(CUSTOM_USERNAME_KEY, val);
+          } catch {}
+        } else {
+          try {
+            localStorage.removeItem(CUSTOM_USERNAME_KEY);
+          } catch {}
+        }
+        setIsCustomName((prev) => (prev !== nextIsCustom ? nextIsCustom : prev));
+      };
+
+      input.addEventListener('input', handleInput);
+    }, 100);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [profileLoading, phase, defaultDisplayName]);
+
+  // Reset username back to profile default
+  const handleResetToDefaultName = useCallback(() => {
+    if (!defaultDisplayName) return;
+    try {
+      localStorage.removeItem(CUSTOM_USERNAME_KEY);
+    } catch {}
+    setIsCustomName(false);
+
+    const input = prejoinContainerRef.current?.querySelector<HTMLInputElement>('.lk-username-container input');
+    if (input) {
+      input.value = defaultDisplayName;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }, [defaultDisplayName]);
 
   const handlePreJoinSubmit = useCallback(
     (values: LocalUserChoices) => {
@@ -104,6 +197,11 @@ export default function ConnectRoomPage() {
     },
     [roomId],
   );
+
+  const handlePreJoinError = useCallback((e: Error) => {
+    setErrorMsg(e.message);
+    setPhase('error');
+  }, []);
 
   const copyRoomId = async () => {
     if (!roomId) return;
@@ -193,7 +291,11 @@ export default function ConnectRoomPage() {
         {/* Body */}
         <div className="bg-white border border-slate-100 rounded-3xl p-4 md:p-6 shadow-sm">
           {phase === 'prejoin' && (
-            <div data-lk-theme="default" className="rounded-2xl overflow-hidden relative">
+            <div
+              ref={prejoinContainerRef}
+              data-lk-theme="default"
+              className="rounded-2xl overflow-hidden relative"
+            >
               {profileLoading ? (
                 <div className="flex flex-col items-center justify-center py-20 text-gray-400 gap-3">
                   <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
@@ -201,47 +303,84 @@ export default function ConnectRoomPage() {
                 </div>
               ) : (
                 <>
-                  {myAvatarUrl && (
-                    <style>{`
-                      .lk-prejoin .lk-video-container .lk-camera-off-note {
-                        position: absolute !important;
-                        inset: 0 !important;
-                        width: 100% !important;
-                        height: 100% !important;
-                        display: flex !important;
-                        align-items: center !important;
-                        justify-content: center !important;
-                        background-color: #0f1115 !important;
-                      }
-                      .lk-prejoin .lk-video-container .lk-camera-off-note > svg {
-                        display: none !important;
-                      }
-                      .lk-prejoin .lk-video-container .lk-camera-off-note::after {
-                        content: "" !important;
-                        display: block !important;
-                        width: 110px !important;
-                        height: 110px !important;
-                        background-image: url("${myAvatarUrl}") !important;
-                        background-size: cover !important;
-                        background-position: center !important;
-                        border-radius: 1.5rem !important;
-                        border: 2px solid rgba(255, 255, 255, 0.2) !important;
-                        box-shadow: 0 12px 30px -6px rgba(0, 0, 0, 0.6) !important;
-                      }
-                    `}</style>
-                  )}
+                  <style>{`
+                    ${myAvatarUrl ? `
+                    .lk-prejoin .lk-video-container .lk-camera-off-note {
+                      position: absolute !important;
+                      inset: 0 !important;
+                      width: 100% !important;
+                      height: 100% !important;
+                      display: flex !important;
+                      align-items: center !important;
+                      justify-content: center !important;
+                      background-color: #0f1115 !important;
+                    }
+                    .lk-prejoin .lk-video-container .lk-camera-off-note > svg {
+                      display: none !important;
+                    }
+                    .lk-prejoin .lk-video-container .lk-camera-off-note::after {
+                      content: "" !important;
+                      display: block !important;
+                      width: 110px !important;
+                      height: 110px !important;
+                      background-image: url("${myAvatarUrl}") !important;
+                      background-size: cover !important;
+                      background-position: center !important;
+                      border-radius: 1.5rem !important;
+                      border: 2px solid rgba(255, 255, 255, 0.2) !important;
+                      box-shadow: 0 12px 30px -6px rgba(0, 0, 0, 0.6) !important;
+                    }
+                    ` : ''}
+                    .lk-prejoin .lk-username-container {
+                      display: flex !important;
+                      flex-direction: column !important;
+                      gap: 0.625rem !important;
+                      width: 100% !important;
+                    }
+                    .lk-prejoin .lk-username-container input {
+                      width: 100% !important;
+                      box-sizing: border-box !important;
+                    }
+                  `}</style>
+
                   <PreJoin
                     defaults={preJoinDefaults}
+                    persistUserChoices={false}
                     onSubmit={handlePreJoinSubmit}
-                    onError={(e) => {
-                      setErrorMsg(e.message);
-                      setPhase('error');
-                    }}
+                    onError={handlePreJoinError}
                     joinLabel="このルームに参加"
                     micLabel="マイク"
                     camLabel="カメラ"
                     userLabel="表示名"
                   />
+
+                  {/* Reset to Default Name Button (rendered cleanly in React) */}
+                  {isCustomName && defaultDisplayName && (
+                    <div className="max-w-[480px] mx-auto mt-2 px-1 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={handleResetToDefaultName}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-indigo-50 text-indigo-600 hover:text-indigo-700 border border-slate-200 hover:border-indigo-200 font-bold text-xs rounded-xl shadow-xs transition-all active:scale-95"
+                        title={`デフォルト（${defaultDisplayName}）に戻す`}
+                      >
+                        <span>デフォルト（{defaultDisplayName}）に戻す</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="13"
+                          height="13"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                          <path d="M3 3v5h5" />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -280,3 +419,4 @@ export default function ConnectRoomPage() {
     </div>
   );
 }
+

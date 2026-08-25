@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   useLocalParticipant,
   useTracks,
@@ -35,6 +35,145 @@ interface DocumentPipContentProps {
 }
 
 type PipLayoutMode = 'grid' | 'speaker';
+
+/**
+ * Clamped Video Track:
+ * Automatically detects whether the stream is landscape (PC) or portrait (mobile)
+ * and clamps display aspect ratio between [native ratio] and [1:1 square], centering
+ * vertically or horizontally as needed to prevent extreme crop/zoom.
+ */
+function ClampedVideoTrack({
+  trackRef,
+  className = '',
+  isLocalMirror = false,
+}: {
+  trackRef: TrackReferenceOrPlaceholder;
+  className?: string;
+  isLocalMirror?: boolean;
+}) {
+  if (!isTrackReference(trackRef)) return null;
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerSize, setContainerSize] = useState<{ width: number; height: number } | null>(null);
+  const [nativeRatio, setNativeRatio] = useState<number | null>(null);
+
+  const isScreenShare = trackRef.source === Track.Source.ScreenShare;
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) {
+          setContainerSize({ width, height });
+        }
+      }
+    });
+
+    observer.observe(el);
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      setContainerSize({ width: rect.width, height: rect.height });
+    }
+
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (isTrackReference(trackRef)) {
+      const dims = trackRef.publication?.dimensions;
+      if (dims && dims.width > 0 && dims.height > 0) {
+        setNativeRatio(dims.width / dims.height);
+      }
+    }
+  }, [trackRef]);
+
+  const onVideoLoadedMetadata = useCallback((e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const video = e.currentTarget;
+    if (video.videoWidth > 0 && video.videoHeight > 0) {
+      setNativeRatio(video.videoWidth / video.videoHeight);
+    }
+  }, []);
+
+  const videoStyle = useMemo<React.CSSProperties>(() => {
+    if (!containerSize) {
+      return { width: '100%', height: '100%' };
+    }
+
+    const { width: cW, height: cH } = containerSize;
+    if (cW <= 0 || cH <= 0) return { width: '100%', height: '100%' };
+
+    const cRatio = cW / cH;
+    const rNative = nativeRatio ?? (isScreenShare ? 16 / 9 : 16 / 9);
+
+    if (isScreenShare) {
+      if (cRatio > rNative) {
+        return {
+          height: `${cH}px`,
+          width: `${Math.floor(cH * rNative)}px`,
+        };
+      }
+      return {
+        width: `${cW}px`,
+        height: `${Math.floor(cW / rNative)}px`,
+      };
+    }
+
+    // Min and Max allowed aspect ratios:
+    // Landscape video: [1:1, nativeRatio] -> max crop is 1:1 square
+    // Portrait video:  [nativeRatio, 1:1] -> max crop is 1:1 square
+    let rMin: number;
+    let rMax: number;
+
+    if (rNative >= 1.0) {
+      rMin = 1.0;
+      rMax = rNative;
+    } else {
+      rMin = rNative;
+      rMax = 1.0;
+    }
+
+    let targetW = cW;
+    let targetH = cH;
+
+    if (cRatio < rMin) {
+      targetW = cW;
+      targetH = cW / rMin;
+    } else if (cRatio > rMax) {
+      targetH = cH;
+      targetW = cH * rMax;
+    } else {
+      targetW = cW;
+      targetH = cH;
+    }
+
+    return {
+      width: `${Math.floor(targetW)}px`,
+      height: `${Math.floor(targetH)}px`,
+    };
+  }, [containerSize, nativeRatio, isScreenShare]);
+
+  return (
+    <div
+      ref={containerRef}
+      className={`absolute inset-0 w-full h-full min-h-0 min-w-0 overflow-hidden flex items-center justify-center ${className}`}
+    >
+      <div
+        style={videoStyle}
+        className="relative overflow-hidden shrink-0 flex items-center justify-center rounded-xl sm:rounded-2xl"
+      >
+        <VideoTrack
+          trackRef={trackRef}
+          onLoadedMetadata={onVideoLoadedMetadata}
+          className="w-full h-full object-cover"
+          style={{ transform: isLocalMirror ? 'scaleX(-1)' : 'none' }}
+        />
+      </div>
+    </div>
+  );
+}
 
 function PipParticipantTile({
   trackRef,
@@ -77,16 +216,12 @@ function PipParticipantTile({
           : 'border-slate-800/80 hover:border-slate-700'
       }`}
     >
-      {/* Video stream (mirror the local camera so it feels like a mirror, not a screen share) */}
+      {/* Video stream with clamped aspect ratio */}
       {isVideo && (
-        <div className="absolute inset-0 w-full h-full">
-          <VideoTrack
-            trackRef={trackRef}
-            className={`w-full h-full object-cover ${
-              participant.isLocal && !isScreenShare ? '-scale-x-100' : ''
-            }`}
-          />
-        </div>
+        <ClampedVideoTrack
+          trackRef={trackRef}
+          isLocalMirror={participant.isLocal && !isScreenShare}
+        />
       )}
 
       {/* Audio stream for audio-only track */}
@@ -157,22 +292,34 @@ export default function DocumentPipContent({ roomTitle, onClose, chat }: Documen
   const [hideSelf, setHideSelf] = useState(false);
   const [focusedRemoteSpeakerId, setFocusedRemoteSpeakerId] = useState<string | null>(null);
 
-  // Monitor PiP window dimensions for auto-adapting layout when resized
-  const [windowDimensions, setWindowDimensions] = useState({
-    width: typeof window !== 'undefined' ? window.innerWidth : 380,
-    height: typeof window !== 'undefined' ? window.innerHeight : 600,
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Monitor physical PiP container dimensions using ResizeObserver (never relies on global window.innerWidth)
+  const [containerDimensions, setContainerDimensions] = useState({
+    width: 380,
+    height: 600,
   });
 
   useEffect(() => {
-    const handleResize = () => {
-      setWindowDimensions({
-        width: window.innerWidth,
-        height: window.innerHeight,
-      });
-    };
-    window.addEventListener('resize', handleResize);
-    handleResize(); // Initial measurement
-    return () => window.removeEventListener('resize', handleResize);
+    const el = containerRef.current;
+    if (!el) return;
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) {
+          setContainerDimensions({ width, height });
+        }
+      }
+    });
+
+    observer.observe(el);
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      setContainerDimensions({ width: rect.width, height: rect.height });
+    }
+
+    return () => observer.disconnect();
   }, []);
 
   // Show toast notification when a new message arrives and user is in video mode
@@ -189,18 +336,12 @@ export default function DocumentPipContent({ roomTitle, onClose, chat }: Documen
   }, [chat.lastNotificationMessage, localParticipant?.identity, currentTab]);
 
   // Is window too small to fit multiple participants? (< 300px height or < 220px width)
-  const isCompact = windowDimensions.height < 300 || windowDimensions.width < 220;
-
-  // Is window horizontally wide?
-  const isWide = windowDimensions.width > windowDimensions.height * 1.25;
+  const isCompact = containerDimensions.height < 300 || containerDimensions.width < 220;
 
   // Check if local user is currently sharing screen
   const isLocalScreenSharing = localParticipant?.isScreenShareEnabled ?? false;
 
   // Subscribe to all video tracks (camera & screen share)
-  // updateOnlyOn limits re-renders to actual speaker changes, matching the main
-  // conference view; without it, every mute/publish event re-creates the track
-  // reference objects and causes <VideoTrack> to detach/reattach constantly.
   const rawTracks = useTracks(
     [
       { source: Track.Source.Camera, withPlaceholder: true },
@@ -297,27 +438,39 @@ export default function DocumentPipContent({ roomTitle, onClose, chat }: Documen
   // If window is very compact, automatically collapse to 1 person (activeSpeakerTrack)
   const displayAsSingle = isCompact || layoutMode === 'speaker';
 
-  // Calculate dynamic grid layout class based on participant count and window aspect ratio
-  const gridClasses = useMemo(() => {
-    const count = filteredTracks.length;
-    if (count <= 1) return 'grid-cols-1 grid-rows-1';
-    if (count === 2) {
-      return isWide ? 'grid-cols-2 grid-rows-1' : 'grid-cols-1 grid-rows-2';
+  // Grid layout: Strictly prioritizes vertical stack (1 column) based on container width
+  const gridStyle = useMemo(() => {
+    const count = displayAsSingle ? 1 : filteredTracks.length;
+    if (count <= 1) {
+      return {
+        gridTemplateColumns: 'repeat(1, minmax(0, 1fr))',
+        gridTemplateRows: 'repeat(1, minmax(0, 1fr))',
+      };
     }
-    if (count <= 4) {
-      if (isWide) return 'grid-cols-2 grid-rows-2';
-      return windowDimensions.height > 500
-        ? 'grid-cols-1 grid-rows-3 sm:grid-rows-4'
-        : 'grid-cols-2 grid-rows-2';
+
+    let cols = 1;
+    if (!displayAsSingle) {
+      if (containerDimensions.width >= 800) {
+        cols = Math.min(3, count);
+      } else if (containerDimensions.width >= 500) {
+        cols = Math.min(2, count);
+      } else {
+        cols = 1;
+      }
     }
-    // 5+ participants: 2 columns with auto rows
-    return 'grid-cols-2 auto-rows-fr';
-  }, [filteredTracks.length, isWide, windowDimensions.height]);
+
+    const rows = Math.ceil(count / cols);
+
+    return {
+      gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+      gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+    };
+  }, [displayAsSingle, filteredTracks.length, containerDimensions.width]);
 
   // If in Chat mode, render full-screen AdvancedChat within PiP window
   if (currentTab === 'chat') {
     return (
-      <div className="w-full h-screen bg-[#0b0d11] text-gray-100 flex flex-col select-none overflow-hidden font-sans">
+      <div ref={containerRef} className="w-full h-screen bg-[#0b0d11] text-gray-100 flex flex-col select-none overflow-hidden font-sans">
         <AdvancedChat
           chat={chat}
           onBackToVideo={() => setCurrentTab('video')}
@@ -328,7 +481,7 @@ export default function DocumentPipContent({ roomTitle, onClose, chat }: Documen
   }
 
   return (
-    <div className="w-full h-screen bg-[#0b0d11] text-gray-100 flex flex-col select-none overflow-hidden font-sans relative">
+    <div ref={containerRef} className="w-full h-screen bg-[#0b0d11] text-gray-100 flex flex-col select-none overflow-hidden font-sans relative">
       {/* Toast Notification for incoming chat message while in Video view */}
       {showNotificationToast && chat.lastNotificationMessage && (
         <div
@@ -416,10 +569,10 @@ export default function DocumentPipContent({ roomTitle, onClose, chat }: Documen
       </header>
 
       {/* Main View Area */}
-      <main className="flex-1 p-1.5 overflow-hidden relative min-h-0 flex flex-col">
+      <main className="flex-1 p-1.5 overflow-hidden relative min-h-0 flex flex-col items-center justify-center">
         {!displayAsSingle ? (
-          // Grid View: Dynamically sized to fill all available space without overflowing
-          <div className={`grid gap-1.5 w-full h-full min-h-0 ${gridClasses}`}>
+          // Grid View: Dynamically sized to fill all available space prioritizing vertical stack
+          <div className="grid gap-1.5 w-full h-full min-h-0" style={gridStyle}>
             {filteredTracks.map((trackRef) => {
               const isSpeaking = speakingParticipants.some(
                 (p) => p.identity === trackRef.participant.identity,
@@ -427,7 +580,7 @@ export default function DocumentPipContent({ roomTitle, onClose, chat }: Documen
               return (
                 <div
                   key={`${trackRef.participant.identity}_${trackRef.source}`}
-                  className="min-h-0 h-full w-full overflow-hidden"
+                  className="min-h-0 h-full w-full overflow-hidden flex items-center justify-center"
                 >
                   <PipParticipantTile
                     trackRef={trackRef}
@@ -448,7 +601,7 @@ export default function DocumentPipContent({ roomTitle, onClose, chat }: Documen
           // Single / Speaker Focus View: Maximizes tile area to prevent distortion at small sizes
           <div className="w-full h-full min-h-0 flex flex-col gap-1.5 overflow-hidden">
             {activeSpeakerTrack ? (
-              <div className="flex-1 w-full min-h-0 overflow-hidden">
+              <div className="flex-1 w-full min-h-0 overflow-hidden flex items-center justify-center">
                 <PipParticipantTile
                   trackRef={activeSpeakerTrack}
                   isSpeaking={speakingParticipants.some(
@@ -466,13 +619,13 @@ export default function DocumentPipContent({ roomTitle, onClose, chat }: Documen
 
             {/* Thumbnail row for others only when not in compact mode */}
             {!isCompact && filteredTracks.length > 1 && (
-              <div className="h-16 shrink-0 flex gap-1 overflow-x-auto pb-0.5">
+              <div className="h-16 shrink-0 flex gap-1 overflow-x-auto pb-0.5 justify-center">
                 {filteredTracks
                   .filter((t) => t !== activeSpeakerTrack)
                   .map((trackRef) => (
                     <div
                       key={`${trackRef.participant.identity}_${trackRef.source}`}
-                      className="w-20 h-full shrink-0 min-h-0"
+                      className="w-20 h-full shrink-0 min-h-0 flex items-center justify-center"
                     >
                       <PipParticipantTile
                         trackRef={trackRef}
