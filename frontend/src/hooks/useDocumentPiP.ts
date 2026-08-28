@@ -90,6 +90,9 @@ export function useDocumentPiP() {
         win.document.title = 'SmiRing Connect (PiP)';
 
         const handlePageHide = () => {
+          try {
+            window.focus();
+          } catch {}
           setPipWindow(null);
           setIsPipActive(false);
         };
@@ -108,6 +111,9 @@ export function useDocumentPiP() {
   );
 
   const closePip = useCallback(() => {
+    try {
+      window.focus();
+    } catch {}
     if (pipWindow && !pipWindow.closed) {
       pipWindow.close();
     }

@@ -1,15 +1,14 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   useLocalParticipant,
   useTracks,
   useSpeakingParticipants,
   isTrackReference,
   type TrackReferenceOrPlaceholder,
-  VideoTrack,
   AudioTrack,
   TrackMutedIndicator,
 } from '@livekit/components-react';
-import { Track, RoomEvent } from 'livekit-client';
+import { Track } from 'livekit-client';
 import {
   Mic,
   MicOff,
@@ -27,153 +26,19 @@ import {
 } from 'lucide-react';
 import type { useAdvancedChat } from '../../hooks/useAdvancedChat';
 import AdvancedChat from '../../components/Connect/AdvancedChat';
+import ClampedVideoTrack from '../../components/Connect/callLayout/ClampedVideoTrack';
+import { tileId } from '../../components/Connect/callLayout/tileIdentity';
 
 interface DocumentPipContentProps {
   roomTitle?: string;
   onClose: () => void;
   chat: ReturnType<typeof useAdvancedChat>;
+  /** Tile ids pinned in the main call window — see `useCallLayout`. Same identity
+   *  scheme (`tileId`), so pins carry straight over without re-deriving them here. */
+  pinnedIds: string[];
 }
 
 type PipLayoutMode = 'grid' | 'speaker';
-
-/**
- * Clamped Video Track:
- * Automatically detects whether the stream is landscape (PC) or portrait (mobile)
- * and clamps display aspect ratio between [native ratio] and [1:1 square], centering
- * vertically or horizontally as needed to prevent extreme crop/zoom.
- */
-function ClampedVideoTrack({
-  trackRef,
-  className = '',
-  isLocalMirror = false,
-}: {
-  trackRef: TrackReferenceOrPlaceholder;
-  className?: string;
-  isLocalMirror?: boolean;
-}) {
-  if (!isTrackReference(trackRef)) return null;
-
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [containerSize, setContainerSize] = useState<{ width: number; height: number } | null>(null);
-  const [nativeRatio, setNativeRatio] = useState<number | null>(null);
-
-  const isScreenShare = trackRef.source === Track.Source.ScreenShare;
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const { width, height } = entry.contentRect;
-        if (width > 0 && height > 0) {
-          setContainerSize({ width, height });
-        }
-      }
-    });
-
-    observer.observe(el);
-    const rect = el.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      setContainerSize({ width: rect.width, height: rect.height });
-    }
-
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (isTrackReference(trackRef)) {
-      const dims = trackRef.publication?.dimensions;
-      if (dims && dims.width > 0 && dims.height > 0) {
-        setNativeRatio(dims.width / dims.height);
-      }
-    }
-  }, [trackRef]);
-
-  const onVideoLoadedMetadata = useCallback((e: React.SyntheticEvent<HTMLVideoElement>) => {
-    const video = e.currentTarget;
-    if (video.videoWidth > 0 && video.videoHeight > 0) {
-      setNativeRatio(video.videoWidth / video.videoHeight);
-    }
-  }, []);
-
-  const videoStyle = useMemo<React.CSSProperties>(() => {
-    if (!containerSize) {
-      return { width: '100%', height: '100%' };
-    }
-
-    const { width: cW, height: cH } = containerSize;
-    if (cW <= 0 || cH <= 0) return { width: '100%', height: '100%' };
-
-    const cRatio = cW / cH;
-    const rNative = nativeRatio ?? (isScreenShare ? 16 / 9 : 16 / 9);
-
-    if (isScreenShare) {
-      if (cRatio > rNative) {
-        return {
-          height: `${cH}px`,
-          width: `${Math.floor(cH * rNative)}px`,
-        };
-      }
-      return {
-        width: `${cW}px`,
-        height: `${Math.floor(cW / rNative)}px`,
-      };
-    }
-
-    // Min and Max allowed aspect ratios:
-    // Landscape video: [1:1, nativeRatio] -> max crop is 1:1 square
-    // Portrait video:  [nativeRatio, 1:1] -> max crop is 1:1 square
-    let rMin: number;
-    let rMax: number;
-
-    if (rNative >= 1.0) {
-      rMin = 1.0;
-      rMax = rNative;
-    } else {
-      rMin = rNative;
-      rMax = 1.0;
-    }
-
-    let targetW = cW;
-    let targetH = cH;
-
-    if (cRatio < rMin) {
-      targetW = cW;
-      targetH = cW / rMin;
-    } else if (cRatio > rMax) {
-      targetH = cH;
-      targetW = cH * rMax;
-    } else {
-      targetW = cW;
-      targetH = cH;
-    }
-
-    return {
-      width: `${Math.floor(targetW)}px`,
-      height: `${Math.floor(targetH)}px`,
-    };
-  }, [containerSize, nativeRatio, isScreenShare]);
-
-  return (
-    <div
-      ref={containerRef}
-      className={`absolute inset-0 w-full h-full min-h-0 min-w-0 overflow-hidden flex items-center justify-center ${className}`}
-    >
-      <div
-        style={videoStyle}
-        className="relative overflow-hidden shrink-0 flex items-center justify-center rounded-xl sm:rounded-2xl"
-      >
-        <VideoTrack
-          trackRef={trackRef}
-          onLoadedMetadata={onVideoLoadedMetadata}
-          className="w-full h-full object-cover"
-          style={{ transform: isLocalMirror ? 'scaleX(-1)' : 'none' }}
-        />
-      </div>
-    </div>
-  );
-}
 
 function PipParticipantTile({
   trackRef,
@@ -184,6 +49,11 @@ function PipParticipantTile({
   isSpeaking?: boolean;
   isSmall?: boolean;
 }) {
+  // Declared before the `!participant` bail-out below: a hook after an early return
+  // runs a different number of times depending on the branch taken, which React
+  // rejects the moment the condition ever flips.
+  const [imgError, setImgError] = useState(false);
+
   const participant = trackRef?.participant;
   if (!participant) return null;
 
@@ -199,10 +69,11 @@ function PipParticipantTile({
     try {
       const parsed = JSON.parse(participant.metadata);
       avatarUrl = parsed.avatar_url || null;
-    } catch {}
+    } catch {
+      // Metadata is participant-controlled; unparseable just means no avatar.
+    }
   }
 
-  const [imgError, setImgError] = useState(false);
   const isCameraOff =
     !isVideo || trackRef.publication?.isMuted || !trackRef.publication?.isSubscribed;
 
@@ -285,7 +156,12 @@ function PipParticipantTile({
   );
 }
 
-export default function DocumentPipContent({ roomTitle, onClose, chat }: DocumentPipContentProps) {
+export default function DocumentPipContent({
+  roomTitle,
+  onClose,
+  chat,
+  pinnedIds,
+}: DocumentPipContentProps) {
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled } = useLocalParticipant();
   const speakingParticipants = useSpeakingParticipants();
 
@@ -351,7 +227,9 @@ export default function DocumentPipContent({ roomTitle, onClose, chat }: Documen
       { source: Track.Source.Camera, withPlaceholder: true },
       { source: Track.Source.ScreenShare, withPlaceholder: false },
     ],
-    { updateOnlyOn: [RoomEvent.ActiveSpeakersChanged], onlySubscribed: false },
+    // See the matching note in CallRoomPage: `updateOnlyOn` replaces the default
+    // event set, which already includes ActiveSpeakersChanged plus mute events.
+    { onlySubscribed: false },
   );
 
   // Update focused remote speaker only when another participant speaks (never switch focus to self when self speaks)
@@ -407,6 +285,24 @@ export default function DocumentPipContent({ roomTitle, onClose, chat }: Documen
     // 4. Fallback to first available track (e.g. self if alone in room)
     return filteredTracks[0] || null;
   }, [focusedRemoteSpeakerId, filteredTracks, localParticipant?.identity]);
+
+  // Whichever of the pinned tracks are actually present in this window's own
+  // (differently filtered) track list — a pin made in the main window before PiP
+  // filtered out that participant (hideSelf, own screen share) just resolves to
+  // nothing here rather than crashing.
+  const pinnedTracks = useMemo(() => {
+    const pinnedSet = new Set(pinnedIds);
+    return filteredTracks.filter((t) => pinnedSet.has(tileId(t)));
+  }, [filteredTracks, pinnedIds]);
+
+  // What the single/speaker view actually shows: pinned people if any, otherwise the
+  // one auto-detected speaker. Pins take priority — once you've pinned someone in the
+  // main window that's a standing choice, not something the active speaker should
+  // override just because someone else happens to be talking right now.
+  const stageTracks = useMemo(
+    () => (pinnedTracks.length > 0 ? pinnedTracks : activeSpeakerTrack ? [activeSpeakerTrack] : []),
+    [pinnedTracks, activeSpeakerTrack],
+  );
 
   // Actions
   const toggleMic = async () => {
@@ -561,11 +457,16 @@ export default function DocumentPipContent({ roomTitle, onClose, chat }: Documen
             {hideSelf ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
           </button>
 
-          {/* Close PiP Window Button */}
+          {/* Return to Call Tab Button (Looks like X, focuses main tab & closes PiP) */}
           <button
-            onClick={onClose}
+            onClick={() => {
+              try {
+                window.focus();
+              } catch {}
+              onClose();
+            }}
             className="p-1 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 text-xs ml-0.5 transition-colors"
-            title="PiPを閉じる"
+            title="通話に戻る"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -602,44 +503,36 @@ export default function DocumentPipContent({ roomTitle, onClose, chat }: Documen
             )}
           </div>
         ) : (
-          // Single / Speaker Focus View: Maximizes tile area to prevent distortion at small sizes
-          <div className="w-full h-full min-h-0 flex flex-col gap-1.5 overflow-hidden">
-            {activeSpeakerTrack ? (
-              <div className="flex-1 w-full min-h-0 overflow-hidden flex items-center justify-center">
-                <PipParticipantTile
-                  trackRef={activeSpeakerTrack}
-                  isSpeaking={speakingParticipants.some(
-                    (p) => p.identity === activeSpeakerTrack.participant.identity,
-                  )}
-                  isSmall={false}
-                />
+          // Single / Speaker Focus View: shows only the pinned people, or the one
+          // auto-detected speaker if nobody is pinned — never a thumbnail row of
+          // everyone else. This view exists precisely so a presenter can glance at
+          // one thing at a time; a strip of onlookers defeats that.
+          <div className="w-full h-full min-h-0 flex items-center justify-center overflow-hidden">
+            {stageTracks.length > 0 ? (
+              <div
+                className={`w-full h-full min-h-0 grid gap-1.5 ${
+                  stageTracks.length > 1 ? 'grid-cols-2' : 'grid-cols-1'
+                }`}
+              >
+                {stageTracks.map((trackRef) => (
+                  <div
+                    key={tileId(trackRef)}
+                    className="min-h-0 w-full h-full overflow-hidden flex items-center justify-center"
+                  >
+                    <PipParticipantTile
+                      trackRef={trackRef}
+                      isSpeaking={speakingParticipants.some(
+                        (p) => p.identity === trackRef.participant.identity,
+                      )}
+                      isSmall={stageTracks.length > 1}
+                    />
+                  </div>
+                ))}
               </div>
             ) : (
-              <div className="flex-1 flex flex-col items-center justify-center text-gray-500 gap-2">
+              <div className="flex flex-col items-center justify-center text-gray-500 gap-2">
                 <Radio className="w-7 h-7 opacity-40 animate-pulse text-indigo-400" />
                 <p className="text-xs font-semibold">話者を待機中...</p>
-              </div>
-            )}
-
-            {/* Thumbnail row for others only when not in compact mode */}
-            {!isCompact && filteredTracks.length > 1 && (
-              <div className="h-16 shrink-0 flex gap-1 overflow-x-auto pb-0.5 justify-center">
-                {filteredTracks
-                  .filter((t) => t !== activeSpeakerTrack)
-                  .map((trackRef) => (
-                    <div
-                      key={`${trackRef.participant.identity}_${trackRef.source}`}
-                      className="w-20 h-full shrink-0 min-h-0 flex items-center justify-center"
-                    >
-                      <PipParticipantTile
-                        trackRef={trackRef}
-                        isSpeaking={speakingParticipants.some(
-                          (p) => p.identity === trackRef.participant.identity,
-                        )}
-                        isSmall={true}
-                      />
-                    </div>
-                  ))}
               </div>
             )}
           </div>

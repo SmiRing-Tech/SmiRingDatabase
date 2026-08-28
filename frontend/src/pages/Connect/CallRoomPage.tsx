@@ -16,35 +16,14 @@ import {
   useMediaDeviceSelect,
   useRoomContext,
   type LocalUserChoices,
-  GridLayout,
   RoomAudioRenderer,
   ConnectionStateToast,
-  FocusLayoutContainer,
-  FocusLayout,
-  CarouselLayout,
-  LayoutContextProvider,
-  useCreateLayoutContext,
-  usePinnedTracks,
   useTracks,
-  isTrackReference,
-  ParticipantTile,
-  VideoTrack,
-  AudioTrack,
-  ParticipantName,
-  TrackMutedIndicator,
-  ConnectionQualityIndicator,
-  FocusToggle,
-  ParticipantPlaceholder,
-  ScreenShareIcon,
-  useEnsureTrackRef,
-  type TrackReferenceOrPlaceholder,
-  type ParticipantTileProps,
 } from '@livekit/components-react';
-import { isEqualTrackRef } from '@livekit/components-core';
+import { supportsScreenSharing } from '@livekit/components-core';
 import {
   VideoPresets,
   Track,
-  RoomEvent,
   ParticipantEvent,
   type RoomOptions,
   type LocalVideoTrack,
@@ -69,18 +48,29 @@ import {
   Video,
   VideoOff,
   PictureInPicture2,
-  Share2,
+  ScreenShare,
   MessageSquare,
   PhoneOff,
   Ellipsis,
   ChevronUp,
+  LayoutGrid,
+  Maximize2,
 } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import { useAuth } from '../../context/AuthContext';
 import { useDocumentPiP } from '../../hooks/useDocumentPiP';
+import { useActiveSpeakerVideoPip } from '../../hooks/useActiveSpeakerVideoPip';
 import { useAdvancedChat } from '../../hooks/useAdvancedChat';
 import DocumentPipContent from './DocumentPipContent';
 import AdvancedChat from '../../components/Connect/AdvancedChat';
+import LeaveConfirmModal from '../../components/Connect/LeaveConfirmModal';
+import GridLayoutView from '../../components/Connect/callLayout/GridLayoutView';
+import StageLayoutView from '../../components/Connect/callLayout/StageLayoutView';
+import {
+  useCallLayout,
+  type CallLayout,
+  type LayoutMode,
+} from '../../components/Connect/callLayout/useCallLayout';
 
 /**
  * Shared look for every control-bar button (mic, camera, screen-share, chat,
@@ -229,13 +219,15 @@ function useVadAutoGate(enabled: boolean) {
 function DropdownPortal({
   anchorRef,
   onClose,
-  align = 'left',
   children,
+  align = 'left',
+  direction = 'up',
 }: {
-  anchorRef: RefObject<HTMLElement | null>;
+  anchorRef: React.RefObject<HTMLElement | null>;
   onClose: () => void;
-  align?: 'left' | 'right';
   children: ReactNode;
+  align?: 'left' | 'right';
+  direction?: 'up' | 'down';
 }) {
   const [pos, setPos] = useState<{ top: number; left?: number; right?: number } | null>(null);
 
@@ -244,10 +236,11 @@ function DropdownPortal({
       const el = anchorRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
+      const top = direction === 'up' ? rect.top - 8 : rect.bottom + 8;
       setPos(
         align === 'right'
-          ? { top: rect.top - 8, right: window.innerWidth - rect.right }
-          : { top: rect.top - 8, left: rect.left },
+          ? { top, right: window.innerWidth - rect.right }
+          : { top, left: rect.left },
       );
     };
     updatePosition();
@@ -257,7 +250,7 @@ function DropdownPortal({
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [anchorRef, align]);
+  }, [anchorRef, align, direction]);
 
   if (!pos) return null;
 
@@ -265,8 +258,15 @@ function DropdownPortal({
     <>
       <div className="fixed inset-0 z-[999]" onClick={onClose} />
       <div
-        className="fixed z-[1000] animate-in fade-in slide-in-from-bottom-3 duration-200"
-        style={{ top: pos.top, left: pos.left, right: pos.right, transform: 'translateY(-100%)' }}
+        className={`fixed z-[1000] animate-in fade-in ${
+          direction === 'up' ? 'slide-in-from-bottom-3' : 'slide-in-from-top-3'
+        } duration-200`}
+        style={{
+          top: pos.top,
+          left: pos.left,
+          right: pos.right,
+          transform: direction === 'up' ? 'translateY(-100%)' : 'none',
+        }}
       >
         {children}
       </div>
@@ -779,6 +779,7 @@ function CameraButton({ mediaEnhancements }: { mediaEnhancements: MediaEnhanceme
 }
 
 function ScreenShareButton() {
+  const isSupported = useMemo(() => supportsScreenSharing(), []);
   const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
 
   const toggleShare = useCallback(async () => {
@@ -789,13 +790,15 @@ function ScreenShareButton() {
     }
   }, [localParticipant, isScreenShareEnabled]);
 
+  if (!isSupported) return null;
+
   return (
     <button
       onClick={toggleShare}
       title="画面共有"
-      className={controlButtonClass(isScreenShareEnabled)}
+      className={`${controlButtonClass(isScreenShareEnabled)} hidden sm:inline-flex`}
     >
-      <Share2 className="w-5 h-5" />
+      <ScreenShare className="w-5 h-5" />
       <ControlButtonLabel>共有</ControlButtonLabel>
     </button>
   );
@@ -803,276 +806,29 @@ function ScreenShareButton() {
 
 function LeaveButton() {
   const room = useRoomContext();
-  return (
-    <button
-      onClick={() => room.disconnect()}
-      title="通話を終了"
-      className={controlButtonClass(false, true)}
-    >
-      <PhoneOff className="w-5 h-5" />
-      <ControlButtonLabel>退出</ControlButtonLabel>
-    </button>
-  );
-}
+  const [showConfirm, setShowConfirm] = useState(false);
 
-/**
- * Clamped Video Track:
- * Automatically detects whether the stream is landscape (PC) or portrait (mobile)
- * and clamps display aspect ratio between [native ratio] and [1:1 square], centering
- * vertically or horizontally as needed to prevent extreme crop/zoom.
- */
-function ClampedVideoTrack({
-  trackRef,
-  className = '',
-  isLocalMirror = false,
-}: {
-  trackRef: TrackReferenceOrPlaceholder;
-  className?: string;
-  isLocalMirror?: boolean;
-}) {
-  if (!isTrackReference(trackRef)) return null;
-
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [containerSize, setContainerSize] = useState<{ width: number; height: number } | null>(null);
-  const [nativeRatio, setNativeRatio] = useState<number | null>(null);
-
-  const isScreenShare = trackRef.source === Track.Source.ScreenShare;
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const { width, height } = entry.contentRect;
-        if (width > 0 && height > 0) {
-          setContainerSize({ width, height });
-        }
-      }
-    });
-
-    observer.observe(el);
-    const rect = el.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      setContainerSize({ width: rect.width, height: rect.height });
-    }
-
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (isTrackReference(trackRef)) {
-      const dims = trackRef.publication?.dimensions;
-      if (dims && dims.width > 0 && dims.height > 0) {
-        setNativeRatio(dims.width / dims.height);
-      }
-    }
-  }, [trackRef]);
-
-  const onVideoLoadedMetadata = useCallback((e: React.SyntheticEvent<HTMLVideoElement>) => {
-    const video = e.currentTarget;
-    if (video.videoWidth > 0 && video.videoHeight > 0) {
-      setNativeRatio(video.videoWidth / video.videoHeight);
-    }
-  }, []);
-
-  const videoStyle = useMemo<React.CSSProperties>(() => {
-    if (!containerSize) {
-      return { width: '100%', height: '100%' };
-    }
-
-    const { width: cW, height: cH } = containerSize;
-    if (cW <= 0 || cH <= 0) return { width: '100%', height: '100%' };
-
-    const cRatio = cW / cH;
-    const rNative = nativeRatio ?? (isScreenShare ? 16 / 9 : 16 / 9);
-
-    if (isScreenShare) {
-      if (cRatio > rNative) {
-        return {
-          height: `${cH}px`,
-          width: `${Math.floor(cH * rNative)}px`,
-        };
-      }
-      return {
-        width: `${cW}px`,
-        height: `${Math.floor(cW / rNative)}px`,
-      };
-    }
-
-    // Min and Max allowed aspect ratios:
-    // Landscape video: [1:1, nativeRatio] -> max crop is 1:1 square
-    // Portrait video:  [nativeRatio, 1:1] -> max crop is 1:1 square
-    let rMin: number;
-    let rMax: number;
-
-    if (rNative >= 1.0) {
-      rMin = 1.0;
-      rMax = rNative;
-    } else {
-      rMin = rNative;
-      rMax = 1.0;
-    }
-
-    let targetW = cW;
-    let targetH = cH;
-
-    if (cRatio < rMin) {
-      targetW = cW;
-      targetH = cW / rMin;
-    } else if (cRatio > rMax) {
-      targetH = cH;
-      targetW = cH * rMax;
-    } else {
-      targetW = cW;
-      targetH = cH;
-    }
-
-    return {
-      width: `${Math.floor(targetW)}px`,
-      height: `${Math.floor(targetH)}px`,
-    };
-  }, [containerSize, nativeRatio, isScreenShare]);
-
-  return (
-    <div
-      ref={containerRef}
-      className={`absolute inset-0 w-full h-full min-h-0 min-w-0 overflow-hidden flex items-center justify-center ${className}`}
-    >
-      <div
-        style={videoStyle}
-        className="relative overflow-hidden shrink-0 flex items-center justify-center rounded-xl sm:rounded-2xl"
-      >
-        <VideoTrack
-          trackRef={trackRef}
-          onLoadedMetadata={onVideoLoadedMetadata}
-          className="w-full h-full object-cover"
-          style={{ transform: isLocalMirror ? 'scaleX(-1)' : 'none' }}
-        />
-      </div>
-    </div>
-  );
-}
-
-/**
- * `data-lk-speaking` border/ring/shadow should stay off while the mic is muted
- * (speaking indicator would be misleading). Shared by both tile wrappers below.
- */
-function micMutedTileClassName(trackReference: TrackReferenceOrPlaceholder) {
-  const participant = trackReference.participant;
-  const micPub = participant?.getTrackPublication(Track.Source.Microphone);
-  const isMicMuted = !micPub || micPub.isMuted || !micPub.isSubscribed;
-  return isMicMuted
-    ? '[&[data-lk-speaking="true"]]:!border-transparent [&[data-lk-speaking="true"]]:!ring-0 [&[data-lk-speaking="true"]]:!shadow-none'
-    : '';
-}
-
-/**
- * The actual visual content of a tile (video/audio, camera-off avatar, name/mute
- * bar, pin toggle) — deliberately NOT wrapped in LiveKit's `<ParticipantTile>`.
- * `<ParticipantTile>` already renders `children ?? <its own default video>`, so a
- * component meant to be used as its children must not wrap itself in a second
- * `<ParticipantTile>`. `CustomParticipantTile` below does that wrapping for grid
- * cells; `FocusLayout` (from @livekit/components-react) already does it for the
- * focused/enlarged tile, so this same content can be handed to it directly.
- * (Nesting two `<ParticipantTile>`s here previously caused the focused tile to
- * double-mount its `<video>` element and briefly render solid black.)
- */
-function ParticipantTileContent({ trackRef }: { trackRef: TrackReferenceOrPlaceholder }) {
-  const trackReference = useEnsureTrackRef(trackRef);
-  const participant = trackReference.participant;
-  const isVideo =
-    isTrackReference(trackReference) &&
-    (trackReference.publication?.kind === 'video' ||
-      trackReference.source === Track.Source.Camera ||
-      trackReference.source === Track.Source.ScreenShare);
-  const isScreenShare = trackReference.source === Track.Source.ScreenShare;
-
-  let avatarUrl: string | null = null;
-  if (participant?.metadata) {
-    try {
-      const parsed = JSON.parse(participant.metadata);
-      avatarUrl = parsed.avatar_url || null;
-    } catch {}
-  }
-
-  const [imgError, setImgError] = useState(false);
-  const isCameraOff =
-    !isVideo || trackReference.publication?.isMuted || !trackReference.publication?.isSubscribed;
+  const handleConfirmLeave = () => {
+    room.disconnect();
+  };
 
   return (
     <>
-      {isVideo && (
-        <ClampedVideoTrack
-          trackRef={trackReference}
-          isLocalMirror={participant.isLocal && !isScreenShare}
-        />
-      )}
-      {!isVideo && isTrackReference(trackReference) && (
-        <AudioTrack trackRef={trackReference} />
-      )}
+      <button
+        onClick={() => setShowConfirm(true)}
+        title="通話を終了"
+        className={controlButtonClass(false, true)}
+      >
+        <PhoneOff className="w-5 h-5" />
+        <ControlButtonLabel>退出</ControlButtonLabel>
+      </button>
 
-      {/* Camera Off Placeholder */}
-      {isCameraOff && !isScreenShare && (
-        <div className="lk-participant-placeholder absolute inset-0 flex items-center justify-center pointer-events-none">
-          {avatarUrl && !imgError ? (
-            <div className="w-20 h-20 sm:w-24 sm:h-24 md:w-28 md:h-28 rounded-3xl overflow-hidden border-2 border-slate-700/80 shadow-2xl bg-slate-800 flex items-center justify-center animate-in fade-in zoom-in-95 duration-200">
-              <img
-                src={avatarUrl}
-                alt={participant.name || participant.identity}
-                className="w-full h-full object-cover"
-                onError={() => setImgError(true)}
-              />
-            </div>
-          ) : (
-            <ParticipantPlaceholder />
-          )}
-        </div>
-      )}
-
-      {/* Metadata Bar (Name + Mute indicator) */}
-      <div className="lk-participant-metadata">
-        <div className="lk-participant-metadata-item">
-          {!isScreenShare ? (
-            <>
-              <TrackMutedIndicator
-                trackRef={{
-                  participant: trackReference.participant,
-                  source: Track.Source.Microphone,
-                }}
-                show="muted"
-              />
-              <ParticipantName />
-            </>
-          ) : (
-            <>
-              <ScreenShareIcon style={{ marginRight: '0.25rem' }} />
-              <ParticipantName>&apos;s screen</ParticipantName>
-            </>
-          )}
-        </div>
-        <ConnectionQualityIndicator className="lk-participant-metadata-item" />
-      </div>
-      <FocusToggle trackRef={trackReference} />
+      <LeaveConfirmModal
+        isOpen={showConfirm}
+        onClose={() => setShowConfirm(false)}
+        onConfirm={handleConfirmLeave}
+      />
     </>
-  );
-}
-
-/**
- * Grid/carousel tile: wraps `ParticipantTileContent` in LiveKit's `<ParticipantTile>`
- * itself, since here (unlike `FocusLayout`) nothing else provides that wrapper.
- */
-function CustomParticipantTile({ trackRef, ...htmlProps }: ParticipantTileProps) {
-  const trackReference = useEnsureTrackRef(trackRef);
-
-  return (
-    <ParticipantTile
-      trackRef={trackReference}
-      {...htmlProps}
-      className={`${micMutedTileClassName(trackReference)} ${htmlProps.className || ''}`}
-    >
-      <ParticipantTileContent trackRef={trackReference} />
-    </ParticipantTile>
   );
 }
 
@@ -1153,10 +909,81 @@ function MoreMenu({
   );
 }
 
+const LAYOUT_MODE_OPTIONS: { mode: LayoutMode; label: string; icon: typeof LayoutGrid }[] = [
+  { mode: 'grid', label: 'グリッド', icon: LayoutGrid },
+  { mode: 'speaker', label: 'スピーカー', icon: Maximize2 },
+];
+
+/**
+ * Switches between grid / speaker. Structured like `MoreMenu` so it inherits
+ * `DropdownPortal`'s iOS-Safari z-index workaround.
+ *
+ * There is no "pin" entry here: pinning is a per-tile action (the pin button on each
+ * tile), orthogonal to which of these two layouts is showing. See `useCallLayout`.
+ *
+ * Unlike `ScreenShareButton` this is *not* hidden on small screens: escaping a
+ * 20-tile grid matters most on a phone.
+ */
+function LayoutModeButton({
+  mode,
+  onSelect,
+}: {
+  mode: LayoutMode;
+  onSelect: (mode: LayoutMode) => void;
+}) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [isOpen, setIsOpen] = useState(false);
+  const activeOption = LAYOUT_MODE_OPTIONS.find((o) => o.mode === mode);
+  const ActiveIcon = activeOption?.icon ?? LayoutGrid;
+  const activeLabel = activeOption?.label ?? '表示';
+
+  return (
+    <div className="relative flex items-center">
+      <button
+        ref={triggerRef}
+        onClick={() => setIsOpen((prev) => !prev)}
+        title="表示レイアウトを変更"
+        className="flex items-center gap-1.5 px-2.5 py-1 bg-gray-900/90 hover:bg-gray-800 border border-gray-700/80 hover:border-gray-600 rounded-md text-xs font-semibold text-gray-200 hover:text-white transition-all active:scale-95 shrink-0"
+      >
+        <ActiveIcon className="w-3.5 h-3.5 text-indigo-400" />
+        <span>{activeLabel}</span>
+      </button>
+
+      {isOpen && (
+        <DropdownPortal anchorRef={triggerRef} onClose={() => setIsOpen(false)} align="right" direction="down">
+          <div className="w-52 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl p-2 text-white">
+            <div className="px-2.5 py-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider">表示レイアウト</div>
+            {LAYOUT_MODE_OPTIONS.map(({ mode: optionMode, label, icon: Icon }) => {
+              const isActive = optionMode === mode;
+              return (
+                <button
+                  key={optionMode}
+                  onClick={() => {
+                    onSelect(optionMode);
+                    setIsOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-colors ${
+                    isActive ? 'bg-indigo-600/25 text-white' : 'text-gray-200 hover:bg-gray-800'
+                  }`}
+                >
+                  <Icon className={`w-4 h-4 ${isActive ? 'text-indigo-300' : 'text-indigo-400'}`} />
+                  <span>{label}</span>
+                  {isActive && <Check className="w-3.5 h-3.5 ml-auto text-indigo-300" />}
+                </button>
+              );
+            })}
+          </div>
+        </DropdownPortal>
+      )}
+    </div>
+  );
+}
+
 /**
  * Custom VideoConference with side-docked AdvancedChat and auto-PiP handling
  */
 function CustomVideoConference({
+  layout,
   onOpenPip,
   onClosePip,
   isPipSupported,
@@ -1165,6 +992,7 @@ function CustomVideoConference({
   showChat,
   setShowChat,
 }: {
+  layout: CallLayout;
   onOpenPip: () => void;
   onClosePip: () => void;
   isPipSupported: boolean;
@@ -1173,68 +1001,11 @@ function CustomVideoConference({
   showChat: boolean;
   setShowChat: (val: boolean | ((prev: boolean) => boolean)) => void;
 }) {
-  const lastAutoFocusedScreenShareTrack = useRef<TrackReferenceOrPlaceholder | null>(null);
   const { localParticipant } = useLocalParticipant();
   const mediaEnhancements = useMediaEnhancementsState(localParticipant);
-  const rawTracks = useTracks(
-    [
-      { source: Track.Source.Camera, withPlaceholder: true },
-      { source: Track.Source.ScreenShare, withPlaceholder: false },
-    ],
-    { updateOnlyOn: [RoomEvent.ActiveSpeakersChanged], onlySubscribed: false },
-  );
-
-  // Include all camera and screen share tracks (including local screen share)
-  const tracks = rawTracks;
-
-  const layoutContext = useCreateLayoutContext();
-
-  // Screen share tracks (for autofocusing)
-  const screenShareTracks = rawTracks
-    .filter(isTrackReference)
-    .filter((track) => track.publication.source === Track.Source.ScreenShare);
 
   // Detect whether the local user (myself) is sharing screen
   const isLocalScreenSharing = localParticipant?.isScreenShareEnabled ?? false;
-
-  const focusTrack = usePinnedTracks(layoutContext)?.[0];
-  const carouselTracks = tracks.filter((track) => !isEqualTrackRef(track, focusTrack));
-
-  useEffect(() => {
-    if (
-      screenShareTracks.some((track) => track.publication.isSubscribed || track.participant.isLocal) &&
-      lastAutoFocusedScreenShareTrack.current === null
-    ) {
-      layoutContext.pin.dispatch?.({ msg: 'set_pin', trackReference: screenShareTracks[0] });
-      lastAutoFocusedScreenShareTrack.current = screenShareTracks[0];
-    } else if (
-      lastAutoFocusedScreenShareTrack.current &&
-      !screenShareTracks.some(
-        (track) =>
-          track.publication.trackSid ===
-          lastAutoFocusedScreenShareTrack.current?.publication?.trackSid,
-      )
-    ) {
-      layoutContext.pin.dispatch?.({ msg: 'clear_pin' });
-      lastAutoFocusedScreenShareTrack.current = null;
-    }
-    if (focusTrack && !isTrackReference(focusTrack)) {
-      const updatedFocusTrack = tracks.find(
-        (tr) =>
-          tr.participant.identity === focusTrack.participant.identity &&
-          tr.source === focusTrack.source,
-      );
-      if (updatedFocusTrack !== focusTrack && isTrackReference(updatedFocusTrack)) {
-        layoutContext.pin.dispatch?.({ msg: 'set_pin', trackReference: updatedFocusTrack });
-      }
-    }
-  }, [
-    screenShareTracks
-      .map((ref) => `${ref.publication.trackSid}_${ref.publication.isSubscribed}`)
-      .join(),
-    focusTrack?.publication?.trackSid,
-    tracks,
-  ]);
 
   // Automatically open Document PiP only when the local user starts screen sharing, and close on stop
   const prevLocalScreenShareRef = useRef(false);
@@ -1254,7 +1025,7 @@ function CustomVideoConference({
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-top-2 duration-300">
           <div className="flex items-center gap-3 px-4 py-2 bg-indigo-950/90 hover:bg-indigo-900/90 border border-indigo-500/50 backdrop-blur-md rounded-2xl shadow-2xl text-white">
             <div className="flex items-center gap-2">
-              <Share2 className="w-4 h-4 text-indigo-400 animate-pulse" />
+              <ScreenShare className="w-4 h-4 text-indigo-400 animate-pulse" />
               <span className="text-xs font-semibold">画面共有中：PiPを開くと参加者の顔を確認できます</span>
             </div>
             <button
@@ -1277,59 +1048,54 @@ function CustomVideoConference({
           showChat ? 'hidden sm:flex sm:flex-col' : 'flex flex-col'
         }`}
       >
-        <LayoutContextProvider value={layoutContext}>
-          <div className="lk-video-conference-inner h-full min-h-0">
-            {!focusTrack ? (
-              <div className="lk-grid-layout-wrapper">
-                <GridLayout tracks={tracks}>
-                  <CustomParticipantTile />
-                </GridLayout>
-              </div>
+        {/* `lk-video-conference-inner` supplies the flex column. The old
+            `lk-grid-layout-wrapper` / `lk-focus-layout-wrapper` classes are gone on
+            purpose: they hardcode `height: calc(100% - var(--lk-control-bar-height))`
+            with a 69px control bar, while ours is ~57px, so they left 12px unused. */}
+        <div className="lk-video-conference-inner h-full min-h-0">
+          <div className="flex-1 min-h-0 relative">
+            {layout.mode === 'grid' ? (
+              <GridLayoutView
+                tracks={layout.gridTracks}
+                pinned={layout.pinned}
+                onTogglePin={layout.togglePin}
+              />
             ) : (
-              <div className="lk-focus-layout-wrapper">
-                <FocusLayoutContainer>
-                  <CarouselLayout tracks={carouselTracks}>
-                    <CustomParticipantTile />
-                  </CarouselLayout>
-                  {focusTrack && (
-                    <FocusLayout
-                      trackRef={focusTrack}
-                      className={micMutedTileClassName(focusTrack)}
-                    >
-                      <ParticipantTileContent trackRef={focusTrack} />
-                    </FocusLayout>
-                  )}
-                </FocusLayoutContainer>
-              </div>
+              <StageLayoutView
+                stageTracks={layout.stageTracks}
+                stripTracks={layout.stripTracks}
+                pinned={layout.pinned}
+                onTogglePin={layout.togglePin}
+              />
             )}
-            {/* Control bar: Left (Mic & Camera), Center (Share, Chat, More), Right (Leave) */}
-            <div className="shrink-0 px-3 sm:px-6 py-2.5 border-t border-gray-800/80 bg-gray-950/80 backdrop-blur-md">
-              <div className="flex items-center justify-between w-full gap-2">
-                {/* Left: Mic & Camera */}
-                <div className="flex items-center gap-2 shrink-0">
-                  <MicButton mediaEnhancements={mediaEnhancements} />
-                  <CameraButton mediaEnhancements={mediaEnhancements} />
-                </div>
+          </div>
+          {/* Control bar: Left (Mic & Camera), Center (Layout, Share, Chat, More), Right (Leave) */}
+          <div className="shrink-0 px-3 sm:px-6 py-2.5 border-t border-gray-800/80 bg-gray-950/80 backdrop-blur-md">
+            <div className="flex items-center justify-between w-full gap-2">
+              {/* Left: Mic & Camera */}
+              <div className="flex items-center gap-2 shrink-0">
+                <MicButton mediaEnhancements={mediaEnhancements} />
+                <CameraButton mediaEnhancements={mediaEnhancements} />
+              </div>
 
-                {/* Center: Screen Share, Chat, More (PiP) */}
-                <div className="flex items-center justify-center gap-2 flex-1 min-w-0">
-                  <ScreenShareButton />
-                  <ChatToggleButton
-                    isOpen={showChat}
-                    unreadCount={chat.totalUnreadCount}
-                    onClick={() => setShowChat((prev) => !prev)}
-                  />
-                  {isPipSupported && <MoreMenu onOpenPip={onOpenPip} isPipActive={isPipActive} />}
-                </div>
+              {/* Center: Screen Share, Chat, More (PiP) */}
+              <div className="flex items-center justify-center gap-2 flex-1 min-w-0">
+                <ScreenShareButton />
+                <ChatToggleButton
+                  isOpen={showChat}
+                  unreadCount={chat.totalUnreadCount}
+                  onClick={() => setShowChat((prev) => !prev)}
+                />
+                {isPipSupported && <MoreMenu onOpenPip={onOpenPip} isPipActive={isPipActive} />}
+              </div>
 
-                {/* Right: Leave */}
-                <div className="flex items-center gap-2 shrink-0">
-                  <LeaveButton />
-                </div>
+              {/* Right: Leave */}
+              <div className="flex items-center gap-2 shrink-0">
+                <LeaveButton />
               </div>
             </div>
           </div>
-        </LayoutContextProvider>
+        </div>
       </div>
 
       {/* Chat: docked sidebar on sm+ screens, full-screen page (with a back-to-video
@@ -1366,8 +1132,61 @@ function CallRoomInner({
   // localParticipant.identity, which is empty until the LiveKit connection completes.
   const chat = useAdvancedChat({ roomId, selfIdentity: user?.id || '' });
 
-  // Document Picture-in-Picture Hook
-  const { isSupported: isPipSupported, isPipActive, pipWindow, openPip, closePip } = useDocumentPiP();
+  const { localParticipant } = useLocalParticipant();
+  const tracks = useTracks(
+    [
+      { source: Track.Source.Camera, withPlaceholder: true },
+      { source: Track.Source.ScreenShare, withPlaceholder: false },
+    ],
+    // No `updateOnlyOn`: it *replaces* the default `allParticipantRoomEvents`, which
+    // already contains ActiveSpeakersChanged along with TrackMuted/TrackUnmuted.
+    // Narrowing it to ActiveSpeakersChanged alone therefore gained nothing and
+    // silently dropped mute/unmute refreshes.
+    { onlySubscribed: false },
+  );
+
+  // Owns layout mode, pins, speaker tracking and screen-share auto-focus. Replaces
+  // LiveKit's single-track `LayoutContext` pin entirely. Lifted up to this level
+  // (rather than inside `CustomVideoConference`) so the PiP window — a sibling, not a
+  // descendant — can read the same pin state and show the same pinned people the
+  // main window is showing.
+  const layout = useCallLayout(tracks, localParticipant?.identity);
+
+  // Document Picture-in-Picture Hook (Desktop Chrome etc.)
+  const {
+    isSupported: isDocumentPipSupported,
+    isPipActive: isDocumentPipActive,
+    pipWindow,
+    openPip: openDocumentPip,
+    closePip: closeDocumentPip,
+  } = useDocumentPiP();
+
+  // Active Speaker Video Picture-in-Picture Hook (Mobile / Video PiP fallback)
+  const {
+    isVideoPipSupported,
+    isVideoPipActive,
+    requestVideoPip,
+    exitVideoPip,
+  } = useActiveSpeakerVideoPip();
+
+  const isPipSupported = isDocumentPipSupported || isVideoPipSupported;
+  const isPipActive = isDocumentPipActive || isVideoPipActive;
+
+  const handleOpenPip = useCallback(() => {
+    if (isDocumentPipSupported) {
+      openDocumentPip({ width: 380, height: 620 });
+    } else if (isVideoPipSupported) {
+      requestVideoPip();
+    }
+  }, [isDocumentPipSupported, openDocumentPip, isVideoPipSupported, requestVideoPip]);
+
+  const handleClosePip = useCallback(() => {
+    if (isDocumentPipActive) {
+      closeDocumentPip();
+    } else if (isVideoPipActive) {
+      exitVideoPip();
+    }
+  }, [isDocumentPipActive, closeDocumentPip, isVideoPipActive, exitVideoPip]);
 
   const copyRoomId = async () => {
     if (!roomId) return;
@@ -1404,13 +1223,19 @@ function CallRoomInner({
             )}
           </button>
         </div>
+
+        {/* Right: Layout Mode Selector */}
+        <div className="flex items-center gap-2">
+          <LayoutModeButton mode={layout.mode} onSelect={layout.setMode} />
+        </div>
       </header>
 
       {/* Main Video Conference Area */}
       <div className="flex-1 relative overflow-hidden">
         <CustomVideoConference
-          onOpenPip={() => openPip({ width: 380, height: 620 })}
-          onClosePip={closePip}
+          layout={layout}
+          onOpenPip={handleOpenPip}
+          onClosePip={handleClosePip}
           isPipSupported={isPipSupported}
           isPipActive={isPipActive}
           chat={chat}
@@ -1419,10 +1244,15 @@ function CallRoomInner({
         />
 
         {/* Render Document PiP Portal when active */}
-        {isPipActive &&
+        {isDocumentPipActive &&
           pipWindow &&
           createPortal(
-            <DocumentPipContent roomTitle={roomTitle} onClose={closePip} chat={chat} />,
+            <DocumentPipContent
+              roomTitle={roomTitle}
+              onClose={closeDocumentPip}
+              chat={chat}
+              pinnedIds={layout.pinned}
+            />,
             pipWindow.document.body,
           )}
       </div>
@@ -1442,6 +1272,22 @@ export default function CallRoomPage() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
   const [isDisconnected, setIsDisconnected] = useState(false);
+
+  // Warn user with native browser dialog when trying to close the tab or leave during active call
+  useEffect(() => {
+    if (isDisconnected || !token || !serverUrl) return;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [isDisconnected, token, serverUrl]);
 
   // Load choices from sessionStorage
   useEffect(() => {
@@ -1537,6 +1383,7 @@ export default function CallRoomPage() {
         dtx: true,
         red: true,
       },
+      disconnectOnPageLeave: false,
     }),
     [choices],
   );
