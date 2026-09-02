@@ -42,7 +42,15 @@ function reducer(state: LayoutState, action: Action): LayoutState {
   switch (action.type) {
     case 'set_mode': {
       if (action.mode === state.mode) return state;
-      return { ...state, mode: action.mode, userOverrode: true };
+      // Only counts as "overriding" the auto-focus when a share is actually on
+      // stage right now — an ordinary layout preference picked between shares (or
+      // before the first one ever happens) has nothing to override, and must not
+      // permanently disable auto-focus for shares that start later. Without this
+      // guard, `userOverrode` could only ever reset back to false via the
+      // auto-focus-ended branch in `sync_tracks`, which never runs if it's the
+      // reason auto-focus never got to start in the first place.
+      const userOverrode = state.autoShareIds.length > 0 ? true : state.userOverrode;
+      return { ...state, mode: action.mode, userOverrode };
     }
 
     case 'toggle_pin': {

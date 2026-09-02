@@ -85,7 +85,7 @@ function PipParticipantTile({
 
   return (
     <div
-      className={`relative w-full h-full min-h-0 bg-slate-900 rounded-xl sm:rounded-2xl overflow-hidden border transition-all duration-200 flex flex-col items-center justify-center select-none ${
+      className={`group relative w-full h-full min-h-0 bg-slate-900 rounded-xl sm:rounded-2xl overflow-hidden border transition-all duration-200 flex flex-col items-center justify-center select-none ${
         isEffectivelySpeaking
           ? 'border-emerald-400 ring-2 ring-emerald-400/40 shadow-lg shadow-emerald-500/10'
           : 'border-slate-800/80 hover:border-slate-700'
@@ -130,8 +130,13 @@ function PipParticipantTile({
         </div>
       )}
 
-      {/* Bottom Info Bar: Name + Mute status */}
-      <div className="absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between gap-1 px-2 py-0.5 sm:py-1 bg-gray-950/80 backdrop-blur-md rounded-md sm:rounded-lg border border-gray-800/70 text-white text-[10px] sm:text-xs z-10">
+      {/* Bottom Info Bar: Name + Mute status. Hidden by default to keep the PiP feed
+          clean — surfaces on hover, or automatically while the person is speaking. */}
+      <div
+        className={`absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between gap-1 px-2 py-0.5 sm:py-1 bg-gray-950/80 backdrop-blur-md rounded-md sm:rounded-lg border border-gray-800/70 text-white text-[10px] sm:text-xs z-10 transition-opacity duration-150 group-hover:opacity-100 ${
+          isEffectivelySpeaking ? 'opacity-100' : 'opacity-0'
+        }`}
+      >
         <div className="flex items-center gap-1 truncate max-w-[85%]">
           <TrackMutedIndicator
             trackRef={{
@@ -221,6 +226,19 @@ export default function DocumentPipContent({
   // Check if local user is currently sharing screen
   const isLocalScreenSharing = localParticipant?.isScreenShareEnabled ?? false;
 
+  // This PiP window is (re)created fresh each time it opens, which for the
+  // screen-share auto-open case happens right as sharing starts — default to the
+  // single/speaker view once so the shared screen is front and center instead of
+  // one tile in a grid. A one-shot ref instead of layoutMode's initial state so a
+  // manual grid choice made afterward isn't fought if this flips again.
+  const hasFocusedOwnShareRef = useRef(false);
+  useEffect(() => {
+    if (isLocalScreenSharing && !hasFocusedOwnShareRef.current) {
+      hasFocusedOwnShareRef.current = true;
+      setLayoutMode('speaker');
+    }
+  }, [isLocalScreenSharing]);
+
   // Subscribe to all video tracks (camera & screen share)
   const rawTracks = useTracks(
     [
@@ -242,16 +260,10 @@ export default function DocumentPipContent({
     }
   }, [speakingParticipants, localParticipant?.identity]);
 
-  // Filter tracks: Exclude own screen share and apply hideSelf setting
+  // Filter tracks: apply hideSelf setting (own screen share is kept — this PiP
+  // auto-opens specifically so the presenter can see what they're sharing)
   const filteredTracks = useMemo(() => {
     return rawTracks.filter((t) => {
-      // Never display own screen share inside PiP
-      if (
-        t.source === Track.Source.ScreenShare &&
-        t.participant.identity === localParticipant?.identity
-      ) {
-        return false;
-      }
       if (hideSelf && t.participant.identity === localParticipant?.identity) {
         return false;
       }
@@ -261,13 +273,24 @@ export default function DocumentPipContent({
 
   // Determine active/speaker track for Speaker mode (or when compacted)
   const activeSpeakerTrack = useMemo(() => {
-    // 1. If a remote speaker was actively talking, keep focus on them
+    // 1. While sharing our own screen, that's the whole reason this PiP is open —
+    // always keep it in focus over anyone else speaking.
+    if (isLocalScreenSharing) {
+      const ownScreenShare = filteredTracks.find(
+        (t) =>
+          t.source === Track.Source.ScreenShare &&
+          t.participant.identity === localParticipant?.identity,
+      );
+      if (ownScreenShare) return ownScreenShare;
+    }
+
+    // 2. If a remote speaker was actively talking, keep focus on them
     if (focusedRemoteSpeakerId) {
       const match = filteredTracks.find((t) => t.participant.identity === focusedRemoteSpeakerId);
       if (match) return match;
     }
 
-    // 2. Or prefer remote screen share
+    // 3. Or prefer remote screen share
     const remoteScreenShare = filteredTracks.find(
       (t) =>
         isTrackReference(t) &&
@@ -276,20 +299,20 @@ export default function DocumentPipContent({
     );
     if (remoteScreenShare) return remoteScreenShare;
 
-    // 3. Or first remote participant
+    // 4. Or first remote participant
     const remoteTrack = filteredTracks.find(
       (t) => t.participant.identity !== localParticipant?.identity,
     );
     if (remoteTrack) return remoteTrack;
 
-    // 4. Fallback to first available track (e.g. self if alone in room)
+    // 5. Fallback to first available track (e.g. self if alone in room)
     return filteredTracks[0] || null;
-  }, [focusedRemoteSpeakerId, filteredTracks, localParticipant?.identity]);
+  }, [isLocalScreenSharing, focusedRemoteSpeakerId, filteredTracks, localParticipant?.identity]);
 
   // Whichever of the pinned tracks are actually present in this window's own
   // (differently filtered) track list — a pin made in the main window before PiP
-  // filtered out that participant (hideSelf, own screen share) just resolves to
-  // nothing here rather than crashing.
+  // filtered out that participant (hideSelf) just resolves to nothing here rather
+  // than crashing.
   const pinnedTracks = useMemo(() => {
     const pinnedSet = new Set(pinnedIds);
     return filteredTracks.filter((t) => pinnedSet.has(tileId(t)));
@@ -303,6 +326,14 @@ export default function DocumentPipContent({
     () => (pinnedTracks.length > 0 ? pinnedTracks : activeSpeakerTrack ? [activeSpeakerTrack] : []),
     [pinnedTracks, activeSpeakerTrack],
   );
+
+  // Everyone else — including ourselves — as a small filmstrip below the stage in
+  // speaker view, mirroring the main call window's stage+strip layout instead of
+  // blanking out to just the one staged tile.
+  const stripTracks = useMemo(() => {
+    const stageIds = new Set(stageTracks.map(tileId));
+    return filteredTracks.filter((t) => !stageIds.has(tileId(t)));
+  }, [filteredTracks, stageTracks]);
 
   // Actions
   const toggleMic = async () => {
@@ -503,36 +534,55 @@ export default function DocumentPipContent({
             )}
           </div>
         ) : (
-          // Single / Speaker Focus View: shows only the pinned people, or the one
-          // auto-detected speaker if nobody is pinned — never a thumbnail row of
-          // everyone else. This view exists precisely so a presenter can glance at
-          // one thing at a time; a strip of onlookers defeats that.
-          <div className="w-full h-full min-h-0 flex items-center justify-center overflow-hidden">
-            {stageTracks.length > 0 ? (
-              <div
-                className={`w-full h-full min-h-0 grid gap-1.5 ${
-                  stageTracks.length > 1 ? 'grid-cols-2' : 'grid-cols-1'
-                }`}
-              >
-                {stageTracks.map((trackRef) => (
-                  <div
-                    key={tileId(trackRef)}
-                    className="min-h-0 w-full h-full overflow-hidden flex items-center justify-center"
-                  >
+          // Single / Speaker Focus View: the pinned people (or the one auto-detected
+          // speaker) large on stage, everyone else — including ourselves — as a small
+          // filmstrip below, mirroring the main call window's stage+strip layout.
+          <div className="w-full h-full min-h-0 flex flex-col gap-1.5 overflow-hidden">
+            <div className="flex-1 min-h-0 flex items-center justify-center overflow-hidden">
+              {stageTracks.length > 0 ? (
+                <div
+                  className={`w-full h-full min-h-0 grid gap-1.5 ${
+                    stageTracks.length > 1 ? 'grid-cols-2' : 'grid-cols-1'
+                  }`}
+                >
+                  {stageTracks.map((trackRef) => (
+                    <div
+                      key={tileId(trackRef)}
+                      className="min-h-0 w-full h-full overflow-hidden flex items-center justify-center"
+                    >
+                      <PipParticipantTile
+                        trackRef={trackRef}
+                        isSpeaking={speakingParticipants.some(
+                          (p) => p.identity === trackRef.participant.identity,
+                        )}
+                        isSmall={stageTracks.length > 1}
+                      />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center text-gray-500 gap-2">
+                  <Radio className="w-7 h-7 opacity-40 animate-pulse text-indigo-400" />
+                  <p className="text-xs font-semibold">話者を待機中...</p>
+                </div>
+              )}
+            </div>
+
+            {/* Filmstrip: skip it in the compact-forced collapse — there's no room
+                to spare once the window itself is this small. */}
+            {!isCompact && stripTracks.length > 0 && (
+              <div className="shrink-0 h-14 sm:h-16 flex gap-1.5 overflow-x-auto">
+                {stripTracks.map((trackRef) => (
+                  <div key={tileId(trackRef)} className="h-full aspect-video shrink-0">
                     <PipParticipantTile
                       trackRef={trackRef}
                       isSpeaking={speakingParticipants.some(
                         (p) => p.identity === trackRef.participant.identity,
                       )}
-                      isSmall={stageTracks.length > 1}
+                      isSmall
                     />
                   </div>
                 ))}
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center text-gray-500 gap-2">
-                <Radio className="w-7 h-7 opacity-40 animate-pulse text-indigo-400" />
-                <p className="text-xs font-semibold">話者を待機中...</p>
               </div>
             )}
           </div>

@@ -116,12 +116,29 @@ export function useZoomPan(enabled: boolean): ZoomPan {
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const rect = container.getBoundingClientRect();
-      const px = e.clientX - rect.left - rect.width / 2;
-      const py = e.clientY - rect.top - rect.height / 2;
-      setZoom((prev) =>
-        zoomAt(prev, prev.scale * Math.exp(-e.deltaY * 0.0015), px, py, fitRef.current),
-      );
+
+      // Trackpad pinch (and literal Ctrl+wheel) — browsers report both this way.
+      // Its per-event deltaY is much smaller than a physical wheel notch, so it
+      // needs a stronger multiplier than plain-wheel zoom used to, to feel
+      // responsive rather than sluggish.
+      if (e.ctrlKey) {
+        const rect = container.getBoundingClientRect();
+        const px = e.clientX - rect.left - rect.width / 2;
+        const py = e.clientY - rect.top - rect.height / 2;
+        setZoom((prev) =>
+          zoomAt(prev, prev.scale * Math.exp(-e.deltaY * 0.02), px, py, fitRef.current),
+        );
+        return;
+      }
+
+      // Plain wheel/two-finger scroll pans instead of zooming: a scroll gesture
+      // reads as "move around" to anyone on a trackpad, and freeing the physical
+      // mouse wheel from zoom duty removes the fight between the two gestures.
+      // Zooming is still available via pinch (above), the +/- buttons, or double-click.
+      setZoom((prev) => ({
+        ...prev,
+        ...clampPan(prev.x - e.deltaX, prev.y - e.deltaY, prev.scale, fitRef.current),
+      }));
     };
 
     container.addEventListener('wheel', onWheel, { passive: false });

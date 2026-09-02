@@ -1,8 +1,11 @@
-import { Router, Request, Response } from 'express';
-import { AccessToken, RoomServiceClient, WebhookReceiver } from 'livekit-server-sdk';
+import { Router, Request, Response, NextFunction } from 'express';
+import { AccessToken, RoomServiceClient, WebhookReceiver, DataPacket_Kind } from 'livekit-server-sdk';
 import { authenticate } from '../middleware/authenticate';
 import { supabase } from '../lib/supabase';
 import { resolveAvatarUrl } from '../lib/r2';
+
+// smiring_member ロールID（ryugakusai-web / frontend/src/hooks/useIsInternal.ts と共通の定義）
+const SMIRING_MEMBER_ROLE_ID = 'c7f24039-c537-402e-91db-664684f5f8b3';
 
 const router = Router();
 
@@ -54,6 +57,153 @@ async function getDisplayProfile(userId: string, fallback: string) {
   return { displayName, avatarUrl };
 }
 
+/** True if the user holds the smiring_member role — the only "mini room host" grant today. */
+async function isSmiRingMemberHost(userId: string): Promise<boolean> {
+  const { data: mapping } = await supabase
+    .from('user_role_mappings')
+    .select('user_id')
+    .eq('user_id', userId)
+    .eq('user_role', SMIRING_MEMBER_ROLE_ID)
+    .maybeSingle();
+  if (mapping) return true;
+
+  // Fallback: resolve the role id by name, in case the constant above ever drifts from the DB.
+  const { data: roleData } = await supabase
+    .from('user_roles')
+    .select('id')
+    .eq('role_name', 'smiring_member')
+    .maybeSingle();
+  if (!roleData?.id) return false;
+
+  const { data: fallbackMapping } = await supabase
+    .from('user_role_mappings')
+    .select('user_id')
+    .eq('user_id', userId)
+    .eq('user_role', roleData.id)
+    .maybeSingle();
+  return !!fallbackMapping;
+}
+
+/** Gate for mini-room management routes: create/move-other/close all require the host grant. */
+async function requireMiniRoomHost(req: Request, res: Response, next: NextFunction) {
+  try {
+    const isHost = await isSmiRingMemberHost(req.user!.id);
+    if (!isHost) {
+      return res.status(403).json({ error: 'ミニルームの操作にはホスト権限が必要です' });
+    }
+    next();
+  } catch (error: any) {
+    console.error('[Connect] Host check failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+/** Generates a LiveKit-safe room name for a mini room. */
+function generateMiniRoomId(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let id = 'mr_';
+  for (let i = 0; i < 10; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
+}
+
+interface MiniRoomRow {
+  id: string;
+  name: string;
+  allow_self_assign: boolean;
+  created_at: string;
+}
+
+/** Active mini rooms for a main room, oldest first. */
+async function getActiveMiniRooms(mainRoomId: string): Promise<MiniRoomRow[]> {
+  const { data, error } = await supabase
+    .from('connect_miniroom_rooms')
+    .select('id, name, allow_self_assign, created_at')
+    .eq('main_room_id', mainRoomId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return data ?? [];
+}
+
+function serializeMiniRooms(rows: MiniRoomRow[]) {
+  return rows.map((r) => ({ id: r.id, name: r.name, createdAt: new Date(r.created_at).getTime() }));
+}
+
+/** Finds which of the given LiveKit rooms an identity is currently connected to. */
+async function findParticipantCurrentRoom(
+  candidateRoomIds: string[],
+  identity: string,
+): Promise<string | null> {
+  if (!roomService) return null;
+  const results = await Promise.all(
+    candidateRoomIds.map(async (roomId) => {
+      try {
+        const participants = await roomService!.listParticipants(roomId);
+        return participants.some((p) => p.identity === identity) ? roomId : null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return results.find((r) => r !== null) ?? null;
+}
+
+/** Broadcasts the current mini-room list to the main room and every active mini room,
+ *  so every connected client's picker/panel stays live without relying on polling alone. */
+async function broadcastMiniRoomSync(
+  mainRoomId: string,
+  rooms: { id: string; name: string; createdAt: number }[],
+  allowSelfAssign: boolean,
+) {
+  if (!roomService) return;
+  const payload = Buffer.from(JSON.stringify({ type: 'miniroom_sync', rooms, allowSelfAssign }), 'utf8');
+  const targets = [mainRoomId, ...rooms.map((r) => r.id)];
+  await Promise.all(
+    targets.map((roomId) =>
+      roomService!
+        .sendData(roomId, payload, DataPacket_Kind.RELIABLE, { topic: 'miniroom_sync' })
+        .catch((e) => console.warn(`[Connect] miniroom_sync broadcast to ${roomId} failed:`, e)),
+    ),
+  );
+}
+
+/** True if a main room currently has no connected participants on LiveKit. */
+async function isRoomEmpty(roomId: string): Promise<boolean> {
+  if (!roomService) return false;
+  const existingRooms = await roomService.listRooms([roomId]);
+  const currentRoom = existingRooms.find((r) => r.name === roomId);
+  return !currentRoom || currentRoom.numParticipants === 0;
+}
+
+/** Wipes everything scoped to a main room once it's gone stale (no participants left):
+ *  chat history, and any mini rooms + their LiveKit rooms. Shared by token issuance,
+ *  the chat-history fetch, and the LiveKit webhook — all three previously duplicated
+ *  the chat-only version of this cleanup inline. */
+async function cleanupStaleRoomData(mainRoomId: string): Promise<void> {
+  const { error: chatError } = await supabase.from('connect_chat_messages').delete().eq('room_id', mainRoomId);
+  if (chatError) {
+    console.error('[Connect] Failed to delete stale chat messages:', chatError);
+  }
+
+  const miniRooms = await getActiveMiniRooms(mainRoomId).catch((e) => {
+    console.error('[Connect] Failed to list stale mini rooms:', e);
+    return [] as MiniRoomRow[];
+  });
+  if (miniRooms.length === 0) return;
+
+  if (roomService) {
+    await Promise.all(miniRooms.map((r) => roomService!.deleteRoom(r.id).catch(() => {})));
+  }
+  const { error: miniError } = await supabase
+    .from('connect_miniroom_rooms')
+    .delete()
+    .eq('main_room_id', mainRoomId);
+  if (miniError) {
+    console.error('[Connect] Failed to delete stale mini room rows:', miniError);
+  }
+}
+
 // POST /api/connect/token  { room, username? } -> { token, url, identity, roomTitle, avatarUrl, displayName }
 router.post('/api/connect/token', authenticate, async (req: Request, res: Response) => {
   try {
@@ -77,10 +227,8 @@ router.post('/api/connect/token', authenticate, async (req: Request, res: Respon
     // so a reused room name never resurrects a stale/unrelated conversation.
     if (roomService) {
       try {
-        const existingRooms = await roomService.listRooms([room]);
-        const currentRoom = existingRooms.find((r) => r.name === room);
-        if (!currentRoom || currentRoom.numParticipants === 0) {
-          await supabase.from('connect_chat_messages').delete().eq('room_id', room);
+        if (await isRoomEmpty(room)) {
+          await cleanupStaleRoomData(room);
         }
       } catch (e) {
         // Best-effort cleanup; never block token issuance on this.
@@ -274,10 +422,8 @@ router.get('/api/connect/rooms/:roomId/messages', authenticate, async (req: Requ
     // If the room currently has 0 participants on LiveKit, wipe leftover messages
     if (roomService) {
       try {
-        const existingRooms = await roomService.listRooms([roomId]);
-        const currentRoom = existingRooms.find((r) => r.name === roomId);
-        if (!currentRoom || currentRoom.numParticipants === 0) {
-          await supabase.from('connect_chat_messages').delete().eq('room_id', roomId);
+        if (await isRoomEmpty(roomId)) {
+          await cleanupStaleRoomData(roomId);
           return res.status(200).json({ messages: [] });
         }
       } catch (e) {
@@ -383,6 +529,341 @@ router.post('/api/connect/rooms/:roomId/messages', authenticate, async (req: Req
   }
 });
 
+// ==========================================
+// 🚪 ミニルーム（ブレイクアウトルーム）API
+// ==========================================
+
+// GET /api/connect/rooms/:roomId/miniroom - List active mini rooms for a main room.
+router.get('/api/connect/rooms/:roomId/miniroom', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { roomId } = req.params;
+    if (!isValidRoomName(roomId)) {
+      return res.status(400).json({ error: 'ルーム名が不正です' });
+    }
+
+    const miniRooms = await getActiveMiniRooms(roomId);
+    return res.status(200).json({
+      rooms: serializeMiniRooms(miniRooms),
+      allowSelfAssign: miniRooms[0]?.allow_self_assign ?? false,
+    });
+  } catch (error: any) {
+    console.error('[Connect] GET .../miniroom failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/rooms/:roomId/miniroom - Create mini room(s) (initial batch, or added to an active session).
+router.post(
+  '/api/connect/rooms/:roomId/miniroom',
+  authenticate,
+  requireMiniRoomHost,
+  async (req: Request, res: Response) => {
+    try {
+      const { roomId } = req.params;
+      if (!isValidRoomName(roomId)) {
+        return res.status(400).json({ error: 'ルーム名が不正です' });
+      }
+      if (!roomService) {
+        return res.status(503).json({ error: 'LiveKitが設定されていません' });
+      }
+
+      const { rooms: requestedRooms, allowSelfAssign: requestedAllowSelfAssign } = req.body ?? {};
+      if (!Array.isArray(requestedRooms) || requestedRooms.length === 0 || requestedRooms.length > 20) {
+        return res.status(400).json({ error: 'ルームは1〜20個で指定してください' });
+      }
+      const names: string[] = [];
+      for (const r of requestedRooms) {
+        const name = typeof r?.name === 'string' ? r.name.trim() : '';
+        if (!name || name.length > 40) {
+          return res.status(400).json({ error: 'ルーム名は1〜40文字で入力してください' });
+        }
+        names.push(name);
+      }
+
+      const existing = await getActiveMiniRooms(roomId);
+      const allowSelfAssign =
+        typeof requestedAllowSelfAssign === 'boolean'
+          ? requestedAllowSelfAssign
+          : existing[0]?.allow_self_assign ?? false;
+
+      // The flag is session-wide — keep already-created rooms in sync if the host changes it.
+      if (typeof requestedAllowSelfAssign === 'boolean' && existing.length > 0) {
+        const { error: syncError } = await supabase
+          .from('connect_miniroom_rooms')
+          .update({ allow_self_assign: allowSelfAssign })
+          .eq('main_room_id', roomId);
+        if (syncError) {
+          console.error('[Connect] Failed to sync allow_self_assign:', syncError);
+        }
+      }
+
+      const created: { id: string }[] = [];
+      try {
+        for (const name of names) {
+          const id = generateMiniRoomId();
+          await roomService.createRoom({ name: id });
+          const { error } = await supabase.from('connect_miniroom_rooms').insert([
+            {
+              id,
+              main_room_id: roomId,
+              name,
+              allow_self_assign: allowSelfAssign,
+              created_by: req.user!.id,
+            },
+          ]);
+          if (error) throw error;
+          created.push({ id });
+        }
+      } catch (error: any) {
+        // Roll back this batch on partial failure (both the LiveKit rooms and DB rows).
+        await Promise.all(
+          created.map((r) =>
+            Promise.all([
+              roomService!.deleteRoom(r.id).catch(() => {}),
+              supabase.from('connect_miniroom_rooms').delete().eq('id', r.id),
+            ]),
+          ),
+        );
+        console.error('[Connect] Mini room creation failed partway:', error);
+        return res.status(500).json({ error: 'ミニルームの作成に失敗しました' });
+      }
+
+      const allMiniRooms = await getActiveMiniRooms(roomId);
+      const rooms = serializeMiniRooms(allMiniRooms);
+      await broadcastMiniRoomSync(roomId, rooms, allowSelfAssign);
+
+      return res.status(201).json({ rooms, allowSelfAssign });
+    } catch (error: any) {
+      console.error('[Connect] POST .../miniroom failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// GET /api/connect/rooms/:roomId/miniroom/participants - Live roster with current room, for the host's move UI.
+router.get(
+  '/api/connect/rooms/:roomId/miniroom/participants',
+  authenticate,
+  requireMiniRoomHost,
+  async (req: Request, res: Response) => {
+    try {
+      const { roomId } = req.params;
+      if (!isValidRoomName(roomId)) {
+        return res.status(400).json({ error: 'ルーム名が不正です' });
+      }
+      if (!roomService) {
+        return res.status(503).json({ error: 'LiveKitが設定されていません' });
+      }
+
+      const miniRooms = await getActiveMiniRooms(roomId);
+      const roomIds = [roomId, ...miniRooms.map((r) => r.id)];
+
+      const results = await Promise.all(
+        roomIds.map(async (id) => {
+          try {
+            const list = await roomService!.listParticipants(id);
+            return list.map((p) => ({ participant: p, currentRoomId: id }));
+          } catch {
+            return [];
+          }
+        }),
+      );
+
+      const participants = results.flat().map(({ participant: p, currentRoomId }) => {
+        let avatarUrl: string | null = null;
+        try {
+          const meta = p.metadata ? JSON.parse(p.metadata) : {};
+          avatarUrl = meta.avatar_url ?? null;
+        } catch {
+          // Ignore malformed metadata.
+        }
+        return {
+          identity: p.identity,
+          name: p.name || p.identity,
+          avatarUrl,
+          currentRoomId,
+        };
+      });
+
+      return res.status(200).json({ participants });
+    } catch (error: any) {
+      console.error('[Connect] GET .../miniroom/participants failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// POST /api/connect/rooms/:roomId/miniroom/move - Unified self-move / host-move-other.
+router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { roomId } = req.params;
+    if (!isValidRoomName(roomId)) {
+      return res.status(400).json({ error: 'ルーム名が不正です' });
+    }
+    if (!roomService) {
+      return res.status(503).json({ error: 'LiveKitが設定されていません' });
+    }
+
+    const { targetIdentity, destinationRoomId } = req.body ?? {};
+    if (typeof targetIdentity !== 'string' || !targetIdentity) {
+      return res.status(400).json({ error: 'targetIdentityが必要です' });
+    }
+    if (typeof destinationRoomId !== 'string' || !destinationRoomId) {
+      return res.status(400).json({ error: 'destinationRoomIdが必要です' });
+    }
+
+    const miniRooms = await getActiveMiniRooms(roomId);
+    const destinationMiniRoom = miniRooms.find((r) => r.id === destinationRoomId);
+    if (destinationRoomId !== roomId && !destinationMiniRoom) {
+      return res.status(400).json({ error: '無効な移動先です' });
+    }
+
+    const userId = req.user!.id;
+    const isSelfMove = targetIdentity === userId;
+
+    if (isSelfMove) {
+      // Returning to the main room is always allowed; joining a mini room yourself
+      // requires the session's allow_self_assign flag.
+      const allowSelfAssign = miniRooms[0]?.allow_self_assign ?? false;
+      if (destinationRoomId !== roomId && !allowSelfAssign) {
+        return res.status(403).json({ error: 'このルームへは自分で移動できません' });
+      }
+    } else {
+      const isHost = await isSmiRingMemberHost(userId);
+      if (!isHost) {
+        return res.status(403).json({ error: '他の参加者を移動させるにはホスト権限が必要です' });
+      }
+    }
+
+    const fromRoom = await findParticipantCurrentRoom(
+      [roomId, ...miniRooms.map((r) => r.id)],
+      targetIdentity,
+    );
+    if (!fromRoom) {
+      return res.status(404).json({ error: '対象の参加者が見つかりません' });
+    }
+    if (fromRoom === destinationRoomId) {
+      return res.status(200).json({ ok: true, alreadyThere: true });
+    }
+
+    if (isSelfMove) {
+      await roomService.moveParticipant(fromRoom, targetIdentity, destinationRoomId);
+      return res.status(200).json({ ok: true });
+    }
+
+    // Host-initiated move of someone else: notify first, then apply the actual move a
+    // few seconds later so the target sees a "moving to..." toast rather than an instant cut.
+    const destinationName = destinationRoomId === roomId ? 'メインルーム' : destinationMiniRoom!.name;
+    const delayMs = 4000;
+    const notifyPayload = Buffer.from(
+      JSON.stringify({ type: 'miniroom_notify', destinationRoomId, destinationName, delayMs }),
+      'utf8',
+    );
+    try {
+      await roomService.sendData(fromRoom, notifyPayload, DataPacket_Kind.RELIABLE, {
+        destinationIdentities: [targetIdentity],
+        topic: 'miniroom_notify',
+      });
+    } catch (e) {
+      console.warn('[Connect] miniroom notify send failed:', e);
+    }
+
+    setTimeout(() => {
+      roomService!
+        .moveParticipant(fromRoom, targetIdentity, destinationRoomId)
+        .catch((e) => console.warn('[Connect] delayed moveParticipant failed (participant likely left):', e));
+    }, delayMs);
+
+    return res.status(202).json({ ok: true, delayMs });
+  } catch (error: any) {
+    console.error('[Connect] POST .../miniroom/move failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/rooms/:roomId/miniroom/close - Close one mini room, or (omitted body) the whole session.
+router.post(
+  '/api/connect/rooms/:roomId/miniroom/close',
+  authenticate,
+  requireMiniRoomHost,
+  async (req: Request, res: Response) => {
+    try {
+      const { roomId } = req.params;
+      if (!isValidRoomName(roomId)) {
+        return res.status(400).json({ error: 'ルーム名が不正です' });
+      }
+      if (!roomService) {
+        return res.status(503).json({ error: 'LiveKitが設定されていません' });
+      }
+
+      const { miniRoomId } = req.body ?? {};
+      const allMiniRooms = await getActiveMiniRooms(roomId);
+      const targets = miniRoomId ? allMiniRooms.filter((r) => r.id === miniRoomId) : allMiniRooms;
+
+      if (miniRoomId && targets.length === 0) {
+        return res.status(404).json({ error: 'ミニルームが見つかりません' });
+      }
+
+      const delayMs = 3000;
+      const notifyPayload = Buffer.from(
+        JSON.stringify({ type: 'miniroom_notify', destinationRoomId: roomId, destinationName: 'メインルーム', delayMs }),
+        'utf8',
+      );
+
+      await Promise.all(
+        targets.map(async (miniRoom) => {
+          let participants: { identity: string }[] = [];
+          try {
+            participants = await roomService!.listParticipants(miniRoom.id);
+          } catch (e) {
+            console.warn(`[Connect] listParticipants failed for ${miniRoom.id}:`, e);
+          }
+
+          await Promise.all(
+            participants.map(async (p) => {
+              try {
+                await roomService!.sendData(miniRoom.id, notifyPayload, DataPacket_Kind.RELIABLE, {
+                  destinationIdentities: [p.identity],
+                  topic: 'miniroom_notify',
+                });
+              } catch (e) {
+                console.warn('[Connect] close notify send failed:', e);
+              }
+              setTimeout(() => {
+                roomService!
+                  .moveParticipant(miniRoom.id, p.identity, roomId)
+                  .catch((e) => console.warn('[Connect] delayed close-move failed:', e));
+              }, delayMs);
+            }),
+          );
+
+          // Give in-flight moves a head start before tearing the room down; deleteRoom
+          // force-disconnects anyone still there, which is fine since they're leaving anyway.
+          setTimeout(() => {
+            roomService!.deleteRoom(miniRoom.id).catch(() => {});
+          }, delayMs + 2000);
+        }),
+      );
+
+      const idsToRemove = targets.map((r) => r.id);
+      const { error } = await supabase.from('connect_miniroom_rooms').delete().in('id', idsToRemove);
+      if (error) {
+        console.error('[Connect] Failed to delete closed mini room rows:', error);
+      }
+
+      const remaining = await getActiveMiniRooms(roomId);
+      const rooms = serializeMiniRooms(remaining);
+      const allowSelfAssign = remaining[0]?.allow_self_assign ?? false;
+      await broadcastMiniRoomSync(roomId, rooms, allowSelfAssign);
+
+      return res.status(200).json({ ok: true });
+    } catch (error: any) {
+      console.error('[Connect] POST .../miniroom/close failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
 // POST /api/connect/webhook - LiveKit webhook receiver.
 // No `authenticate` here: this is called by the LiveKit server itself, not a logged-in
 // user. Authenticity is verified via the signed `Authorize` header instead (see
@@ -403,13 +884,7 @@ router.post('/api/connect/webhook', async (req: Request, res: Response) => {
       (event.event === 'participant_left' && event.room?.name && event.room.numParticipants === 0);
 
     if (shouldDelete && event.room?.name) {
-      const { error } = await supabase
-        .from('connect_chat_messages')
-        .delete()
-        .eq('room_id', event.room.name);
-      if (error) {
-        console.error('[Connect] Failed to delete chat history on webhook:', error);
-      }
+      await cleanupStaleRoomData(event.room.name);
     }
 
     return res.status(200).end();

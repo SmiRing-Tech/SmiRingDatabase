@@ -51,11 +51,20 @@ const managementRoutes_1 = __importDefault(require("./routes/managementRoutes"))
 const connectRoutes_1 = __importDefault(require("./routes/connectRoutes"));
 const eventRoutes_1 = __importDefault(require("./routes/eventRoutes"));
 const roleRequestRoutes_1 = __importDefault(require("./routes/roleRequestRoutes"));
+const maintenanceRoutes_1 = __importDefault(require("./routes/maintenanceRoutes"));
 const app = (0, express_1.default)();
 const port = process.env.PORT || 3000;
 // ミドルウェアの設定
 app.use((0, cors_1.default)()); // Reactからの通信を許可
-app.use(express_1.default.json({ limit: '50mb' }));
+app.use(express_1.default.json({
+    limit: '50mb',
+    // Keep the exact raw bytes around so the LiveKit webhook handler can verify
+    // its HMAC signature (the signature is computed over the raw body, not the
+    // re-serialized JSON, which is not guaranteed to be byte-identical).
+    verify: (req, _res, buf) => {
+        req.rawBody = buf;
+    },
+}));
 app.use(express_1.default.urlencoded({ limit: '50mb', extended: true }));
 // ==========================================
 // 疎通確認用のルート
@@ -72,6 +81,7 @@ app.use(aiRoutes_1.default); // 🧠 AI系
 app.use(storageRoutes_1.default); // ☁️ ストレージ（R2）系
 app.use(authRoutes_1.default); // 🔐 認証系
 app.use(workerRoutes_1.default); // 🤖 ワーカー系
+app.use(maintenanceRoutes_1.default); // ⏰ Cloud Scheduler からの定期ポーリング
 app.use('/api/management', managementRoutes_1.default); // ⚙️ 管理・設定系
 app.use(connectRoutes_1.default); // 🎥 SmiRing Connect (video calls)
 app.use(eventRoutes_1.default); // 📅 イベント系

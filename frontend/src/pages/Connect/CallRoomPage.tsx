@@ -56,9 +56,14 @@ import {
   ChevronUp,
   LayoutGrid,
   Maximize2,
+  DoorOpen,
 } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
+import MiniRoomPanel from '../../components/Connect/MiniRoomPanel';
+import MiniRoomMoveToast from '../../components/Connect/MiniRoomMoveToast';
 import { useAuth } from '../../context/AuthContext';
+import { SMIRING_MEMBER_ROLE_ID } from '../../hooks/useIsInternal';
+import { useMiniRooms, type UseMiniRoomsResult } from '../../hooks/useMiniRooms';
 import { useDocumentPiP } from '../../hooks/useDocumentPiP';
 import { useActiveSpeakerVideoPip } from '../../hooks/useActiveSpeakerVideoPip';
 import { useAdvancedChat } from '../../hooks/useAdvancedChat';
@@ -938,6 +943,29 @@ function ChatMenuItem({
   );
 }
 
+/** Opens the mini-room (breakout room) creation dialog. */
+function MiniRoomButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button onClick={onClick} title="ミニルーム" className={controlButtonClass(false)}>
+      <DoorOpen className="w-5 h-5" />
+      <ControlButtonLabel>ミニルーム</ControlButtonLabel>
+    </button>
+  );
+}
+
+/** Same mini-room entry point, styled as a row inside `MoreMenu` for when the bar is too narrow. */
+function MiniRoomMenuItem({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
+    >
+      <DoorOpen className="w-4 h-4 text-indigo-400" />
+      <span>ミニルーム</span>
+    </button>
+  );
+}
+
 /**
  * One entry in the control bar's overflow system: rendered as a pill button in
  * the bar when there's room, or as a row inside `MoreMenu` when there isn't.
@@ -1103,6 +1131,9 @@ function CustomVideoConference({
   chat,
   showChat,
   setShowChat,
+  isMiniRoomHost,
+  mainRoomId,
+  miniRooms,
 }: {
   layout: CallLayout;
   onOpenPip: () => void;
@@ -1112,9 +1143,16 @@ function CustomVideoConference({
   chat: ReturnType<typeof useAdvancedChat>;
   showChat: boolean;
   setShowChat: (val: boolean | ((prev: boolean) => boolean)) => void;
+  isMiniRoomHost: boolean;
+  mainRoomId: string;
+  miniRooms: UseMiniRoomsResult;
 }) {
   const { localParticipant } = useLocalParticipant();
   const mediaEnhancements = useMediaEnhancementsState(localParticipant);
+
+  // Mini-room panel, opened by the control-bar button. Visible/openable by everyone —
+  // MiniRoomPanel itself branches host vs. non-host content.
+  const [showMiniRoomPanel, setShowMiniRoomPanel] = useState(false);
 
   // Center control-bar items (Screen Share, Chat, and any future additions) fold into
   // the "..." menu once they don't fit. `centerWidth` is the actual box width flexbox
@@ -1147,6 +1185,19 @@ function CustomVideoConference({
           unreadCount={chat.totalUnreadCount}
           onClick={() => {
             setShowChat((prev) => !prev);
+            close();
+          }}
+        />
+      ),
+    },
+    {
+      key: 'miniroom',
+      priority: 0,
+      renderBar: () => <MiniRoomButton onClick={() => setShowMiniRoomPanel(true)} />,
+      renderMenuItem: (close) => (
+        <MiniRoomMenuItem
+          onClick={() => {
+            setShowMiniRoomPanel(true);
             close();
           }}
         />
@@ -1283,6 +1334,14 @@ function CustomVideoConference({
 
       <RoomAudioRenderer />
       <ConnectionStateToast />
+
+      <MiniRoomPanel
+        isOpen={showMiniRoomPanel}
+        onClose={() => setShowMiniRoomPanel(false)}
+        isHost={isMiniRoomHost}
+        mainRoomId={mainRoomId}
+        miniRooms={miniRooms}
+      />
     </div>
   );
 }
@@ -1300,12 +1359,21 @@ function CallRoomInner({
 }) {
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
-  const { user } = useAuth();
+  const { user, roles, roleIds } = useAuth();
+
+  // Mini-room ("host") permission: for now the only people who can create mini rooms
+  // are smiring_member users. This is also where future per-room capabilities (start
+  // recording, force-enable screen share, ...) will hang off the same "host" concept.
+  const isMiniRoomHost = roles.includes('smiring_member') || roleIds.includes(SMIRING_MEMBER_ROLE_ID);
+
+  const miniRooms = useMiniRooms({ mainRoomId: roomId, selfIdentity: user?.id || '', isHost: isMiniRoomHost });
 
   // Safe to call inside <LiveKitRoom>. selfIdentity comes from the authenticated user id
   // (same value the backend issues as the LiveKit participant identity) rather than
   // localParticipant.identity, which is empty until the LiveKit connection completes.
-  const chat = useAdvancedChat({ roomId, selfIdentity: user?.id || '' });
+  // Keyed off the *current* room (main or mini room) so each mini room gets its own
+  // independent chat thread, exactly like any other Connect room would.
+  const chat = useAdvancedChat({ roomId: miniRooms.currentRoomId, selfIdentity: user?.id || '' });
 
   const { localParticipant } = useLocalParticipant();
   const tracks = useTracks(
@@ -1336,13 +1404,17 @@ function CallRoomInner({
     closePip: closeDocumentPip,
   } = useDocumentPiP();
 
-  // Active Speaker Video Picture-in-Picture Hook (Mobile / Video PiP fallback)
+  // Active Speaker Video Picture-in-Picture Hook (Mobile / Video PiP fallback).
+  // Native auto-PiP-on-tab-switch is only enabled where Document PiP isn't
+  // available (mobile/Safari) — on desktop it would otherwise fight with the
+  // manual PiP button, popping a mismatched raw-video window instead of the
+  // custom DocumentPipContent UI.
   const {
     isVideoPipSupported,
     isVideoPipActive,
     requestVideoPip,
     exitVideoPip,
-  } = useActiveSpeakerVideoPip();
+  } = useActiveSpeakerVideoPip({ enableAutoPip: !isDocumentPipSupported });
 
   const isPipSupported = isDocumentPipSupported || isVideoPipSupported;
   const isPipActive = isDocumentPipActive || isVideoPipActive;
@@ -1397,6 +1469,14 @@ function CallRoomInner({
               <Copy className="w-3 h-3 text-gray-400" />
             )}
           </button>
+
+          {/* Current mini room indicator — the badge above always stays the shareable
+              main-room invite code, this just supplements it while inside a mini room. */}
+          {!miniRooms.isInMainRoom && (
+            <span className="flex items-center gap-1 px-2 py-0.5 bg-indigo-500/15 border border-indigo-500/30 rounded-md text-xs font-bold text-indigo-300 shrink-0">
+              現在: {miniRooms.rooms.find((r) => r.id === miniRooms.currentRoomId)?.name ?? 'ミニルーム'}
+            </span>
+          )}
         </div>
 
         {/* Right: Layout Mode Selector */}
@@ -1416,7 +1496,12 @@ function CallRoomInner({
           chat={chat}
           showChat={showChat}
           setShowChat={setShowChat}
+          isMiniRoomHost={isMiniRoomHost}
+          mainRoomId={roomId}
+          miniRooms={miniRooms}
         />
+
+        <MiniRoomMoveToast pendingMove={miniRooms.pendingMove} />
 
         {/* Render Document PiP Portal when active */}
         {isDocumentPipActive &&

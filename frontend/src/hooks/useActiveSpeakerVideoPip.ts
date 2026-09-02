@@ -12,7 +12,13 @@ import { Track, RoomEvent, type LocalTrack, type RemoteTrack } from 'livekit-cli
  * Provides OS-level Video PiP (HTMLVideoElement.requestPictureInPicture) that seamlessly
  * updates its underlying video source to the active speaker (or screen share) in real-time.
  */
-export function useActiveSpeakerVideoPip() {
+export function useActiveSpeakerVideoPip(options?: { enableAutoPip?: boolean }) {
+  // `autoPictureInPicture` should only drive the browser's native raw-video PiP on
+  // devices that can't use the richer Document PiP UI (mobile/Safari). On desktop,
+  // where Document PiP is supported, leaving this on causes Chromium to auto-open
+  // the plain video-element PiP on tab switch — a different, mismatched UI from the
+  // custom DocumentPipContent window the manual PiP button opens.
+  const enableAutoPip = options?.enableAutoPip ?? true;
   const speakingParticipants = useSpeakingParticipants();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const currentAttachedTrackRef = useRef<LocalTrack | RemoteTrack | null>(null);
@@ -99,7 +105,9 @@ export function useActiveSpeakerVideoPip() {
       videoEl.playsInline = true;
       videoEl.setAttribute('playsinline', 'true');
       videoEl.setAttribute('webkit-playsinline', 'true');
-      videoEl.setAttribute('autoPictureInPicture', 'true');
+      if (enableAutoPip) {
+        videoEl.setAttribute('autoPictureInPicture', 'true');
+      }
 
       // Keep it in DOM so browser doesn't garbage-collect or refuse PiP, but out of view
       videoEl.style.position = 'fixed';
@@ -134,7 +142,7 @@ export function useActiveSpeakerVideoPip() {
       }
       videoRef.current = null;
     };
-  }, [isVideoPipSupported]);
+  }, [isVideoPipSupported, enableAutoPip]);
 
   // Seamlessly switch track source on the PiP video element without closing PiP
   useEffect(() => {
@@ -194,12 +202,7 @@ export function useActiveSpeakerVideoPip() {
   }, []);
 
   // MediaSession 'enterpictureinpicture' action handler: fires when the OS/browser's
-  // own media-notification UI offers a PiP button and the user taps it. This is not
-  // an automatic trigger on tab switch / backgrounding — confirmed on Android that
-  // switching tabs does not enter PiP on its own. True auto-PiP would require the
-  // `autopictureinpicture` video attribute (already set above) to be honored by the
-  // browser, which as of testing is not happening reliably for a page opened as a
-  // plain tab (Chrome's auto-PiP has so far targeted installed PWAs).
+  // own media-notification UI offers a PiP button and the user taps it.
   useEffect(() => {
     if (!isVideoPipSupported) return;
 
