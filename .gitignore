@@ -1,4 +1,33 @@
 node_modules/
+
+# 環境変数（.env.example だけは共有したいので除外しない）
 .env
+.env.*
+!.env.example
+
+# ビルド成果物
+# backend/dist は Dockerfile 側で `npm run build` して作り直され、
+# .gcloudignore でもデプロイ対象から外れているため、リポジトリには不要。
+dist/
+build/
+
+# Python のバイトコードキャッシュ（hetzner-livekit/agent）
+__pycache__/
+*.pyc
+
+# AIモデルのローカルキャッシュ（ビルド時に取得される）
+.cache/
+
+# ログ
+*.log
+npm-debug.log*
+logs/
+
+# エディタ・OS
 .DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
 /temp/*
