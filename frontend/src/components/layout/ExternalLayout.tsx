@@ -7,7 +7,7 @@ import ExternalSidebar from './ExternalSidebar';
 export default function ExternalLayout() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const location = useLocation();
-  const isInConnectRoom = location.pathname.startsWith('/connect/room/');
+  const isInConnectRoom = location.pathname.startsWith('/connect/room/') || location.pathname.startsWith('/connect/call/');
   useInactivityLogout(!isInConnectRoom);
 
   return (

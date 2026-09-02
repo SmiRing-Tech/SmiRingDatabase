@@ -18,7 +18,7 @@ export default function MainLayout() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
-  const isInConnectRoom = location.pathname.startsWith('/connect/room/');
+  const isInConnectRoom = location.pathname.startsWith('/connect/room/') || location.pathname.startsWith('/connect/call/');
   useInactivityLogout(!isInConnectRoom);
 
   const handleLogout = async () => {

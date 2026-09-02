@@ -29,6 +29,38 @@ export default function ConnectRoomPage() {
   const [profileLoading, setProfileLoading] = useState(true);
   const prejoinContainerRef = useRef<HTMLDivElement>(null);
 
+  // PreJoin (this component's library internals) never exposes the camera/mic
+  // MediaStreams it captures for the device preview, and only releases them on
+  // unmount. Since the call opens in a new tab (window.open), that unmount
+  // happens asynchronously, after the new tab already starts its own capture
+  // of the same devices. Mobile OS audio stacks handle that overlap badly
+  // (silent mic in the new tab), so track every stream ourselves via a
+  // getUserMedia interceptor and stop them explicitly before opening the tab.
+  const activeMediaStreamsRef = useRef<Set<MediaStream>>(new Set());
+
+  useEffect(() => {
+    if (phase !== 'prejoin') return;
+
+    const mediaDevices = navigator.mediaDevices;
+    const originalGetUserMedia = mediaDevices.getUserMedia.bind(mediaDevices);
+    mediaDevices.getUserMedia = async (constraints?: MediaStreamConstraints) => {
+      const stream = await originalGetUserMedia(constraints);
+      activeMediaStreamsRef.current.add(stream);
+      return stream;
+    };
+
+    return () => {
+      mediaDevices.getUserMedia = originalGetUserMedia;
+    };
+  }, [phase]);
+
+  const stopPreJoinPreviewTracks = useCallback(() => {
+    activeMediaStreamsRef.current.forEach((stream) => {
+      stream.getTracks().forEach((track) => track.stop());
+    });
+    activeMediaStreamsRef.current.clear();
+  }, []);
+
   // Fetch basic_profile_info to get English name & Avatar URL
   const userEmail = user?.email;
   useEffect(() => {
@@ -191,11 +223,16 @@ export default function ConnectRoomPage() {
         console.warn('[Connect] Failed to save choices to sessionStorage:', e);
       }
 
+      // Release the PreJoin preview's camera/mic before opening the new tab so
+      // it doesn't race a second capture of the same devices there (see
+      // stopPreJoinPreviewTracks above).
+      stopPreJoinPreviewTracks();
+
       // Open call in a new tab without SmiRingDatabase shell
       window.open(`/connect/call/${roomId}`, '_blank');
       setPhase('in-room');
     },
-    [roomId],
+    [roomId, stopPreJoinPreviewTracks],
   );
 
   const handlePreJoinError = useCallback((e: Error) => {

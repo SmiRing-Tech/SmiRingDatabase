@@ -170,7 +170,11 @@ export function useActiveSpeakerVideoPip() {
 
     try {
       if (document.pictureInPictureElement !== videoEl) {
-        await videoEl.play().catch(() => {});
+        // Call requestPictureInPicture() first and don't await play() before it —
+        // the browser's transient user-activation window (~5s in Chromium) starts
+        // ticking from the tap that triggered this handler, and awaiting play()
+        // first can burn through it, silently failing the PiP request.
+        videoEl.play().catch(() => {});
         await videoEl.requestPictureInPicture();
       }
     } catch (e) {
@@ -189,11 +193,16 @@ export function useActiveSpeakerVideoPip() {
     }
   }, []);
 
-  // Configure Auto-PiP handlers (MediaSession & visibilitychange for Chrome / Android)
+  // MediaSession 'enterpictureinpicture' action handler: fires when the OS/browser's
+  // own media-notification UI offers a PiP button and the user taps it. This is not
+  // an automatic trigger on tab switch / backgrounding — confirmed on Android that
+  // switching tabs does not enter PiP on its own. True auto-PiP would require the
+  // `autopictureinpicture` video attribute (already set above) to be honored by the
+  // browser, which as of testing is not happening reliably for a page opened as a
+  // plain tab (Chrome's auto-PiP has so far targeted installed PWAs).
   useEffect(() => {
     if (!isVideoPipSupported) return;
 
-    // MediaSession enterpictureinpicture action handler (Automatic PiP on tab/app switch)
     if ('mediaSession' in navigator && 'setActionHandler' in navigator.mediaSession) {
       try {
         navigator.mediaSession.setActionHandler('enterpictureinpicture' as any, () => {

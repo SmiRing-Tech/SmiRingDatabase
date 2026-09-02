@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -92,6 +93,31 @@ function controlButtonClass(active: boolean, danger = false) {
 
 function ControlButtonLabel({ children }: { children: ReactNode }) {
   return <span className="text-[10px] font-bold leading-none whitespace-nowrap">{children}</span>;
+}
+
+/**
+ * Tracks an element's rendered width via ResizeObserver, so layout code can react
+ * to the *actual* space available (container width) rather than guessing from the
+ * viewport breakpoint — the control bar can be squeezed by the chat sidebar, not
+ * just by a narrow phone.
+ */
+function useElementWidth<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
+  const [width, setWidth] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setWidth(entry.contentRect.width);
+    });
+    observer.observe(el);
+    setWidth(el.getBoundingClientRect().width);
+    return () => observer.disconnect();
+  }, []);
+
+  return { ref, width };
 }
 
 /**
@@ -778,7 +804,7 @@ function CameraButton({ mediaEnhancements }: { mediaEnhancements: MediaEnhanceme
   );
 }
 
-function ScreenShareButton() {
+function useScreenShareToggle() {
   const isSupported = useMemo(() => supportsScreenSharing(), []);
   const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
 
@@ -790,16 +816,38 @@ function ScreenShareButton() {
     }
   }, [localParticipant, isScreenShareEnabled]);
 
+  return { isSupported, isScreenShareEnabled, toggleShare };
+}
+
+function ScreenShareButton() {
+  const { isSupported, isScreenShareEnabled, toggleShare } = useScreenShareToggle();
+
+  if (!isSupported) return null;
+
+  return (
+    <button onClick={toggleShare} title="画面共有" className={controlButtonClass(isScreenShareEnabled)}>
+      <ScreenShare className="w-5 h-5" />
+      <ControlButtonLabel>共有</ControlButtonLabel>
+    </button>
+  );
+}
+
+/** Same screen-share toggle, styled as a row inside `MoreMenu` for when the bar is too narrow. */
+function ScreenShareMenuItem({ onSelect }: { onSelect: () => void }) {
+  const { isSupported, isScreenShareEnabled, toggleShare } = useScreenShareToggle();
+
   if (!isSupported) return null;
 
   return (
     <button
-      onClick={toggleShare}
-      title="画面共有"
-      className={`${controlButtonClass(isScreenShareEnabled)} hidden sm:inline-flex`}
+      onClick={() => {
+        toggleShare();
+        onSelect();
+      }}
+      className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
     >
-      <ScreenShare className="w-5 h-5" />
-      <ControlButtonLabel>共有</ControlButtonLabel>
+      <ScreenShare className="w-4 h-4 text-indigo-400" />
+      <span>{isScreenShareEnabled ? '画面共有を停止' : '画面共有'}</span>
     </button>
   );
 }
@@ -864,18 +912,72 @@ function ChatToggleButton({
   );
 }
 
+/** Same chat toggle, styled as a row inside `MoreMenu` for when the bar is too narrow. */
+function ChatMenuItem({
+  isOpen,
+  unreadCount,
+  onClick,
+}: {
+  isOpen: boolean;
+  unreadCount: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
+    >
+      <MessageSquare className="w-4 h-4 text-indigo-400" />
+      <span>{isOpen ? 'チャットを閉じる' : 'チャット'}</span>
+      {unreadCount > 0 && (
+        <span className="ml-auto min-w-4 h-4 px-1 bg-rose-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+          {unreadCount}
+        </span>
+      )}
+    </button>
+  );
+}
+
 /**
- * "その他のメニュー" next to the control bar — currently just the PiP entry point.
+ * One entry in the control bar's overflow system: rendered as a pill button in
+ * the bar when there's room, or as a row inside `MoreMenu` when there isn't.
+ * `priority` decides collapse order — the LOWEST priority item collapses first
+ * as the bar gets narrower. To add a new control-bar feature (screen recording,
+ * AI chat, participant list, ...), just add one more entry to the `overflowItems`
+ * array built in `CustomVideoConference` — the width measurement and collapsing
+ * below are generic and don't need to change.
+ */
+interface OverflowBarItem {
+  key: string;
+  priority: number;
+  badgeCount?: number;
+  renderBar: () => ReactNode;
+  renderMenuItem: (close: () => void) => ReactNode;
+}
+
+/** Estimated rendered width (pill + gap) of one `controlButtonClass` button, used to decide how many overflow items fit. */
+const OVERFLOW_ITEM_WIDTH_PX = 84;
+
+/**
+ * "その他のメニュー" next to the control bar. Always holds the PiP entry point
+ * (when supported), plus whichever `overflowItems` didn't fit in the bar — see
+ * the collapsing logic in `CustomVideoConference`.
  */
 function MoreMenu({
+  showPip,
   onOpenPip,
   isPipActive,
+  collapsedItems,
 }: {
+  showPip: boolean;
   onOpenPip: () => void;
   isPipActive: boolean;
+  collapsedItems: OverflowBarItem[];
 }) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [isOpen, setIsOpen] = useState(false);
+  const close = useCallback(() => setIsOpen(false), []);
+  const badgeTotal = collapsedItems.reduce((sum, item) => sum + (item.badgeCount ?? 0), 0);
 
   return (
     <div className="relative flex items-center">
@@ -883,25 +985,35 @@ function MoreMenu({
         ref={triggerRef}
         onClick={() => setIsOpen((prev) => !prev)}
         title="その他のメニュー"
-        className={controlButtonClass(isOpen)}
+        className={`relative ${controlButtonClass(isOpen)}`}
       >
         <Ellipsis className="w-5 h-5" />
         <ControlButtonLabel>その他</ControlButtonLabel>
+        {badgeTotal > 0 && (
+          <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 bg-rose-500 text-white text-[9px] font-bold rounded-full border-2 border-gray-950 flex items-center justify-center animate-pulse">
+            {badgeTotal}
+          </span>
+        )}
       </button>
 
       {isOpen && (
         <DropdownPortal anchorRef={triggerRef} onClose={() => setIsOpen(false)} align="left">
           <div className="w-56 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl p-2 text-white">
-            <button
-              onClick={() => {
-                onOpenPip();
-                setIsOpen(false);
-              }}
-              className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
-            >
-              <PictureInPicture2 className="w-4 h-4 text-indigo-400" />
-              <span>{isPipActive ? 'PiP表示中' : 'PiPで開く'}</span>
-            </button>
+            {collapsedItems.map((item) => (
+              <div key={item.key}>{item.renderMenuItem(close)}</div>
+            ))}
+            {showPip && (
+              <button
+                onClick={() => {
+                  onOpenPip();
+                  close();
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
+              >
+                <PictureInPicture2 className="w-4 h-4 text-indigo-400" />
+                <span>{isPipActive ? 'PiP表示中' : 'PiPで開く'}</span>
+              </button>
+            )}
           </div>
         </DropdownPortal>
       )}
@@ -1004,6 +1116,62 @@ function CustomVideoConference({
   const { localParticipant } = useLocalParticipant();
   const mediaEnhancements = useMediaEnhancementsState(localParticipant);
 
+  // Center control-bar items (Screen Share, Chat, and any future additions) fold into
+  // the "..." menu once they don't fit. `centerWidth` is the actual box width flexbox
+  // already assigned to the center `flex-1` slot — i.e. exactly the room available
+  // after Mic/Camera (left) and Leave (right) take their space — so this keeps working
+  // automatically if those change size too, not just when the viewport is narrow.
+  const { ref: centerRef, width: centerWidth } = useElementWidth<HTMLDivElement>();
+
+  const overflowItems: OverflowBarItem[] = [
+    {
+      key: 'screenshare',
+      priority: 1,
+      renderBar: () => <ScreenShareButton />,
+      renderMenuItem: (close) => <ScreenShareMenuItem onSelect={close} />,
+    },
+    {
+      key: 'chat',
+      priority: 2,
+      badgeCount: chat.totalUnreadCount,
+      renderBar: () => (
+        <ChatToggleButton
+          isOpen={showChat}
+          unreadCount={chat.totalUnreadCount}
+          onClick={() => setShowChat((prev) => !prev)}
+        />
+      ),
+      renderMenuItem: (close) => (
+        <ChatMenuItem
+          isOpen={showChat}
+          unreadCount={chat.totalUnreadCount}
+          onClick={() => {
+            setShowChat((prev) => !prev);
+            close();
+          }}
+        />
+      ),
+    },
+    // Add future control-bar features here (screen recording, AI chat, participant
+    // list, ...) with a `priority` — lower numbers collapse into "..." first as the
+    // bar narrows. No other change needed; the fit/collapse logic below is generic.
+  ];
+
+  // Reserve room for the "More" button itself so it doesn't pop in/out as items
+  // cross the fit threshold (that would shrink the available space and could flip
+  // the decision back and forth).
+  const availableForItems = centerWidth === null ? Infinity : centerWidth - OVERFLOW_ITEM_WIDTH_PX;
+  const fitCount =
+    availableForItems === Infinity ? overflowItems.length : Math.max(0, Math.floor(availableForItems / OVERFLOW_ITEM_WIDTH_PX));
+  const visibleKeys = new Set(
+    [...overflowItems]
+      .sort((a, b) => b.priority - a.priority)
+      .slice(0, fitCount)
+      .map((item) => item.key),
+  );
+  const visibleItems = overflowItems.filter((item) => visibleKeys.has(item.key));
+  const collapsedItems = overflowItems.filter((item) => !visibleKeys.has(item.key));
+
   // Detect whether the local user (myself) is sharing screen
   const isLocalScreenSharing = localParticipant?.isScreenShareEnabled ?? false;
 
@@ -1069,7 +1237,10 @@ function CustomVideoConference({
               />
             )}
           </div>
-          {/* Control bar: Left (Mic & Camera), Center (Layout, Share, Chat, More), Right (Leave) */}
+          {/* Control bar: Left (Mic & Camera), Center (overflow items + More), Right (Leave).
+              Center items collapse into the "..." menu by priority once the bar is too
+              narrow to fit everything (measured via ResizeObserver, not a viewport
+              breakpoint, since the chat sidebar can squeeze this even on wide screens). */}
           <div className="shrink-0 px-3 sm:px-6 py-2.5 border-t border-gray-800/80 bg-gray-950/80 backdrop-blur-md">
             <div className="flex items-center justify-between w-full gap-2">
               {/* Left: Mic & Camera */}
@@ -1078,15 +1249,19 @@ function CustomVideoConference({
                 <CameraButton mediaEnhancements={mediaEnhancements} />
               </div>
 
-              {/* Center: Screen Share, Chat, More (PiP) */}
-              <div className="flex items-center justify-center gap-2 flex-1 min-w-0">
-                <ScreenShareButton />
-                <ChatToggleButton
-                  isOpen={showChat}
-                  unreadCount={chat.totalUnreadCount}
-                  onClick={() => setShowChat((prev) => !prev)}
-                />
-                {isPipSupported && <MoreMenu onOpenPip={onOpenPip} isPipActive={isPipActive} />}
+              {/* Center: overflow items (Screen Share, Chat, ...) + More (PiP + collapsed items) */}
+              <div ref={centerRef} className="flex items-center justify-center gap-2 flex-1 min-w-0">
+                {visibleItems.map((item) => (
+                  <Fragment key={item.key}>{item.renderBar()}</Fragment>
+                ))}
+                {(isPipSupported || collapsedItems.length > 0) && (
+                  <MoreMenu
+                    showPip={isPipSupported}
+                    onOpenPip={onOpenPip}
+                    isPipActive={isPipActive}
+                    collapsedItems={collapsedItems}
+                  />
+                )}
               </div>
 
               {/* Right: Leave */}
