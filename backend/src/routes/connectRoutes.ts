@@ -35,6 +35,61 @@ function getCanonicalThreadId(identities: string[]): string {
   return `dm_${unique.join('_')}`;
 }
 
+/**
+ * Mints a LiveKit access token for a user to join a specific room, embedding their
+ * profile (name/avatar) as participant metadata exactly like `/api/connect/token` does.
+ * Shared by that route and the mini-room move/close endpoints, which need to hand a
+ * participant a token for a *different* room without requiring their own browser to
+ * make the request (LiveKit server-side room migration isn't available on this
+ * self-hosted deployment — see mini-room routes below — so switching rooms is done by
+ * the client disconnecting and reconnecting with a freshly minted token instead).
+ */
+async function mintLiveKitToken(userId: string, room: string, usernameOverride?: string): Promise<string> {
+  if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+    throw new Error('LiveKitが設定されていません');
+  }
+
+  let displayName = usernameOverride?.trim() || userId;
+  let avatarUrl: string | null = null;
+  let nameEnglish: string | null = null;
+  let nameKanji: string | null = null;
+
+  try {
+    const { data: profile } = await supabase
+      .from('basic_profile_info')
+      .select('name_english, name_kanji, avatar_id')
+      .eq('id', userId)
+      .single();
+    if (profile) {
+      nameEnglish = profile.name_english || null;
+      nameKanji = profile.name_kanji || null;
+      if (!usernameOverride?.trim()) {
+        displayName = profile.name_english || profile.name_kanji || displayName;
+      }
+      if (profile.avatar_id) {
+        avatarUrl = await resolveAvatarUrl(profile.avatar_id);
+      }
+    }
+  } catch {
+    // Ignore profile lookup failure; still issue the token.
+  }
+
+  const metadata = JSON.stringify({
+    avatar_url: avatarUrl,
+    name_english: nameEnglish,
+    name_kanji: nameKanji,
+  });
+
+  const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+    identity: userId,
+    name: displayName,
+    metadata,
+    ttl: '1h',
+  });
+  at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true });
+  return at.toJwt();
+}
+
 /** Look up display name + avatar for a user, falling back gracefully. */
 async function getDisplayProfile(userId: string, fallback: string) {
   let displayName = fallback;
@@ -168,12 +223,40 @@ async function broadcastMiniRoomSync(
   );
 }
 
-/** True if a main room currently has no connected participants on LiveKit. */
+/** True if a room currently has no connected participants on LiveKit. */
 async function isRoomEmpty(roomId: string): Promise<boolean> {
   if (!roomService) return false;
   const existingRooms = await roomService.listRooms([roomId]);
   const currentRoom = existingRooms.find((r) => r.name === roomId);
   return !currentRoom || currentRoom.numParticipants === 0;
+}
+
+/**
+ * True if a main room's *entire session* is done — the main room itself has 0
+ * participants AND every one of its mini rooms does too. A main room alone going empty
+ * is expected and routine once a breakout session starts (everyone moves out into mini
+ * rooms), so `isRoomEmpty(mainRoomId)` on its own is NOT a safe signal that the call is
+ * over; using it directly would make the first mini-room split trigger cleanup of the
+ * mini rooms that were just created. This is the check every cleanup trigger must use
+ * instead of `isRoomEmpty` for a main room.
+ */
+async function isMainRoomSessionEmpty(mainRoomId: string): Promise<boolean> {
+  if (!(await isRoomEmpty(mainRoomId))) return false;
+
+  const miniRooms = await getActiveMiniRooms(mainRoomId).catch((e) => {
+    console.error('[Connect] Failed to check mini rooms for session-emptiness:', e);
+    return null;
+  });
+  if (miniRooms === null) return false; // Inconclusive — don't risk deleting active mini rooms.
+  if (miniRooms.length === 0) return true;
+
+  try {
+    const liveMiniRooms = await roomService!.listRooms(miniRooms.map((r) => r.id));
+    return !liveMiniRooms.some((r) => r.numParticipants > 0);
+  } catch (e) {
+    console.error('[Connect] Failed to check mini room occupancy:', e);
+    return false;
+  }
 }
 
 /** Wipes everything scoped to a main room once it's gone stale (no participants left):
@@ -222,12 +305,12 @@ router.post('/api/connect/token', authenticate, async (req: Request, res: Respon
 
     const userId = req.user!.id;
 
-    // If this room doesn't currently exist on LiveKit or has 0 participants,
-    // the previous session has fully ended — wipe any leftover chat history for this room_id
-    // so a reused room name never resurrects a stale/unrelated conversation.
+    // If this room's whole session (main room + any mini rooms) has nobody left in it,
+    // the previous session has fully ended — wipe any leftover chat/mini-room data for
+    // this room_id so a reused room name never resurrects a stale/unrelated session.
     if (roomService) {
       try {
-        if (await isRoomEmpty(room)) {
+        if (await isMainRoomSessionEmpty(room)) {
           await cleanupStaleRoomData(room);
         }
       } catch (e) {
@@ -236,53 +319,8 @@ router.post('/api/connect/token', authenticate, async (req: Request, res: Respon
       }
     }
 
-    // Display name & avatar from profile
-    let displayName = username?.trim() || req.user!.email?.split('@')[0] || userId;
-    let avatarUrl: string | null = null;
-    let nameEnglish: string | null = null;
-    let nameKanji: string | null = null;
-
-    try {
-      const { data: profile } = await supabase
-        .from('basic_profile_info')
-        .select('name_english, name_kanji, avatar_id')
-        .eq('id', userId)
-        .single();
-      if (profile) {
-        nameEnglish = profile.name_english || null;
-        nameKanji = profile.name_kanji || null;
-        if (!username?.trim()) {
-          displayName = profile.name_english || profile.name_kanji || displayName;
-        }
-        if (profile.avatar_id) {
-          avatarUrl = await resolveAvatarUrl(profile.avatar_id);
-        }
-      }
-    } catch {
-      // Ignore profile lookup failure; still issue the token.
-    }
-
-    const metadata = JSON.stringify({
-      avatar_url: avatarUrl,
-      name_english: nameEnglish,
-      name_kanji: nameKanji,
-    });
-
-    // Issue access token (identity is unique per user).
-    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
-      identity: userId,
-      name: displayName,
-      metadata,
-      ttl: '1h',
-    });
-    at.addGrant({
-      roomJoin: true,
-      room,
-      canPublish: true,
-      canSubscribe: true,
-    });
-
-    const token = await at.toJwt();
+    const fallbackName = username?.trim() || req.user!.email?.split('@')[0] || userId;
+    const token = await mintLiveKitToken(userId, room, fallbackName);
 
     // Look up room_title if this room_id is registered in connect_rooms
     let roomTitle: string | null = null;
@@ -419,10 +457,12 @@ router.get('/api/connect/rooms/:roomId/messages', authenticate, async (req: Requ
       return res.status(400).json({ error: 'ルーム名が不正です' });
     }
 
-    // If the room currently has 0 participants on LiveKit, wipe leftover messages
+    // If this room's session has nobody left in it, wipe leftover messages. Uses the
+    // session-aware check (not plain isRoomEmpty) because `roomId` here can be a main
+    // room that still has active mini rooms under it — see isMainRoomSessionEmpty.
     if (roomService) {
       try {
-        if (await isRoomEmpty(roomId)) {
+        if (await isMainRoomSessionEmpty(roomId)) {
           await cleanupStaleRoomData(roomId);
           return res.status(200).json({ messages: [] });
         }
@@ -694,6 +734,17 @@ router.get(
 );
 
 // POST /api/connect/rooms/:roomId/miniroom/move - Unified self-move / host-move-other.
+//
+// NOTE: this deployment's self-hosted LiveKit server does not implement the
+// `MoveParticipant` RPC (`RoomServiceClient.moveParticipant` returns "twirp error
+// unknown: not implemented" — confirmed against livekit/livekit-server:latest; this
+// appears to be a LiveKit Cloud-only capability). So instead of moving the participant
+// server-side, this mints a token for the destination room and hands it to the client,
+// which disconnects and reconnects itself:
+//  - self-move: the token comes back directly in this response.
+//  - host-move-other: the token is embedded in a `miniroom_notify` data message sent
+//    only to the target's identity (via sendData, which doesn't require the sender to
+//    be connected to that room) — their own client applies it after `delayMs`.
 router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req: Request, res: Response) => {
   try {
     const { roomId } = req.params;
@@ -728,11 +779,16 @@ router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req
       if (destinationRoomId !== roomId && !allowSelfAssign) {
         return res.status(403).json({ error: 'このルームへは自分で移動できません' });
       }
-    } else {
-      const isHost = await isSmiRingMemberHost(userId);
-      if (!isHost) {
-        return res.status(403).json({ error: '他の参加者を移動させるにはホスト権限が必要です' });
-      }
+
+      // Self-initiated: apply immediately, no notify/delay — the client already knows
+      // it asked for this, it just needs a token for the destination room.
+      const token = await mintLiveKitToken(userId, destinationRoomId);
+      return res.status(200).json({ ok: true, token, url: LIVEKIT_URL, destinationRoomId });
+    }
+
+    const isHost = await isSmiRingMemberHost(userId);
+    if (!isHost) {
+      return res.status(403).json({ error: '他の参加者を移動させるにはホスト権限が必要です' });
     }
 
     const fromRoom = await findParticipantCurrentRoom(
@@ -746,17 +802,21 @@ router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req
       return res.status(200).json({ ok: true, alreadyThere: true });
     }
 
-    if (isSelfMove) {
-      await roomService.moveParticipant(fromRoom, targetIdentity, destinationRoomId);
-      return res.status(200).json({ ok: true });
-    }
-
-    // Host-initiated move of someone else: notify first, then apply the actual move a
-    // few seconds later so the target sees a "moving to..." toast rather than an instant cut.
+    // Host-initiated move of someone else: mint their destination token now and send it
+    // along with the notice, so the target's own client can apply it after `delayMs`
+    // (they see a "moving to..." toast in the meantime rather than an instant cut).
     const destinationName = destinationRoomId === roomId ? 'メインルーム' : destinationMiniRoom!.name;
     const delayMs = 4000;
+    const targetToken = await mintLiveKitToken(targetIdentity, destinationRoomId);
     const notifyPayload = Buffer.from(
-      JSON.stringify({ type: 'miniroom_notify', destinationRoomId, destinationName, delayMs }),
+      JSON.stringify({
+        type: 'miniroom_notify',
+        destinationRoomId,
+        destinationName,
+        token: targetToken,
+        url: LIVEKIT_URL,
+        delayMs,
+      }),
       'utf8',
     );
     try {
@@ -767,12 +827,6 @@ router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req
     } catch (e) {
       console.warn('[Connect] miniroom notify send failed:', e);
     }
-
-    setTimeout(() => {
-      roomService!
-        .moveParticipant(fromRoom, targetIdentity, destinationRoomId)
-        .catch((e) => console.warn('[Connect] delayed moveParticipant failed (participant likely left):', e));
-    }, delayMs);
 
     return res.status(202).json({ ok: true, delayMs });
   } catch (error: any) {
@@ -805,10 +859,6 @@ router.post(
       }
 
       const delayMs = 3000;
-      const notifyPayload = Buffer.from(
-        JSON.stringify({ type: 'miniroom_notify', destinationRoomId: roomId, destinationName: 'メインルーム', delayMs }),
-        'utf8',
-      );
 
       await Promise.all(
         targets.map(async (miniRoom) => {
@@ -819,9 +869,26 @@ router.post(
             console.warn(`[Connect] listParticipants failed for ${miniRoom.id}:`, e);
           }
 
+          // Mint each participant their own main-room token and notify them — same
+          // client-driven-reconnect mechanism as /miniroom/move (see the comment there:
+          // this self-hosted LiveKit deployment doesn't support server-side
+          // moveParticipant). No further backend action needed per participant; their
+          // own client applies the token after `delayMs`.
           await Promise.all(
             participants.map(async (p) => {
               try {
+                const token = await mintLiveKitToken(p.identity, roomId);
+                const notifyPayload = Buffer.from(
+                  JSON.stringify({
+                    type: 'miniroom_notify',
+                    destinationRoomId: roomId,
+                    destinationName: 'メインルーム',
+                    token,
+                    url: LIVEKIT_URL,
+                    delayMs,
+                  }),
+                  'utf8',
+                );
                 await roomService!.sendData(miniRoom.id, notifyPayload, DataPacket_Kind.RELIABLE, {
                   destinationIdentities: [p.identity],
                   topic: 'miniroom_notify',
@@ -829,16 +896,13 @@ router.post(
               } catch (e) {
                 console.warn('[Connect] close notify send failed:', e);
               }
-              setTimeout(() => {
-                roomService!
-                  .moveParticipant(miniRoom.id, p.identity, roomId)
-                  .catch((e) => console.warn('[Connect] delayed close-move failed:', e));
-              }, delayMs);
             }),
           );
 
-          // Give in-flight moves a head start before tearing the room down; deleteRoom
-          // force-disconnects anyone still there, which is fine since they're leaving anyway.
+          // Give the client-driven moves a head start before tearing the room down;
+          // deleteRoom force-disconnects anyone still there, which is fine since
+          // they're leaving anyway (a client that missed the notify, e.g. a dropped
+          // connection, gets no graceful move — acceptable for this cleanup path).
           setTimeout(() => {
             roomService!.deleteRoom(miniRoom.id).catch(() => {});
           }, delayMs + 2000);
@@ -879,11 +943,16 @@ router.post('/api/connect/webhook', async (req: Request, res: Response) => {
     const rawBody = req.rawBody?.toString('utf8') ?? '';
     const event = await webhookReceiver.receive(rawBody, req.get('Authorize'));
 
-    const shouldDelete =
+    const maybeDone =
       (event.event === 'room_finished' && event.room?.name) ||
       (event.event === 'participant_left' && event.room?.name && event.room.numParticipants === 0);
 
-    if (shouldDelete && event.room?.name) {
+    // Even when LiveKit itself reports this specific room as finished/empty, that alone
+    // doesn't mean the whole session is over — `event.room.name` could be a main room
+    // whose participants are all currently split into still-active mini rooms (or a
+    // mini room finishing independently of the others). isMainRoomSessionEmpty checks
+    // the whole family before anything gets deleted.
+    if (maybeDone && event.room?.name && (await isMainRoomSessionEmpty(event.room.name))) {
       await cleanupStaleRoomData(event.room.name);
     }
 

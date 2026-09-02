@@ -63,7 +63,7 @@ import MiniRoomPanel from '../../components/Connect/MiniRoomPanel';
 import MiniRoomMoveToast from '../../components/Connect/MiniRoomMoveToast';
 import { useAuth } from '../../context/AuthContext';
 import { SMIRING_MEMBER_ROLE_ID } from '../../hooks/useIsInternal';
-import { useMiniRooms, type UseMiniRoomsResult } from '../../hooks/useMiniRooms';
+import { useMiniRooms, type UseMiniRoomsResult, type ReconnectTarget } from '../../hooks/useMiniRooms';
 import { useDocumentPiP } from '../../hooks/useDocumentPiP';
 import { useActiveSpeakerVideoPip } from '../../hooks/useActiveSpeakerVideoPip';
 import { useAdvancedChat } from '../../hooks/useAdvancedChat';
@@ -1353,9 +1353,11 @@ function CustomVideoConference({
 function CallRoomInner({
   roomId,
   roomTitle,
+  onReconnect,
 }: {
   roomId: string;
   roomTitle: string;
+  onReconnect: (target: ReconnectTarget) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -1366,7 +1368,12 @@ function CallRoomInner({
   // recording, force-enable screen share, ...) will hang off the same "host" concept.
   const isMiniRoomHost = roles.includes('smiring_member') || roleIds.includes(SMIRING_MEMBER_ROLE_ID);
 
-  const miniRooms = useMiniRooms({ mainRoomId: roomId, selfIdentity: user?.id || '', isHost: isMiniRoomHost });
+  const miniRooms = useMiniRooms({
+    mainRoomId: roomId,
+    selfIdentity: user?.id || '',
+    isHost: isMiniRoomHost,
+    onReconnect,
+  });
 
   // Safe to call inside <LiveKitRoom>. selfIdentity comes from the authenticated user id
   // (same value the backend issues as the LiveKit participant identity) rather than
@@ -1652,6 +1659,17 @@ export default function CallRoomPage() {
     setIsDisconnected(true);
   };
 
+  // Applies a mini-room switch: updates the token/url that <LiveKitRoom> is rendered
+  // with (it reconnects on token/serverUrl prop changes — see useLiveKitRoom), and
+  // carries over the participant's *current* mic/camera enabled state so muting isn't
+  // silently undone by the reconnect (video/audio below otherwise only reflect the
+  // original pre-join choice, not anything toggled mid-call).
+  const handleReconnect = useCallback((target: ReconnectTarget) => {
+    setToken(target.token);
+    setServerUrl(target.url);
+    setChoices((prev) => (prev ? { ...prev, audioEnabled: target.audio, videoEnabled: target.video } : prev));
+  }, []);
+
   const handleCloseWindow = () => {
     window.close();
     navigate('/connect');
@@ -1740,6 +1758,7 @@ export default function CallRoomPage() {
         <CallRoomInner
           roomId={roomId!}
           roomTitle={roomTitle}
+          onReconnect={handleReconnect}
         />
       </LiveKitRoom>
     </div>

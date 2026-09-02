@@ -26,27 +26,45 @@ export interface PendingMiniRoomMove {
   etaMs: number;
 }
 
+/** What to reconnect to, and the mic/camera enabled state to carry over. */
+export interface ReconnectTarget {
+  token: string;
+  url: string;
+  audio: boolean;
+  video: boolean;
+}
+
 interface UseMiniRoomsOptions {
   /** The main call's room id (URL route param) — mini rooms belong to this session. */
   mainRoomId: string;
   /** Same value used as the LiveKit participant identity (see useAdvancedChat). */
   selfIdentity: string;
   isHost: boolean;
+  /** Applies a reconnect target to the actual LiveKit connection (owned by CallRoomPage,
+   *  which feeds token/url into <LiveKitRoom>). */
+  onReconnect: (target: ReconnectTarget) => void;
 }
 
 /**
- * Client for the "mini room" (breakout room) feature. All LiveKit room-switching is
- * driven entirely by the backend (RoomServiceClient.moveParticipant) — this hook never
- * calls any LiveKit move/connect API itself. It only:
- *  - tracks which room we're currently in, reactively, via RoomEvent.Moved (nothing in
- *    @livekit/components-react reacts to that event on its own);
+ * Client for the "mini room" (breakout room) feature.
+ *
+ * This self-hosted LiveKit deployment doesn't implement the server-side
+ * `MoveParticipant` RPC (confirmed by testing against livekit/livekit-server:latest —
+ * it returns "twirp error unknown: not implemented", apparently a LiveKit Cloud-only
+ * capability). So room switching is entirely client-driven: the backend mints a token
+ * for the destination room and hands it over — directly in the response for a
+ * self-move, or via a `miniroom_notify` data message (targeted at just this identity)
+ * for a host-initiated move — and this hook disconnects/reconnects using it via
+ * `onReconnect`, which updates the token/url state that <LiveKitRoom> is rendered with.
+ *
+ * Also:
  *  - keeps the mini-room list in sync via REST + a `miniroom_sync` data broadcast;
- *  - surfaces a host's forced-move notice (`miniroom_notify`) as `pendingMove` for a
- *    toast — the actual move happens server-side a few seconds later and is reflected
- *    here only once RoomEvent.Moved actually fires;
+ *  - surfaces a host's forced-move notice as `pendingMove` for a toast, and applies the
+ *    embedded token itself once the notice's `delayMs` elapses (nothing server-side
+ *    performs the move — this hook's own timer is what makes it happen);
  *  - exposes thin REST actions for create/move/close.
  */
-export function useMiniRooms({ mainRoomId, selfIdentity, isHost }: UseMiniRoomsOptions) {
+export function useMiniRooms({ mainRoomId, selfIdentity, isHost, onReconnect }: UseMiniRoomsOptions) {
   const room = useRoomContext();
 
   const [currentRoomId, setCurrentRoomId] = useState(mainRoomId);
@@ -54,6 +72,26 @@ export function useMiniRooms({ mainRoomId, selfIdentity, isHost }: UseMiniRoomsO
   const [allowSelfAssign, setAllowSelfAssign] = useState(false);
   const [participants, setParticipants] = useState<MiniRoomParticipant[]>([]);
   const [pendingMove, setPendingMove] = useState<PendingMiniRoomMove | null>(null);
+
+  const onReconnectRef = useRef(onReconnect);
+  useEffect(() => {
+    onReconnectRef.current = onReconnect;
+  }, [onReconnect]);
+
+  // Applies a reconnect target: captures the room's *current* mic/camera enabled state
+  // (not the original join-time preference) so muting/camera-off survives the switch —
+  // <LiveKitRoom>'s audio/video props otherwise only reflect how the call was first
+  // joined, which would silently un-mute someone on every room switch.
+  const applyReconnect = useCallback(
+    (target: { token: string; url: string; destinationRoomId: string }) => {
+      const audio = room?.localParticipant?.isMicrophoneEnabled ?? true;
+      const video = room?.localParticipant?.isCameraEnabled ?? true;
+      setCurrentRoomId(target.destinationRoomId);
+      setPendingMove(null);
+      onReconnectRef.current({ token: target.token, url: target.url, audio, video });
+    },
+    [room],
+  );
 
   // Fetch the current mini-room list for this main room.
   const refreshRooms = useCallback(async () => {
@@ -89,26 +127,12 @@ export function useMiniRooms({ mainRoomId, selfIdentity, isHost }: UseMiniRoomsO
     }
   }, [mainRoomId, isHost]);
 
-  // Reactive current-room tracking: RoomEvent.Moved fires with the new room name once
-  // the server actually performs a moveParticipant, whether self- or host-initiated.
-  // `currentRoomId` starts seeded at `mainRoomId` (its initial state), which is already
-  // correct — a participant always connects to the main room first — so this effect only
-  // needs to subscribe going forward, not re-seed on mount.
-  useEffect(() => {
-    if (!room) return;
+  // Live updates: room list changes (create/close) and forced-move notices. A forced
+  // move's `delayMs` countdown is enforced right here with a plain timeout — there is no
+  // server-side timer backing this; if this tab is closed before it fires, the move
+  // simply never happens for it (acceptable: nobody is there to see it complete anyway).
+  const pendingMoveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    const handleMoved = (newRoomName: string) => {
-      setCurrentRoomId(newRoomName);
-      setPendingMove(null);
-    };
-
-    room.on(RoomEvent.Moved, handleMoved);
-    return () => {
-      room.off(RoomEvent.Moved, handleMoved);
-    };
-  }, [room]);
-
-  // Live updates: room list changes (create/close) and forced-move notices.
   useEffect(() => {
     if (!room) return;
 
@@ -121,12 +145,23 @@ export function useMiniRooms({ mainRoomId, selfIdentity, isHost }: UseMiniRoomsO
         if (topic === SYNC_TOPIC && Array.isArray(data.rooms)) {
           setRooms(data.rooms);
           setAllowSelfAssign(!!data.allowSelfAssign);
-        } else if (topic === NOTIFY_TOPIC && data.destinationRoomId) {
+        } else if (topic === NOTIFY_TOPIC && data.destinationRoomId && data.token && data.url) {
+          const delayMs = typeof data.delayMs === 'number' ? data.delayMs : 4000;
           setPendingMove({
             destinationRoomId: data.destinationRoomId,
             destinationName: data.destinationName || data.destinationRoomId,
-            etaMs: typeof data.delayMs === 'number' ? data.delayMs : 4000,
+            etaMs: delayMs,
           });
+
+          if (pendingMoveTimeoutRef.current) clearTimeout(pendingMoveTimeoutRef.current);
+          pendingMoveTimeoutRef.current = setTimeout(() => {
+            pendingMoveTimeoutRef.current = null;
+            applyReconnect({
+              token: data.token,
+              url: data.url,
+              destinationRoomId: data.destinationRoomId,
+            });
+          }, delayMs);
         }
       } catch (e) {
         console.warn('[MiniRooms] Failed to parse incoming data message:', e);
@@ -137,7 +172,14 @@ export function useMiniRooms({ mainRoomId, selfIdentity, isHost }: UseMiniRoomsO
     return () => {
       room.off(RoomEvent.DataReceived, handleDataReceived);
     };
-  }, [room]);
+  }, [room, applyReconnect]);
+
+  useEffect(
+    () => () => {
+      if (pendingMoveTimeoutRef.current) clearTimeout(pendingMoveTimeoutRef.current);
+    },
+    [],
+  );
 
   // Host roster polling, active only while requested (panel open).
   const pollEnabledRef = useRef(false);
@@ -174,7 +216,28 @@ export function useMiniRooms({ mainRoomId, selfIdentity, isHost }: UseMiniRoomsO
     [mainRoomId],
   );
 
-  const move = useCallback(
+  // Self-move: the response carries a token for the destination room directly — apply
+  // it immediately, no notify/delay (the participant already knows they asked for this).
+  const moveSelf = useCallback(
+    async (destinationRoomId: string) => {
+      const res = await apiClient.post(`/api/connect/rooms/${mainRoomId}/miniroom/move`, {
+        targetIdentity: selfIdentity,
+        destinationRoomId,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `移動に失敗しました (${res.status})`);
+      }
+      const body = await res.json();
+      if (body.alreadyThere) return;
+      applyReconnect({ token: body.token, url: body.url, destinationRoomId: body.destinationRoomId });
+    },
+    [mainRoomId, selfIdentity, applyReconnect],
+  );
+
+  // Host moving someone else: this only sends the request — the target's own client
+  // applies the move via the `miniroom_notify` data message it receives (handled above).
+  const moveOther = useCallback(
     async (targetIdentity: string, destinationRoomId: string) => {
       const res = await apiClient.post(`/api/connect/rooms/${mainRoomId}/miniroom/move`, {
         targetIdentity,
@@ -186,16 +249,6 @@ export function useMiniRooms({ mainRoomId, selfIdentity, isHost }: UseMiniRoomsO
       }
     },
     [mainRoomId],
-  );
-
-  const moveSelf = useCallback(
-    (destinationRoomId: string) => move(selfIdentity, destinationRoomId),
-    [move, selfIdentity],
-  );
-
-  const moveOther = useCallback(
-    (targetIdentity: string, destinationRoomId: string) => move(targetIdentity, destinationRoomId),
-    [move],
   );
 
   const closeMiniRoom = useCallback(
