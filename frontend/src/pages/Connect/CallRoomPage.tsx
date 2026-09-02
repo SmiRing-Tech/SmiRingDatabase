@@ -51,9 +51,13 @@ import {
   PhoneOff,
   Ellipsis,
   ChevronUp,
+  ChevronRight,
   LayoutGrid,
   Maximize2,
   DoorOpen,
+  Ban,
+  Droplets,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import MiniRoomPanel from '../../components/Connect/MiniRoomPanel';
@@ -65,8 +69,8 @@ import { useDocumentPiP } from '../../hooks/useDocumentPiP';
 import { useActiveSpeakerVideoPip } from '../../hooks/useActiveSpeakerVideoPip';
 import { useAdvancedChat } from '../../hooks/useAdvancedChat';
 import DocumentPipContent from './DocumentPipContent';
-import { useBackgroundEffect } from './useBackgroundEffect';
-import BackgroundControls from './BackgroundControls';
+import { useBackgroundEffect, PRESETS } from './useBackgroundEffect';
+import BackgroundEffectModal from '../../components/Connect/BackgroundEffectModal';
 import AdvancedChat from '../../components/Connect/AdvancedChat';
 import LeaveConfirmModal from '../../components/Connect/LeaveConfirmModal';
 import GridLayoutView from '../../components/Connect/callLayout/GridLayoutView';
@@ -585,6 +589,16 @@ function CameraMenuDropdown({
   } = useMediaDeviceSelect({ kind: 'videoinput' });
 
   const { background } = mediaEnhancements;
+  const [showBackgroundModal, setShowBackgroundModal] = useState(false);
+
+  const currentBackgroundLabel =
+    background.mode === 'off'
+      ? 'オフ'
+      : background.mode === 'blur'
+        ? 'ぼかし'
+        : PRESETS.find((p) => p.id === background.imageId)?.label ?? 'アップロード画像';
+  const currentBackgroundThumb = background.mode === 'image' ? background.imageUrlFor(background.imageId) : undefined;
+  const CurrentBackgroundIcon = background.mode === 'off' ? Ban : background.mode === 'blur' ? Droplets : ImageIcon;
 
   return (
     <DropdownPortal anchorRef={anchorRef} onClose={onClose} align="left">
@@ -632,10 +646,39 @@ function CameraMenuDropdown({
           </div>
         </div>
 
+        {/* Background effect — summary row, opens the picker in a popup */}
         <div className="px-1">
-          <BackgroundControls state={background} />
+          <button
+            onClick={() => setShowBackgroundModal(true)}
+            className="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border border-gray-800/80 bg-gray-800/40 hover:bg-gray-800 transition-colors text-left"
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              {currentBackgroundThumb ? (
+                <img
+                  src={currentBackgroundThumb}
+                  alt=""
+                  className="w-8 h-6 rounded-md object-cover border border-gray-700 shrink-0"
+                />
+              ) : (
+                <div className="w-8 h-6 rounded-md bg-gray-900 border border-gray-700 flex items-center justify-center shrink-0">
+                  <CurrentBackgroundIcon className="w-3.5 h-3.5 text-indigo-400" />
+                </div>
+              )}
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-gray-200">背景を変更</p>
+                <p className="text-[10px] text-gray-400 truncate">現在: {currentBackgroundLabel}</p>
+              </div>
+            </div>
+            <ChevronRight className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+          </button>
         </div>
       </div>
+
+      <BackgroundEffectModal
+        isOpen={showBackgroundModal}
+        onClose={() => setShowBackgroundModal(false)}
+        state={background}
+      />
     </DropdownPortal>
   );
 }

@@ -314,6 +314,7 @@ export function useBackgroundEffect() {
     commit,
     handleUpload,
     handleDelete,
+    imageUrlFor,
   };
 }
 

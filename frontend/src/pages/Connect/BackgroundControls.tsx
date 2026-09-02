@@ -9,7 +9,7 @@ export default function BackgroundControls({ state }: { state: BackgroundEffectS
 
   if (!supported) {
     return (
-      <div className="space-y-2 border-t border-gray-800/80 pt-3">
+      <div className="space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ImageIcon className="w-4 h-4 text-indigo-400" />
@@ -33,8 +33,8 @@ export default function BackgroundControls({ state }: { state: BackgroundEffectS
   ];
 
   return (
-    <div className="space-y-3 border-t border-gray-800/80 pt-3">
-      <div className="flex items-center gap-2">
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 pr-6">
         <ImageIcon className="w-4 h-4 text-indigo-400" />
         <div className="flex-1">
           <p className="text-xs font-bold text-gray-200">背景エフェクト</p>
