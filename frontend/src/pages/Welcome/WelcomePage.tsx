@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { useIsInternal, getDefaultPathForUser } from '../../hooks/useIsInternal';
 
 export default function WelcomePage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { session } = useAuth();
+  const isInternal = useIsInternal();
   const [phase, setPhase] = useState<'enter' | 'visible' | 'exit'>('enter');
 
   useEffect(() => {
@@ -19,14 +21,14 @@ export default function WelcomePage() {
     
     const t3 = setTimeout(() => {
       if (session) {
-        navigate('/home');
+        navigate(getDefaultPathForUser(isInternal));
       } else {
         navigate('/sign-in', { state: location.state });
       }
     }, 2900);
 
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
-  }, [navigate, session, location.state]);
+  }, [navigate, session, isInternal, location.state]);
 
   const isVisible = phase === 'visible';
   const isExit = phase === 'exit';

@@ -13,11 +13,16 @@ const ACTIVITY_EVENTS = [
   'click',
 ] as const;
 
-export function useInactivityLogout() {
+export function useInactivityLogout(enabled: boolean = true) {
   const navigate = useNavigate();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    if (!enabled) {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      return;
+    }
+
     const logout = async () => {
       await supabase.auth.signOut();
       navigate('/sign-in');
@@ -42,5 +47,5 @@ export function useInactivityLogout() {
         window.removeEventListener(event, resetTimer);
       });
     };
-  }, [navigate]);
+  }, [enabled, navigate]);
 }

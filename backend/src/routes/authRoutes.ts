@@ -10,35 +10,6 @@ const router = Router();
 
 
 /**
- * 招待コードの有効性を確認する API
- * ログイン前でもアクセス可能
- */
-router.post('/api/auth/check-invitation-code', async (req: Request, res: Response) => {
-  const { code } = req.body;
-
-  if (!code) {
-    return res.status(400).json({ error: '招待コードを入力してください' });
-  }
-
-  try {
-    // SupabaseのRPCを呼び出してコードを検証
-    const { data: isValid, error } = await supabase.rpc('check_signup_code', { 
-      code_to_check: code 
-    });
-
-    if (error) {
-      console.error('招待コード検証エラー:', error);
-      throw error;
-    }
-
-    res.json({ isValid: !!isValid });
-
-  } catch (error: any) {
-    res.status(500).json({ error: 'コードの検証中にエラーが発生しました' });
-  }
-});
-
-/**
  * ログイン中ユーザーの実効権限一覧を返す API
  * フロントエンドが AuthContext に権限をキャッシュするために使用
  */
@@ -53,7 +24,9 @@ router.get('/api/me/permissions', authenticate, async (req: Request, res: Respon
     const { data: roleMappings, error: rolesError } = await supabase
       .from('user_role_mappings')
       .select(`
+        user_role,
         user_roles (
+          id,
           role_name
         )
       `)
@@ -65,9 +38,23 @@ router.get('/api/me/permissions', authenticate, async (req: Request, res: Respon
       .map(rm => (rm.user_roles as any)?.role_name)
       .filter(Boolean);
 
+    const roleIds = (roleMappings || [])
+      .map(rm => rm.user_role)
+      .filter(Boolean);
+
+    const { data: profile, error: profileError } = await supabase
+      .from('basic_profile_info')
+      .select('metadata')
+      .eq('id', req.user!.id)
+      .maybeSingle();
+
+    if (profileError) throw profileError;
+
     res.json({
       permissions: permissions ?? [],
-      roles
+      roles,
+      roleIds,
+      onboardingCompleted: profile?.metadata?.onboarding_completed === true
     });
   } catch (error: any) {
     console.error('権限取得エラー:', error);

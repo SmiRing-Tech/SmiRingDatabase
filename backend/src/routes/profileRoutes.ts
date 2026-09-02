@@ -345,6 +345,11 @@ router.patch('/api/basic_profile_info/me', authenticate, async (req: Request, re
     // Body から更新したいフィールドのみ受け取り、メタデータを分離
     const { _ai_metadata, ...updates } = req.body;
 
+    // metadata(JSONB) は列ごと上書きすると他の値を消してしまうため、
+    // 送られてきたキーだけを既存の値にマージする
+    const incomingMetadata = updates.metadata;
+    delete updates.metadata;
+
     // 現在の有効な状況（active_stage_role_id）の更新処理
     const activeStageName = updates.active_stage_role_id;
     delete updates.active_stage_role_id;
@@ -405,6 +410,17 @@ router.patch('/api/basic_profile_info/me', authenticate, async (req: Request, re
 
     const basicUpdates: any = {};
     const stageUpdates: any = {};
+
+    if (incomingMetadata && typeof incomingMetadata === 'object') {
+      const { data: existingProfile, error: metadataFetchError } = await supabase
+        .from('basic_profile_info')
+        .select('metadata')
+        .eq('id', req.user!.id)
+        .maybeSingle();
+      if (metadataFetchError) throw metadataFetchError;
+
+      basicUpdates.metadata = { ...(existingProfile?.metadata || {}), ...incomingMetadata };
+    }
 
     const allowedStageFields = activeRole ? STAGE_FIELDS_MAP[activeRole] || [] : [];
 

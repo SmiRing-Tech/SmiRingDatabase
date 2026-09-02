@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../context/AuthContext';
+import { useIsInternal } from '../../hooks/useIsInternal';
 import BasicInfoPage from './BasicInfoTab';
 import DetailInfoTab from './DetailInfoTab';
 import AccountSettingTab from './AccountSettingTab';
@@ -26,7 +27,8 @@ type GalleryItem = {
 export default function ProfilePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user, roles, isLoading: authLoading } = useAuth();
+  const { user, isLoading: authLoading } = useAuth();
+  const isInternal = useIsInternal();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = (searchParams.get('tab') as 'basic' | 'detail' | 'account' | 'ryugakusai2026') || 'basic';
 
@@ -61,14 +63,11 @@ export default function ProfilePage() {
   useEffect(() => {
     if (authLoading) return;
     const myUserId = user?.id;
-    const hasInternalAccess = roles.some(r =>
-      ['smiring_member', 'admin', 'smiring_core'].includes(r)
-    );
 
-    if (id && id !== myUserId && !hasInternalAccess) {
+    if (id && id !== myUserId && !isInternal) {
       navigate('/profile', { replace: true });
     }
-  }, [id, user, roles, authLoading, navigate]);
+  }, [id, user, isInternal, authLoading, navigate]);
 
   const fetchProfile = useCallback(async () => {
     try {

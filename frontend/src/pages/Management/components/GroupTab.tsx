@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Plus, Edit2, Trash2 } from 'lucide-react';
+import { Plus, Edit2, Trash2, Search, X, FolderGit2, Users } from 'lucide-react';
 import { apiClient } from '../../../lib/apiClient';
 import { CustomDropdown, type DropdownOption } from '../../../components/ui/CustomDropdown';
 
@@ -25,6 +25,11 @@ export default function GroupTab({ onError }: GroupTabProps) {
   const [groups, setGroups] = useState<Group[]>([]);
   const [memberGroups, setMemberGroups] = useState<MemberGroupItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+
+  // 検索・フィルター用ステート
+  const [groupSearchQuery, setGroupSearchQuery] = useState('');
+  const [memberSearchQuery, setMemberSearchQuery] = useState('');
+  const [groupFilter, setGroupFilter] = useState('all');
 
   const [editingGroup, setEditingGroup] = useState<Group | null>(null);
   const [groupForm, setGroupForm] = useState({ name: '', description: '' });
@@ -137,37 +142,105 @@ export default function GroupTab({ onError }: GroupTabProps) {
     }));
   }, [groups]);
 
+  const groupFilterOptions = useMemo<DropdownOption[]>(() => {
+    return [
+      { label: 'すべてのグループ', value: 'all' },
+      ...groups.map(g => ({
+        label: g.name,
+        value: g.id
+      })),
+      { label: 'グループ未設定', value: 'unassigned' }
+    ];
+  }, [groups]);
+
+  // フィルタリング処理
+  const filteredGroups = useMemo(() => {
+    if (!groupSearchQuery.trim()) return groups;
+    const q = groupSearchQuery.toLowerCase();
+    return groups.filter(g =>
+      g.name.toLowerCase().includes(q) ||
+      (g.description && g.description.toLowerCase().includes(q))
+    );
+  }, [groups, groupSearchQuery]);
+
+  const filteredMembers = useMemo(() => {
+    return memberGroups.filter(member => {
+      // グループ絞り込み
+      if (groupFilter === 'unassigned') {
+        if (member.group_ids.length > 0) return false;
+      } else if (groupFilter !== 'all') {
+        if (!member.group_ids.includes(groupFilter)) return false;
+      }
+
+      // メンバー名検索
+      if (!memberSearchQuery.trim()) return true;
+      const q = memberSearchQuery.toLowerCase();
+      return (
+        (member.name_english && member.name_english.toLowerCase().includes(q)) ||
+        (member.name_kanji && member.name_kanji.toLowerCase().includes(q)) ||
+        member.id.toLowerCase().includes(q)
+      );
+    });
+  }, [memberGroups, memberSearchQuery, groupFilter]);
+
   if (isLoading && groups.length === 0) {
     return <div className="text-center py-10 text-gray-500 font-bold">グループデータをロード中...</div>;
   }
 
   return (
-    <div className="space-y-10">
+    <div className="space-y-10 animate-in fade-in duration-200">
       {/* 上部: グループ一覧 */}
       <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-          <div>
-            <h2 className="text-xl font-black text-gray-900">グループ一覧</h2>
-            <p className="text-xs text-gray-400 font-semibold mt-1">
-              学内組織・タスクフォースやプロジェクトチームなどを定義・管理します。
-            </p>
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-sky-50 text-sky-600 rounded-2xl">
+              <FolderGit2 className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-gray-900">グループ一覧</h2>
+              <p className="text-xs text-gray-400 font-semibold mt-0.5">
+                学内組織・タスクフォースやプロジェクトチームなどを定義・管理します。
+              </p>
+            </div>
           </div>
           <button
             onClick={() => handleOpenGroupModal()}
-            className="flex items-center justify-center gap-2 py-2.5 px-4 bg-sky-500 hover:bg-sky-600 text-white rounded-xl font-black text-sm shadow-sm transition-all"
+            className="flex items-center justify-center gap-2 py-2.5 px-4 bg-sky-500 hover:bg-sky-600 text-white rounded-xl font-black text-sm shadow-sm transition-all shrink-0"
           >
             <Plus className="w-4 h-4" />
             <span>グループ追加</span>
           </button>
         </div>
 
-        {groups.length === 0 ? (
+        {/* 検索バー */}
+        <div className="mb-4">
+          <div className="relative">
+            <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="グループ名や説明で検索..."
+              value={groupSearchQuery}
+              onChange={e => setGroupSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-gray-700 placeholder-gray-400 focus:outline-none focus:bg-white focus:border-sky-400 focus:ring-2 focus:ring-sky-500/10 transition-all"
+            />
+            {groupSearchQuery && (
+              <button
+                onClick={() => setGroupSearchQuery('')}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {filteredGroups.length === 0 ? (
           <div className="text-center py-12 text-gray-400 font-bold bg-slate-50/50 rounded-2xl border border-dashed">
-            登録されているグループがありません。
+            {groupSearchQuery ? '該当するグループが見つかりません。' : '登録されているグループがありません。'}
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3">
-            {groups.map(group => (
+            {filteredGroups.map(group => (
               <div
                 key={group.id}
                 className="group flex flex-col md:flex-row md:items-center justify-between gap-3 p-3.5 bg-slate-50/30 hover:bg-slate-50 border border-slate-100 hover:border-slate-200 rounded-2xl transition-all"
@@ -207,20 +280,62 @@ export default function GroupTab({ onError }: GroupTabProps) {
 
       {/* 下部: メンバーとグループ紐付け一覧 */}
       <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm">
-        <div className="mb-6">
-          <h2 className="text-xl font-black text-gray-900">メンバーへのグループ割り当て</h2>
-          <p className="text-xs text-gray-400 font-semibold mt-1">
-            所属するグループを選択します。※メンバーロールを持つユーザーのみが表示されます。複数選択が可能です。
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-2xl">
+              <Users className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-gray-900">メンバーへのグループ割り当て</h2>
+              <p className="text-xs text-gray-400 font-semibold mt-0.5">
+                所属するグループを選択します。※メンバーロールを持つユーザーのみが表示されます。複数選択が可能です。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* 検索・絞り込みフィルター */}
+        <div className="flex flex-col sm:flex-row gap-3 mb-6">
+          <div className="relative flex-1">
+            <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="メンバー名（英語・漢字）で検索..."
+              value={memberSearchQuery}
+              onChange={e => setMemberSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-gray-700 placeholder-gray-400 focus:outline-none focus:bg-white focus:border-sky-400 focus:ring-2 focus:ring-sky-500/10 transition-all"
+            />
+            {memberSearchQuery && (
+              <button
+                onClick={() => setMemberSearchQuery('')}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+          <div className="w-full sm:w-[220px]">
+            <CustomDropdown
+              multiple={false}
+              options={groupFilterOptions}
+              value={groupFilter}
+              onChange={val => setGroupFilter(val as string)}
+              placeholder="グループで絞り込み"
+            />
+          </div>
         </div>
 
         {memberGroups.length === 0 ? (
           <div className="text-center py-8 text-gray-400 font-bold bg-slate-50/50 rounded-2xl border border-dashed">
             表示対象となるメンバーがいません。
           </div>
+        ) : filteredMembers.length === 0 ? (
+          <div className="text-center py-8 text-gray-400 font-bold bg-slate-50/50 rounded-2xl border border-dashed">
+            条件に一致するメンバーが見つかりません。
+          </div>
         ) : (
           <div className="divide-y divide-gray-100 border rounded-2xl overflow-hidden">
-            {memberGroups.map(member => (
+            {filteredMembers.map(member => (
               <div key={member.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 hover:bg-slate-50/30">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-full bg-slate-100 flex-shrink-0 overflow-hidden border border-slate-200">
@@ -243,6 +358,7 @@ export default function GroupTab({ onError }: GroupTabProps) {
                 <div className="w-full sm:w-[320px]">
                   <CustomDropdown
                     multiple={true}
+                    searchable={true}
                     options={groupDropdownOptions}
                     value={member.group_ids}
                     onChange={(vals) => handleMemberGroupChange(member.id, vals as string[])}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Plus, Edit2, Trash2, GripVertical } from 'lucide-react';
+import { Plus, Edit2, Trash2, GripVertical, Search, X, Briefcase, Users } from 'lucide-react';
 import { DragDropContext, Droppable, Draggable, type DropResult } from '@hello-pangea/dnd';
 import { apiClient } from '../../../lib/apiClient';
 import { CustomDropdown, type DropdownOption } from '../../../components/ui/CustomDropdown';
@@ -27,6 +27,11 @@ export default function DepartmentTab({ onError }: DepartmentTabProps) {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [memberDepts, setMemberDepts] = useState<MemberDeptItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+
+  // 検索・フィルター用ステート
+  const [deptSearchQuery, setDeptSearchQuery] = useState('');
+  const [memberSearchQuery, setMemberSearchQuery] = useState('');
+  const [deptFilter, setDeptFilter] = useState('all');
 
   const [editingDept, setEditingDept] = useState<Department | null>(null);
   const [deptForm, setDeptForm] = useState({ name: '', parent_id: '' as string });
@@ -173,6 +178,17 @@ export default function DepartmentTab({ onError }: DepartmentTabProps) {
     }));
   }, [departments]);
 
+  const deptFilterOptions = useMemo<DropdownOption[]>(() => {
+    return [
+      { label: 'すべての部署', value: 'all' },
+      ...departments.map(d => ({
+        label: d.name,
+        value: d.id
+      })),
+      { label: '部署未設定', value: 'unassigned' }
+    ];
+  }, [departments]);
+
   const parentDeptOptions = useMemo<DropdownOption[]>(() => {
     const list = departments
       .filter(d => !editingDept || d.id !== editingDept.id)
@@ -183,7 +199,34 @@ export default function DepartmentTab({ onError }: DepartmentTabProps) {
     return [{ label: '親部署なし (最上位)', value: '' }, ...list];
   }, [departments, editingDept]);
 
-  if (isLoading) {
+  // フィルタリング処理
+  const filteredDepartments = useMemo(() => {
+    if (!deptSearchQuery.trim()) return departments;
+    const q = deptSearchQuery.toLowerCase();
+    return departments.filter(d => d.name.toLowerCase().includes(q));
+  }, [departments, deptSearchQuery]);
+
+  const filteredMembers = useMemo(() => {
+    return memberDepts.filter(member => {
+      // 部署絞り込み
+      if (deptFilter === 'unassigned') {
+        if (member.department_ids.length > 0) return false;
+      } else if (deptFilter !== 'all') {
+        if (!member.department_ids.includes(deptFilter)) return false;
+      }
+
+      // メンバー名検索
+      if (!memberSearchQuery.trim()) return true;
+      const q = memberSearchQuery.toLowerCase();
+      return (
+        (member.name_english && member.name_english.toLowerCase().includes(q)) ||
+        (member.name_kanji && member.name_kanji.toLowerCase().includes(q)) ||
+        member.id.toLowerCase().includes(q)
+      );
+    });
+  }, [memberDepts, memberSearchQuery, deptFilter]);
+
+  if (isLoading && departments.length === 0) {
     return <div className="text-center py-10 text-gray-500 font-bold">部署データをロード中...</div>;
   }
 
@@ -191,27 +234,94 @@ export default function DepartmentTab({ onError }: DepartmentTabProps) {
     <div className="space-y-10 animate-in fade-in duration-200">
       {/* 上部: 部署定義マスタ */}
       <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm">
-        <div className="flex justify-between items-center mb-6">
-          <div>
-            <h2 className="text-xl font-black text-gray-900">部署・チーム一覧</h2>
-            <p className="text-xs text-gray-400 font-semibold mt-1">
-              組織内の所属部署やチームを定義・管理します。親部署を設定して親子構造を作成することも可能です。
-            </p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-sky-50 text-sky-600 rounded-2xl">
+              <Briefcase className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-gray-900">部署・チーム一覧</h2>
+              <p className="text-xs text-gray-400 font-semibold mt-0.5">
+                組織内の所属部署やチームを定義・管理します。親部署を設定して親子構造を作成することも可能です。
+              </p>
+            </div>
           </div>
           <button
             onClick={() => handleOpenDeptModal()}
-            className="flex items-center gap-1.5 px-4 py-2.5 bg-sky-500 hover:bg-sky-600 text-white font-bold text-sm rounded-xl shadow-sm transition-colors"
+            className="flex items-center gap-1.5 px-4 py-2.5 bg-sky-500 hover:bg-sky-600 text-white font-bold text-sm rounded-xl shadow-sm transition-colors shrink-0"
           >
             <Plus className="w-4 h-4" />
             <span>部署追加</span>
           </button>
         </div>
 
+        {/* 検索バー */}
+        <div className="mb-4">
+          <div className="relative">
+            <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="部署・チーム名で検索..."
+              value={deptSearchQuery}
+              onChange={e => setDeptSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-gray-700 placeholder-gray-400 focus:outline-none focus:bg-white focus:border-sky-400 focus:ring-2 focus:ring-sky-500/10 transition-all"
+            />
+            {deptSearchQuery && (
+              <button
+                onClick={() => setDeptSearchQuery('')}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
         {departments.length === 0 ? (
           <div className="text-center py-8 text-gray-400 font-bold bg-slate-50/50 rounded-2xl border border-dashed">
             登録されている部署・チームがありません。
           </div>
+        ) : filteredDepartments.length === 0 ? (
+          <div className="text-center py-8 text-gray-400 font-bold bg-slate-50/50 rounded-2xl border border-dashed">
+            該当する部署・チームが見つかりません。
+          </div>
+        ) : deptSearchQuery ? (
+          // 検索中はドラッグ＆ドロップを無効化してリスト表示
+          <div className="divide-y divide-gray-100 border rounded-2xl overflow-hidden bg-white">
+            {filteredDepartments.map(dept => {
+              const parent = departments.find(d => d.id === dept.parent_id);
+              return (
+                <div key={dept.id} className="flex items-center justify-between p-4 hover:bg-slate-50/30 transition-all">
+                  <div className="font-black text-gray-800 text-sm flex items-center gap-2">
+                    {dept.name}
+                    {parent && (
+                      <span className="px-2 py-0.5 bg-slate-100 text-slate-600 text-[10px] font-bold rounded-md">
+                        {parent.name}内
+                      </span>
+                    )}
+                  </div>
+                  <div className="inline-flex gap-2">
+                    <button
+                      onClick={() => handleOpenDeptModal(dept)}
+                      className="p-2 text-gray-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition-colors"
+                      title="編集"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteDept(dept.id)}
+                      className="p-2 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                      title="削除"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         ) : (
+          // 検索していない時はD&D並び替え可能
           <DragDropContext onDragEnd={handleDragEnd}>
             <Droppable droppableId="departments-list">
               {(provided) => (
@@ -286,20 +396,62 @@ export default function DepartmentTab({ onError }: DepartmentTabProps) {
 
       {/* 下部: メンバーと部署紐付け一覧 */}
       <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm">
-        <div className="mb-6">
-          <h2 className="text-xl font-black text-gray-900">メンバーへの部署・チーム割り当て</h2>
-          <p className="text-xs text-gray-400 font-semibold mt-1">
-            所属する部署を選択します。※メンバーロール（`smiring_member`）を持つユーザーのみが対象として表示されます。複数選択が可能です。
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-2xl">
+              <Users className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-gray-900">メンバーへの部署・チーム割り当て</h2>
+              <p className="text-xs text-gray-400 font-semibold mt-0.5">
+                所属する部署を選択します。※メンバーロール（`smiring_member`）を持つユーザーのみが対象として表示されます。複数選択が可能です。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* 検索・絞り込みフィルター */}
+        <div className="flex flex-col sm:flex-row gap-3 mb-6">
+          <div className="relative flex-1">
+            <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="メンバー名（英語・漢字）で検索..."
+              value={memberSearchQuery}
+              onChange={e => setMemberSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-gray-700 placeholder-gray-400 focus:outline-none focus:bg-white focus:border-sky-400 focus:ring-2 focus:ring-sky-500/10 transition-all"
+            />
+            {memberSearchQuery && (
+              <button
+                onClick={() => setMemberSearchQuery('')}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+          <div className="w-full sm:w-[220px]">
+            <CustomDropdown
+              multiple={false}
+              options={deptFilterOptions}
+              value={deptFilter}
+              onChange={val => setDeptFilter(val as string)}
+              placeholder="部署で絞り込み"
+            />
+          </div>
         </div>
 
         {memberDepts.length === 0 ? (
           <div className="text-center py-8 text-gray-400 font-bold bg-slate-50/50 rounded-2xl border border-dashed">
             表示対象となる `smiring_member` ロールを持つメンバーがいません。ロール管理タブで権限を割り当ててください。
           </div>
+        ) : filteredMembers.length === 0 ? (
+          <div className="text-center py-8 text-gray-400 font-bold bg-slate-50/50 rounded-2xl border border-dashed">
+            条件に一致するメンバーが見つかりません。
+          </div>
         ) : (
           <div className="divide-y divide-gray-100 border rounded-2xl overflow-hidden">
-            {memberDepts.map(member => (
+            {filteredMembers.map(member => (
               <div key={member.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 hover:bg-slate-50/30">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-full bg-slate-100 flex-shrink-0 overflow-hidden border border-slate-200">
@@ -322,6 +474,7 @@ export default function DepartmentTab({ onError }: DepartmentTabProps) {
                 <div className="w-full sm:w-[320px]">
                   <CustomDropdown
                     multiple={true}
+                    searchable={true}
                     options={deptDropdownOptions}
                     value={member.department_ids}
                     onChange={(vals) => handleMemberDeptChange(member.id, vals as string[])}
@@ -357,13 +510,13 @@ export default function DepartmentTab({ onError }: DepartmentTabProps) {
                 <label className="block text-xs font-black text-gray-400 uppercase tracking-wide mb-1.5">親部署・所属先</label>
                 <CustomDropdown
                   multiple={false}
+                  searchable={true}
                   options={parentDeptOptions}
                   value={deptForm.parent_id}
                   onChange={(val) => setDeptForm(prev => ({ ...prev, parent_id: val as string }))}
                   placeholder="親部署なし (最上位)"
                 />
               </div>
-              
               
               <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
                 <button

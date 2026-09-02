@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   Lock,
   Video,
+  Calendar,
 } from 'lucide-react';
 import { usePermission } from '../../hooks/usePermission';
 
@@ -23,6 +24,7 @@ interface AppItem {
 export default function AppsPage() {
   const navigate = useNavigate();
   const canAccessManagement = usePermission('management', 'read');
+  const canAccessEventManagement = usePermission('event-management', 'read');
 
   const appList: AppItem[] = [
     {
@@ -46,6 +48,13 @@ export default function AppsPage() {
       icon: <FileText className="w-6 h-6 text-amber-600" />,
       colorClass: 'from-amber-50 to-amber-100/80 border-amber-200 text-amber-600'
     },
+    ...(canAccessEventManagement ? [{
+      name: 'Event Management',
+      description: 'イベントの作成、公開設定、運営管理',
+      path: '/event-management',
+      icon: <Calendar className="w-6 h-6 text-sky-600" />,
+      colorClass: 'from-sky-50 to-sky-100/80 border-sky-200 text-sky-600'
+    }] : []),
     {
       name: 'My Profile',
       description: '自分のプロフィールの変更と設定',
@@ -64,8 +73,8 @@ export default function AppsPage() {
       name: 'Management Console',
       description: 'メンバーの管理、権限の付与、全体の方針の決定',
       path: '/management',
-      icon: <Lock className="w-6 h-6 text-sky-600" />,
-      colorClass: 'from-sky-50 to-sky-100/80 border-sky-200 text-sky-600'
+      icon: <Lock className="w-6 h-6 text-slate-700" />,
+      colorClass: 'from-slate-50 to-slate-100/80 border-slate-200 text-slate-700'
     }] : [])
   ];
 

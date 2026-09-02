@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Plus, Edit2, Trash2 } from 'lucide-react';
+import { Plus, Edit2, Trash2, Search, X, Shield, Users, Check, Inbox } from 'lucide-react';
 import { apiClient } from '../../../lib/apiClient';
 import { CustomDropdown, type DropdownOption } from '../../../components/ui/CustomDropdown';
 import RichTextEditor from '../../../components/ui/RichTextEditor';
@@ -18,6 +18,18 @@ interface MemberRoleItem {
   role_ids: string[];
 }
 
+interface RoleRequest {
+  id: string;
+  user_id: string;
+  name_english: string | null;
+  name_kanji: string | null;
+  avatar_link: string | null;
+  requested_role: 'smiring_member' | 'partner';
+  department_names: string[];
+  description: string | null;
+  requested_at: string;
+}
+
 interface UserRoleTabProps {
   onError: (msg: string) => void;
 }
@@ -25,7 +37,14 @@ interface UserRoleTabProps {
 export default function UserRoleTab({ onError }: UserRoleTabProps) {
   const [roles, setRoles] = useState<Role[]>([]);
   const [memberRoles, setMemberRoles] = useState<MemberRoleItem[]>([]);
+  const [roleRequests, setRoleRequests] = useState<RoleRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [processingRequestId, setProcessingRequestId] = useState<string | null>(null);
+
+  // 検索・フィルター用ステート
+  const [roleSearchQuery, setRoleSearchQuery] = useState('');
+  const [memberSearchQuery, setMemberSearchQuery] = useState('');
+  const [roleFilter, setRoleFilter] = useState('all');
 
   const [editingRole, setEditingRole] = useState<Role | null>(null);
   const [roleForm, setRoleForm] = useState({ role_name: '', description: '' });
@@ -35,15 +54,22 @@ export default function UserRoleTab({ onError }: UserRoleTabProps) {
     setIsLoading(true);
     onError('');
     try {
-      const [rRes, mRes] = await Promise.all([
+      const [rRes, mRes, reqRes] = await Promise.all([
         apiClient.get('/api/management/roles'),
-        apiClient.get('/api/management/members')
+        apiClient.get('/api/management/members'),
+        apiClient.get('/api/management/role-requests')
       ]);
       if (rRes.ok && mRes.ok) {
         setRoles(await rRes.json());
         setMemberRoles(await mRes.json());
       } else {
         onError('ロールデータの取得に失敗しました');
+      }
+      if (reqRes.ok) {
+        setRoleRequests(await reqRes.json());
+      } else {
+        const data = await reqRes.json().catch(() => ({}));
+        onError(data.error || 'メンバー申請一覧の取得に失敗しました');
       }
     } catch (err: any) {
       onError(err.message || 'データの取得に失敗しました');
@@ -55,6 +81,43 @@ export default function UserRoleTab({ onError }: UserRoleTabProps) {
   useEffect(() => {
     fetchRolesData();
   }, []);
+
+  const handleApproveRequest = async (id: string) => {
+    setProcessingRequestId(id);
+    onError('');
+    try {
+      const res = await apiClient.post(`/api/management/role-requests/${id}/approve`);
+      if (res.ok) {
+        fetchRolesData();
+      } else {
+        const data = await res.json();
+        onError(data.error || '申請の承認に失敗しました');
+      }
+    } catch (err: any) {
+      onError(err.message || '申請の承認に失敗しました');
+    } finally {
+      setProcessingRequestId(null);
+    }
+  };
+
+  const handleRejectRequest = async (id: string) => {
+    if (!confirm('この申請を却下してもよろしいですか？申請者はまた申請し直すことができます。')) return;
+    setProcessingRequestId(id);
+    onError('');
+    try {
+      const res = await apiClient.delete(`/api/management/role-requests/${id}`);
+      if (res.ok) {
+        setRoleRequests(prev => prev.filter(r => r.id !== id));
+      } else {
+        const data = await res.json();
+        onError(data.error || '申請の却下に失敗しました');
+      }
+    } catch (err: any) {
+      onError(err.message || '申請の却下に失敗しました');
+    } finally {
+      setProcessingRequestId(null);
+    }
+  };
 
   const handleOpenRoleModal = (role?: Role) => {
     if (role) {
@@ -134,33 +197,175 @@ export default function UserRoleTab({ onError }: UserRoleTabProps) {
     }));
   }, [roles]);
 
-  if (isLoading) {
+  const roleFilterOptions = useMemo<DropdownOption[]>(() => {
+    return [
+      { label: 'すべてのロール', value: 'all' },
+      ...roles.map(r => ({
+        label: r.role_name,
+        value: r.id,
+      })),
+      { label: 'ロール未設定', value: 'unassigned' },
+    ];
+  }, [roles]);
+
+  // フィルタリング処理
+  const filteredRoles = useMemo(() => {
+    if (!roleSearchQuery.trim()) return roles;
+    const q = roleSearchQuery.toLowerCase();
+    return roles.filter(r =>
+      r.role_name.toLowerCase().includes(q) ||
+      (r.description && r.description.toLowerCase().includes(q))
+    );
+  }, [roles, roleSearchQuery]);
+
+  const filteredMembers = useMemo(() => {
+    return memberRoles.filter(member => {
+      // ロール絞り込み
+      if (roleFilter === 'unassigned') {
+        if (member.role_ids.length > 0) return false;
+      } else if (roleFilter !== 'all') {
+        if (!member.role_ids.includes(roleFilter)) return false;
+      }
+
+      // メンバー名検索
+      if (!memberSearchQuery.trim()) return true;
+      const q = memberSearchQuery.toLowerCase();
+      return (
+        (member.name_english && member.name_english.toLowerCase().includes(q)) ||
+        (member.name_kanji && member.name_kanji.toLowerCase().includes(q)) ||
+        member.id.toLowerCase().includes(q)
+      );
+    });
+  }, [memberRoles, memberSearchQuery, roleFilter]);
+
+  if (isLoading && roles.length === 0) {
     return <div className="text-center py-10 text-gray-500 font-bold">ロールデータをロード中...</div>;
   }
 
   return (
     <div className="space-y-10 animate-in fade-in duration-200">
+      {/* 一番上: メンバー申請一覧（申請が無ければ表示しない） */}
+      {roleRequests.length > 0 && (
+        <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="p-2.5 bg-amber-50 text-amber-600 rounded-2xl">
+              <Inbox className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-gray-900">
+                メンバー申請
+                <span className="ml-2 inline-flex items-center justify-center min-w-[22px] h-[22px] px-1.5 rounded-full bg-amber-500 text-white text-xs font-black">
+                  {roleRequests.length}
+                </span>
+              </h2>
+              <p className="text-xs text-gray-400 font-semibold mt-0.5">
+                内部運営メンバー・外部協力者としての承認待ちリクエストです。
+              </p>
+            </div>
+          </div>
+
+          <div className="divide-y divide-gray-100 border rounded-2xl overflow-hidden">
+            {roleRequests.map(request => (
+              <div key={request.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 hover:bg-slate-50/30">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-full bg-slate-100 flex-shrink-0 overflow-hidden border border-slate-200">
+                    <img
+                      src={request.avatar_link || '/assets/images/profile_photo_empty.png'}
+                      alt={request.name_english || ''}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-black text-gray-800 text-sm truncate">
+                      {request.name_english || request.name_kanji || request.user_id}
+                    </div>
+                    <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
+                      {request.requested_role === 'smiring_member' ? '内部運営メンバー希望' : '外部協力者希望'}
+                    </div>
+                    {request.requested_role === 'smiring_member' ? (
+                      <div className="text-xs text-gray-500 mt-1">
+                        希望部署: {request.department_names.length > 0 ? request.department_names.join('、') : '未選択'}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-500 mt-1 whitespace-pre-wrap">
+                        {request.description}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button
+                    onClick={() => handleRejectRequest(request.id)}
+                    disabled={processingRequestId === request.id}
+                    className="p-2 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors disabled:opacity-50"
+                    title="却下"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => handleApproveRequest(request.id)}
+                    disabled={processingRequestId === request.id}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs rounded-lg shadow-sm transition-colors disabled:opacity-50"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    承認
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 上部: ロールマスタ一覧 */}
       <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm">
-        <div className="flex justify-between items-center mb-6">
-          <div>
-            <h2 className="text-xl font-black text-gray-900">ロール定義マスタ</h2>
-            <p className="text-xs text-gray-400 font-semibold mt-1">
-              システムで使用するユーザー役割（管理者・一般メンバー等）を定義・編集します。
-            </p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-sky-50 text-sky-600 rounded-2xl">
+              <Shield className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-gray-900">ロール定義マスタ</h2>
+              <p className="text-xs text-gray-400 font-semibold mt-0.5">
+                システムで使用するユーザー役割（管理者・一般メンバー等）を定義・編集します。
+              </p>
+            </div>
           </div>
           <button
             onClick={() => handleOpenRoleModal()}
-            className="flex items-center gap-1.5 px-4 py-2.5 bg-sky-500 hover:bg-sky-600 text-white font-bold text-sm rounded-xl shadow-sm transition-colors"
+            className="flex items-center gap-1.5 px-4 py-2.5 bg-sky-500 hover:bg-sky-600 text-white font-bold text-sm rounded-xl shadow-sm transition-colors shrink-0"
           >
             <Plus className="w-4 h-4" />
             <span>ロール追加</span>
           </button>
         </div>
 
-        {roles.length === 0 ? (
+        {/* 検索バー */}
+        <div className="mb-4">
+          <div className="relative">
+            <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="ロール名や説明で検索..."
+              value={roleSearchQuery}
+              onChange={e => setRoleSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-gray-700 placeholder-gray-400 focus:outline-none focus:bg-white focus:border-sky-400 focus:ring-2 focus:ring-sky-500/10 transition-all"
+            />
+            {roleSearchQuery && (
+              <button
+                onClick={() => setRoleSearchQuery('')}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {filteredRoles.length === 0 ? (
           <div className="text-center py-8 text-gray-400 font-bold bg-slate-50/50 rounded-2xl border border-dashed">
-            登録されているシステム用ロールがありません。
+            {roleSearchQuery ? '該当するロールが見つかりません。' : '登録されているシステム用ロールがありません。'}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -173,7 +378,7 @@ export default function UserRoleTab({ onError }: UserRoleTabProps) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50 text-sm">
-                {roles.map(role => (
+                {filteredRoles.map(role => (
                   <tr key={role.id} className="hover:bg-slate-50/40">
                     <td className="py-4 px-4 font-black text-gray-800">{role.role_name}</td>
                     <td className="py-4 px-4 text-gray-400 max-w-lg truncate">
@@ -210,46 +415,93 @@ export default function UserRoleTab({ onError }: UserRoleTabProps) {
 
       {/* 下部: メンバーとロール紐付け一覧 */}
       <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm">
-        <div className="mb-6">
-          <h2 className="text-xl font-black text-gray-900">メンバーへのロール割り当て</h2>
-          <p className="text-xs text-gray-400 font-semibold mt-1">
-            登録されているメンバーにユーザーロールを割り当てます。複数選択が可能です。
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-2xl">
+              <Users className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-gray-900">メンバーへのロール割り当て</h2>
+              <p className="text-xs text-gray-400 font-semibold mt-0.5">
+                登録されているメンバーにユーザーロールを割り当てます。複数選択が可能です。
+              </p>
+            </div>
+          </div>
         </div>
 
-        <div className="divide-y divide-gray-100 border rounded-2xl overflow-hidden">
-          {memberRoles.map(member => (
-            <div key={member.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 hover:bg-slate-50/30">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-slate-100 flex-shrink-0 overflow-hidden border border-slate-200">
-                  <img
-                    src={member.avatar_link || '/assets/images/profile_photo_empty.png'}
-                    alt={member.name_english}
-                    className="w-full h-full object-cover"
+        {/* 検索・絞り込みフィルター */}
+        <div className="flex flex-col sm:flex-row gap-3 mb-6">
+          <div className="relative flex-1">
+            <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="メンバー名（英語・漢字）で検索..."
+              value={memberSearchQuery}
+              onChange={e => setMemberSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-gray-700 placeholder-gray-400 focus:outline-none focus:bg-white focus:border-sky-400 focus:ring-2 focus:ring-sky-500/10 transition-all"
+            />
+            {memberSearchQuery && (
+              <button
+                onClick={() => setMemberSearchQuery('')}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+          <div className="w-full sm:w-[220px]">
+            <CustomDropdown
+              multiple={false}
+              options={roleFilterOptions}
+              value={roleFilter}
+              onChange={val => setRoleFilter(val as string)}
+              placeholder="ロールで絞り込み"
+            />
+          </div>
+        </div>
+
+        {filteredMembers.length === 0 ? (
+          <div className="text-center py-12 text-gray-400 font-bold bg-slate-50/50 rounded-2xl border border-dashed">
+            {memberSearchQuery || roleFilter !== 'all'
+              ? '条件に一致するメンバーが見つかりません。'
+              : '登録されているメンバーがいません。'}
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100 border rounded-2xl overflow-hidden">
+            {filteredMembers.map(member => (
+              <div key={member.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 hover:bg-slate-50/30">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-slate-100 flex-shrink-0 overflow-hidden border border-slate-200">
+                    <img
+                      src={member.avatar_link || '/assets/images/profile_photo_empty.png'}
+                      alt={member.name_english}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <div>
+                    <div className="font-black text-gray-800 text-sm">
+                      {member.name_english || member.id}
+                    </div>
+                    <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
+                      {member.name_kanji || '-'}
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="w-full sm:w-[320px]">
+                  <CustomDropdown
+                    multiple={true}
+                    searchable={true}
+                    options={roleDropdownOptions}
+                    value={member.role_ids}
+                    onChange={(vals) => handleMemberRoleChange(member.id, vals as string[])}
+                    placeholder="ロールなし"
                   />
                 </div>
-                <div>
-                  <div className="font-black text-gray-800 text-sm">
-                    {member.name_english || member.id}
-                  </div>
-                  <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
-                    {member.name_kanji || '-'}
-                  </div>
-                </div>
               </div>
-              
-              <div className="w-full sm:w-[320px]">
-                <CustomDropdown
-                  multiple={true}
-                  options={roleDropdownOptions}
-                  value={member.role_ids}
-                  onChange={(vals) => handleMemberRoleChange(member.id, vals as string[])}
-                  placeholder="ロールなし"
-                />
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ロール追加・編集モーダル */}

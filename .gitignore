@@ -31,3 +31,7 @@ logs/
 *.swp
 
 /temp/*
+
+# Generated from hetzner-livekit/livekit.yaml.template by render-config.sh — contains
+# deploy-specific values, never commit it. Edit the .template instead.
+hetzner-livekit/livekit.yaml
