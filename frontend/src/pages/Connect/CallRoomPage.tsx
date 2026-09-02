@@ -27,10 +27,8 @@ import {
   Track,
   ParticipantEvent,
   type RoomOptions,
-  type LocalVideoTrack,
   type LocalAudioTrack,
 } from 'livekit-client';
-import { BackgroundBlur } from '@livekit/track-processors';
 import { KrispNoiseFilter, isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter';
 import { MicVAD } from '@ricky0123/vad-web';
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
@@ -41,7 +39,6 @@ import {
   Loader2,
   Copy,
   Check,
-  Sparkles,
   Volume2,
   X,
   Mic,
@@ -68,6 +65,8 @@ import { useDocumentPiP } from '../../hooks/useDocumentPiP';
 import { useActiveSpeakerVideoPip } from '../../hooks/useActiveSpeakerVideoPip';
 import { useAdvancedChat } from '../../hooks/useAdvancedChat';
 import DocumentPipContent from './DocumentPipContent';
+import { useBackgroundEffect } from './useBackgroundEffect';
+import BackgroundControls from './BackgroundControls';
 import AdvancedChat from '../../components/Connect/AdvancedChat';
 import LeaveConfirmModal from '../../components/Connect/LeaveConfirmModal';
 import GridLayoutView from '../../components/Connect/callLayout/GridLayoutView';
@@ -307,11 +306,10 @@ function DropdownPortal({
 }
 
 /**
- * Owns the Krisp/blur/VAD toggle state and track-processor wiring.
+ * Owns the Krisp/background/VAD toggle state and track-processor wiring.
  */
 function useMediaEnhancementsState(localParticipant: ReturnType<typeof useLocalParticipant>['localParticipant']) {
-  const [blurred, setBlurred] = useState(true);
-  const [blurLoading, setBlurLoading] = useState(false);
+  const background = useBackgroundEffect();
   const [krispEnabled, setKrispEnabled] = useState(true);
   const [krispLoading, setKrispLoading] = useState(false);
   const [autoGateEnabled, setAutoGateEnabled] = useState(true);
@@ -322,11 +320,6 @@ function useMediaEnhancementsState(localParticipant: ReturnType<typeof useLocalP
   const appliedRef = useRef<{ track: LocalAudioTrack | null; enabled: boolean | null }>({
     track: null,
     enabled: null,
-  });
-
-  const appliedBlurRef = useRef<{ track: LocalVideoTrack | null; applied: boolean | null }>({
-    track: null,
-    applied: null,
   });
 
   const applyKrisp = useCallback(async (enabled: boolean, track: LocalAudioTrack) => {
@@ -382,44 +375,8 @@ function useMediaEnhancementsState(localParticipant: ReturnType<typeof useLocalP
     }
   }, [localParticipant, krispEnabled, isKrispSupported, applyKrisp]);
 
-  useEffect(() => {
-    const syncBlur = async () => {
-      const pub = localParticipant.getTrackPublication(Track.Source.Camera);
-      const track = pub?.track as LocalVideoTrack | undefined;
-      if (!track) return;
-      const already = appliedBlurRef.current;
-      if (already.track === track && already.applied === blurred) return;
-      setBlurLoading(true);
-      try {
-        if (blurred) {
-          if (!track.getProcessor()) {
-            await track.setProcessor(BackgroundBlur(10));
-          }
-        } else if (track.getProcessor()) {
-          await track.stopProcessor();
-        }
-        appliedBlurRef.current = { track, applied: blurred };
-      } catch (e) {
-        console.error('[Connect] Failed to sync background blur:', e);
-      } finally {
-        setBlurLoading(false);
-      }
-    };
-
-    syncBlur();
-    localParticipant.on(ParticipantEvent.LocalTrackPublished, syncBlur);
-    return () => {
-      localParticipant.off(ParticipantEvent.LocalTrackPublished, syncBlur);
-    };
-  }, [localParticipant, blurred]);
-
-  const toggleBlur = useCallback(() => {
-    setBlurred((prev) => !prev);
-  }, []);
-
   return {
-    blurred,
-    blurLoading,
+    background,
     krispEnabled,
     krispLoading,
     autoGateEnabled,
@@ -427,7 +384,6 @@ function useMediaEnhancementsState(localParticipant: ReturnType<typeof useLocalP
     autoGateLoading,
     isKrispSupported,
     toggleKrisp,
-    toggleBlur,
   };
 }
 
@@ -628,7 +584,7 @@ function CameraMenuDropdown({
     setActiveMediaDevice: setActiveVideo,
   } = useMediaDeviceSelect({ kind: 'videoinput' });
 
-  const { blurred, blurLoading, toggleBlur } = mediaEnhancements;
+  const { background } = mediaEnhancements;
 
   return (
     <DropdownPortal anchorRef={anchorRef} onClose={onClose} align="left">
@@ -676,33 +632,8 @@ function CameraMenuDropdown({
           </div>
         </div>
 
-        {/* Background Blur Toggle */}
-        <div className="space-y-1.5 border-t border-gray-800/80 pt-3 px-1">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-indigo-400" />
-              <div>
-                <p className="text-xs font-bold text-gray-200">背景ブラー</p>
-                <p className="text-[10px] text-gray-400">背景をぼかしてプライバシー保護</p>
-              </div>
-            </div>
-
-            <button
-              onClick={toggleBlur}
-              disabled={blurLoading}
-              className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
-                blurred ? 'bg-indigo-500' : 'bg-gray-700'
-              }`}
-            >
-              <span
-                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out flex items-center justify-center ${
-                  blurred ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              >
-                {blurLoading && <Loader2 className="w-2.5 h-2.5 animate-spin text-gray-600" />}
-              </span>
-            </button>
-          </div>
+        <div className="px-1">
+          <BackgroundControls state={background} />
         </div>
       </div>
     </DropdownPortal>

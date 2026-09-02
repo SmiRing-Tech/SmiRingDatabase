@@ -17,7 +17,6 @@
     "@livekit/components-react": "^2.9.23",
     "@livekit/components-styles": "^1.2.0",
     "@livekit/krisp-noise-filter": "^0.4.4",
-    "@livekit/track-processors": "^0.7.2",
     "@marsidev/react-turnstile": "^1.5.0",
     "@mediapipe/tasks-vision": "^1.0.1",
     "@ricky0123/vad-web": "^0.0.30",
