@@ -1,4 +1,5 @@
 import { createBrowserRouter, RouterProvider, Navigate, useLocation } from 'react-router-dom';
+import BackgroundBlurLabPage from './pages/Dev/BackgroundBlurLabPage';
 import { useEffect } from 'react';
 import type { PermissionAction } from './context/AuthContext';
 
@@ -118,6 +119,11 @@ const RequireInternalRole = ({ children }: { children: React.ReactNode }) => {
 // ルーターの設定 (Flutter前のに相当)
 // ==========================================
 const router = createBrowserRouter([
+  // 0. 開発用ルート（本番ビルドには含まれない）
+  ...(import.meta.env.DEV
+    ? [{ path: '/dev/blur-lab', element: <BackgroundBlurLabPage /> }]
+    : []),
+
   // 1. 公開ルート
   { path: '/', element: <WelcomePage /> },
   { path: '/sign-in', element: <SignInPage /> },

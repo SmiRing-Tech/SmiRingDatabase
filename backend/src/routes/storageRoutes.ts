@@ -7,28 +7,7 @@ import sharp from 'sharp';
 import { analyzeImageWithGemini } from '../lib/ai';
 import { queueGalleryImageIndexWork, deleteSearchIndex } from '../lib/vectorIndexer';
 import { authenticate } from '../middleware/authenticate';
-
-const heicConvert = require('heic-convert');
-
-async function ensureJpegBuffer(buffer: Buffer, mimetype: string, originalname: string): Promise<Buffer> {
-  const isHeic = mimetype === 'image/heic' || mimetype === 'image/heif' || originalname.toLowerCase().endsWith('.heic') || originalname.toLowerCase().endsWith('.heif');
-  if (isHeic) {
-    console.log(`[Backend HEIC] Converting ${originalname}...`);
-    try {
-      const outputBuffer = await heicConvert({
-        buffer: buffer,
-        format: 'JPEG',
-        quality: 1 // Highest quality for intermediate buffer
-      });
-      console.log(`[Backend HEIC] ✅ Successfully converted ${originalname}`);
-      return Buffer.from(outputBuffer);
-    } catch (err) {
-      console.error(`[Backend HEIC Error] Conversion failed for ${originalname}:`, err);
-      return buffer;
-    }
-  }
-  return buffer;
-}
+import { ensureJpegBuffer } from '../lib/imageInput';
 
 const router = Router();
 

@@ -12,19 +12,20 @@ import {
   Track,
   ParticipantEvent,
   type RoomOptions,
-  type LocalVideoTrack,
   type LocalAudioTrack,
 } from 'livekit-client';
-import { BackgroundBlur } from '@livekit/track-processors';
+import BackgroundControls from './BackgroundControls';
+import { useBackgroundEffect } from './useBackgroundEffect';
 import { KrispNoiseFilter, isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter';
 import '@livekit/components-styles';
-import { ArrowLeft, Video, AlertTriangle, Loader2, Copy, Check, Sparkles, Settings, Sliders, Volume2, X } from 'lucide-react';
+import { ArrowLeft, Video, AlertTriangle, Loader2, Copy, Check, Settings, Sliders, Volume2, X } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import { useAuth } from '../../context/AuthContext';
 
 /**
  * Provides a media enhancements settings popover at the bottom-right of the video room.
- * Allows users to toggle Krisp AI Noise Cancellation and Background Blur ON/OFF.
+ * Allows users to toggle Krisp AI Noise Cancellation and to pick a background
+ * effect (none / blur / image) — see BackgroundControls.
  *
  * We tried server-side noise cancellation (Hetzner LiveKit Agent, see
  * hetzner-livekit/agent) with both DeepFilterNet and DTLN — DeepFilterNet
@@ -37,12 +38,13 @@ import { useAuth } from '../../context/AuthContext';
 function MediaEnhancements() {
   const { localParticipant } = useLocalParticipant();
   const [isOpen, setIsOpen] = useState(false);
-  const [blurred, setBlurred] = useState(false);
-  const [blurLoading, setBlurLoading] = useState(false);
   const [krispEnabled, setKrispEnabled] = useState(true);
   const [krispLoading, setKrispLoading] = useState(false);
 
   const isKrispSupported = isKrispNoiseFilterSupported();
+  // Held here, not inside the popover: the saved background must be restored on
+  // join, and the processor must outlive the panel being closed.
+  const background = useBackgroundEffect();
 
   // Krisp noise cancellation sync on mic track publish or toggle change
   useEffect(() => {
@@ -93,26 +95,6 @@ function MediaEnhancements() {
     }
   }, [localParticipant, krispEnabled, isKrispSupported]);
 
-  const toggleBlur = useCallback(async () => {
-    const pub = localParticipant.getTrackPublication(Track.Source.Camera);
-    const track = pub?.track as LocalVideoTrack | undefined;
-    if (!track) return;
-    setBlurLoading(true);
-    try {
-      if (blurred) {
-        await track.stopProcessor();
-        setBlurred(false);
-      } else {
-        await track.setProcessor(BackgroundBlur(10));
-        setBlurred(true);
-      }
-    } catch (e) {
-      console.error('[Connect] failed to toggle background blur:', e);
-    } finally {
-      setBlurLoading(false);
-    }
-  }, [localParticipant, blurred]);
-
   return (
     <>
       {/* Floating Settings Button at Bottom-Right */}
@@ -120,14 +102,14 @@ function MediaEnhancements() {
         <button
           onClick={() => setIsOpen((prev) => !prev)}
           className={`p-3 rounded-2xl shadow-xl backdrop-blur-md border transition-all duration-200 active:scale-95 flex items-center justify-center relative ${
-            isOpen || blurred || krispEnabled
+            isOpen || krispEnabled
               ? 'bg-indigo-600/90 text-white border-indigo-400/50 hover:bg-indigo-600'
               : 'bg-gray-900/80 text-gray-200 border-gray-700/80 hover:bg-gray-800'
           }`}
           title="メディア設定 (ブラー / ノイズ除去)"
         >
           <Settings className={`w-5 h-5 transition-transform duration-300 ${isOpen ? 'rotate-90' : ''}`} />
-          {(blurred || krispEnabled) && (
+          {krispEnabled && (
             <span className="absolute -top-1 -right-1 w-3 h-3 bg-emerald-400 border-2 border-gray-900 rounded-full animate-pulse" />
           )}
         </button>
@@ -192,34 +174,7 @@ function MediaEnhancements() {
               </div>
             </div>
 
-            {/* Background Blur Toggle */}
-            <div className="space-y-2 border-t border-gray-800/80 pt-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-indigo-400" />
-                  <div>
-                    <p className="text-xs font-bold text-gray-200">背景ブラー</p>
-                    <p className="text-[10px] text-gray-400">カメラの背景をぼかしてプライバシー保護</p>
-                  </div>
-                </div>
-
-                <button
-                  onClick={toggleBlur}
-                  disabled={blurLoading}
-                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
-                    blurred ? 'bg-indigo-500' : 'bg-gray-700'
-                  }`}
-                >
-                  <span
-                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out flex items-center justify-center ${
-                      blurred ? 'translate-x-5' : 'translate-x-0'
-                    }`}
-                  >
-                    {blurLoading && <Loader2 className="w-3 h-3 animate-spin text-gray-600" />}
-                  </span>
-                </button>
-              </div>
-            </div>
+            <BackgroundControls state={background} />
           </div>
         </>
       )}
