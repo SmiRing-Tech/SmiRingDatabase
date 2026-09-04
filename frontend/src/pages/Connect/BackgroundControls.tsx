@@ -1,10 +1,11 @@
 import { useRef } from 'react';
-import { Ban, Droplets, Image as ImageIcon, Loader2, Plus, Trash2 } from 'lucide-react';
+import { Ban, Droplets, Image as ImageIcon, Loader2, Plus, Trash2, User, Mountain } from 'lucide-react';
 import { PRESETS, type BackgroundEffectState } from './useBackgroundEffect';
 
 /** Panel UI. Purely presentational — all the state lives in useBackgroundEffect. */
 export default function BackgroundControls({ state }: { state: BackgroundEffectState }) {
-  const { supported, mode, imageId, quality, uploads, busy, error, commit, handleUpload, handleDelete } = state;
+  const { supported, mode, imageId, quality, target, uploads, busy, error, commit, handleUpload, handleDelete } =
+    state;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!supported) {
@@ -66,6 +67,38 @@ export default function BackgroundControls({ state }: { state: BackgroundEffectS
           </button>
         ))}
       </div>
+
+      {/* 適用先: 通常は背景。人物側にすると自分がぼける／画像で切り抜かれる */}
+      {mode !== 'off' && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] text-gray-400">エフェクトをかける対象</p>
+          <div className="flex gap-1.5">
+            {(
+              [
+                { value: 'background', label: '背景', icon: Mountain, hint: '自分はそのまま' },
+                { value: 'subject', label: '人物', icon: User, hint: '自分に適用' },
+              ] as const
+            ).map((option) => (
+              <button
+                key={option.value}
+                onClick={() => void commit({ target: option.value })}
+                disabled={busy}
+                className={`flex-1 flex items-center gap-2 rounded-lg border px-2 py-1.5 transition-colors disabled:opacity-50 ${
+                  target === option.value
+                    ? 'bg-indigo-500/20 border-indigo-400/60 text-indigo-200'
+                    : 'bg-gray-800/60 border-gray-700 text-gray-400 hover:bg-gray-800'
+                }`}
+              >
+                <option.icon className="w-3.5 h-3.5 shrink-0" />
+                <span className="text-left leading-tight">
+                  <span className="block text-[11px] font-bold">{option.label}</span>
+                  <span className="block text-[9px] opacity-80">{option.hint}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {mode === 'image' && (
         <div className="space-y-2">

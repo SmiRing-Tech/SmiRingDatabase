@@ -7,6 +7,7 @@ import {
 import '@livekit/components-styles';
 import { ArrowLeft, Video, AlertTriangle, Loader2, Copy, Check } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
+import PreJoinBackgroundDialog from '../../components/Connect/PreJoinBackgroundDialog';
 import { useAuth } from '../../context/AuthContext';
 
 type Phase = 'prejoin' | 'in-room' | 'error';
@@ -119,6 +120,7 @@ export default function ConnectRoomPage() {
 
   // Track whether a custom name is being used
   const [isCustomName, setIsCustomName] = useState(false);
+  const [backgroundDialogOpen, setBackgroundDialogOpen] = useState(false);
 
   // Initial username calculation:
   // 1. Custom entered name from localStorage if exists
@@ -391,6 +393,32 @@ export default function ConnectRoomPage() {
                     userLabel="表示名"
                   />
 
+                  {/* 背景エフェクト: 入室前にここで決めておくと、通話開始時にそのまま適用される */}
+                  <div className="max-w-[480px] mx-auto mt-3 px-1">
+                    <button
+                      type="button"
+                      onClick={() => setBackgroundDialogOpen(true)}
+                      className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-white hover:bg-indigo-50 text-indigo-600 hover:text-indigo-700 border border-slate-200 hover:border-indigo-200 font-bold text-sm rounded-xl shadow-xs transition-all active:scale-95"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <rect width="18" height="18" x="3" y="3" rx="2" />
+                        <circle cx="9" cy="9" r="2" />
+                        <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+                      </svg>
+                      <span>背景エフェクトを設定</span>
+                    </button>
+                  </div>
+
                   {/* Reset to Default Name Button (rendered cleanly in React) */}
                   {isCustomName && defaultDisplayName && (
                     <div className="max-w-[480px] mx-auto mt-2 px-1 flex justify-end">
@@ -453,7 +481,11 @@ export default function ConnectRoomPage() {
           )}
         </div>
       </div>
+
+      <PreJoinBackgroundDialog
+        open={backgroundDialogOpen}
+        onClose={() => setBackgroundDialogOpen(false)}
+      />
     </div>
   );
 }
-

@@ -30,8 +30,14 @@ void main() {
   // keep. This only clips the noise floor and saturates the solid body.
   alpha = clamp((alpha - u_lo) / max(1e-4, u_hi - u_lo), 0.0, 1.0);
 
+  // Temporal smoothing, but only where the matte is actually holding still.
+  // A flat blend steadies the edge in stationary areas and smears it into a
+  // trail wherever the subject moves, so fade the history out in proportion to
+  // how much this pixel just changed: fast motion gets the fresh value intact.
   float previous = texture(u_history, texCoords).r;
-  alpha = mix(alpha, previous, u_history_weight);
+  float motion = abs(alpha - previous);
+  float weight = u_history_weight * (1.0 - smoothstep(0.04, 0.30, motion));
+  alpha = mix(alpha, previous, weight);
 
   fragColor = vec4(alpha, alpha, alpha, 1.0);
 }`;
@@ -90,6 +96,9 @@ uniform sampler2D u_alpha;
 // different aspect gets cropped to fill instead of stretched.
 uniform vec2 u_background_scale;
 uniform vec2 u_background_offset;
+// 0 = the effect replaces the background (normal), 1 = it replaces the subject.
+// Swapping which side the matte selects is all it takes.
+uniform float u_swap_sides;
 
 out vec4 fragColor;
 
@@ -98,5 +107,6 @@ void main() {
   vec2 backgroundCoords = texCoords * u_background_scale + u_background_offset;
   vec3 background = texture(u_background, backgroundCoords).rgb;
   float alpha = clamp(texture(u_alpha, texCoords).r, 0.0, 1.0);
-  fragColor = vec4(mix(background, foreground, alpha), 1.0);
+  float blend = mix(alpha, 1.0 - alpha, u_swap_sides);
+  fragColor = vec4(mix(background, foreground, blend), 1.0);
 }`;

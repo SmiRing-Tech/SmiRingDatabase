@@ -61,9 +61,18 @@ const MODELS: Record<SegmentationQuality, string> = {
 
 export type BackgroundMode = 'blur' | 'image';
 
+/** Which side of the matte the effect lands on. */
+export type EffectTarget = 'background' | 'subject';
+
 export type MediapipeBackgroundOptions = {
   /** Replace the background with a blurred copy of it, or with a still image. */
   mode?: BackgroundMode;
+  /**
+   * Whether the effect replaces the background (the usual case) or the subject
+   * — the latter blurs the person and leaves the room sharp, or cuts the image
+   * into the person's silhouette.
+   */
+  target?: EffectTarget;
   /**
    * Image to sit behind the subject in `image` mode. Cross-origin URLs (e.g. R2
    * presigned links) are fetched with `crossOrigin = 'anonymous'`, so the bucket
@@ -85,17 +94,28 @@ export type MediapipeBackgroundOptions = {
   assetPaths?: { wasmFileSet?: string; modelAssetPath?: string };
   /** MediaPipe inference backend. GPU unless you have a reason. */
   delegate?: 'GPU' | 'CPU';
+  /**
+   * Forces how the confidence mask is read: `true` = it scores background,
+   * `false` = it scores the subject. Leave undefined to auto-detect. This is a
+   * debugging escape hatch, not the way to swap the effect around — that is
+   * what `target` is for.
+   */
+  invertMask?: boolean;
 };
 
 const DEFAULTS = {
   mode: 'blur' as BackgroundMode,
+  target: 'background' as EffectTarget,
   imageUrl: null as string | null,
   blurRadius: 12,
   quality: 'balanced' as SegmentationQuality,
   temporalSmoothing: 0.45,
   edgeFeather: 4,
+  // Enough to steady a stationary edge; the shader drops it toward zero wherever
+  // the matte is moving, so raising it does not reintroduce trails.
   segmentationFps: 30,
   delegate: 'GPU' as const,
+  invertMask: undefined as boolean | undefined,
 };
 
 /** True when the browser can run this processor at all. */
@@ -115,7 +135,12 @@ type Programs = {
   gaussian: GLProgram<'u_texture' | 'u_step'>;
   copy: GLProgram<'u_texture'>;
   composite: GLProgram<
-    'u_frame' | 'u_background' | 'u_alpha' | 'u_background_scale' | 'u_background_offset'
+    | 'u_frame'
+    | 'u_background'
+    | 'u_alpha'
+    | 'u_background_scale'
+    | 'u_background_offset'
+    | 'u_swap_sides'
   >;
 };
 
@@ -124,8 +149,10 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
   processedTrack?: MediaStreamTrack;
 
-  private options: Required<Omit<MediapipeBackgroundOptions, 'assetPaths'>> &
-    Pick<MediapipeBackgroundOptions, 'assetPaths'>;
+  // invertMask stays genuinely optional: undefined means "auto-detect", which is
+  // a different state from either explicit true or false.
+  private options: Required<Omit<MediapipeBackgroundOptions, 'assetPaths' | 'invertMask'>> &
+    Pick<MediapipeBackgroundOptions, 'assetPaths' | 'invertMask'>;
 
   private segmenter?: ImageSegmenter;
 
@@ -211,7 +238,12 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   updateOptions(
     options: Pick<
       MediapipeBackgroundOptions,
-      'blurRadius' | 'edgeFeather' | 'temporalSmoothing' | 'segmentationFps'
+      | 'blurRadius'
+      | 'edgeFeather'
+      | 'temporalSmoothing'
+      | 'segmentationFps'
+      | 'target'
+      | 'invertMask'
     >,
   ) {
     this.options = { ...this.options, ...options };
@@ -277,6 +309,28 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.loadedImageUrl = url;
   }
 
+  /**
+   * How to read the confidence mask, as a 0/1 shader uniform.
+   *
+   * An explicit `invertMask` wins. Otherwise use what detectPolarity measured,
+   * and until it has measured anything assume the mask scores background: both
+   * bundled models put background at category 0, so that is the safer of the
+   * two guesses to start from — getting it wrong blurs the person instead.
+   */
+  private get resolvedInvert(): number {
+    if (this.options.invertMask !== undefined) return this.options.invertMask ? 1 : 0;
+    return this.invert ?? 1;
+  }
+
+  /** What the processor currently believes about mask polarity — for debug UIs. */
+  get maskPolarity(): { inverted: boolean; source: 'override' | 'detected' | 'assumed' } {
+    if (this.options.invertMask !== undefined) {
+      return { inverted: this.options.invertMask, source: 'override' };
+    }
+    if (this.invert !== undefined) return { inverted: this.invert === 1, source: 'detected' };
+    return { inverted: true, source: 'assumed' };
+  }
+
   /** False whenever image mode is requested but no image is actually loaded. */
   private usingImageBackground() {
     return this.options.mode === 'image' && !!this.imageTexture;
@@ -333,6 +387,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
           'u_alpha',
           'u_background_scale',
           'u_background_offset',
+          'u_swap_sides',
         ] as const,
         true,
       ),
@@ -431,39 +486,82 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   }
 
   /**
-   * Works out whether confidenceMasks[0] means "person" or "background" for models
-   * with no label map, by comparing its average value inside and outside the
-   * category mask's background class. Runs at most a few frames at startup.
+   * Works out whether the confidence mask scores "background" or "subject".
+   *
+   * Both bundled models put background at category 0, and MediaPipe documents
+   * confidenceMasks[i] as tracking category i — but the binary selfie model
+   * ships no label map, so there is nothing to read that from at runtime.
+   * Rather than trust a guess, measure it, with a second method to fall back on
+   * so this cannot quietly give up and leave the effect inverted.
    */
   private detectPolarity(result: ImageSegmenterResult) {
-    const categoryMask = result.categoryMask;
     const confidenceMask = result.confidenceMasks?.[this.maskIndex];
-    if (!categoryMask || !confidenceMask) return;
+    if (!confidenceMask) return;
 
-    const categories = categoryMask.getAsUint8Array();
     const confidences = confidenceMask.getAsFloat32Array();
-    if (categories.length !== confidences.length || categories.length === 0) return;
+    const width = confidenceMask.width;
+    const height = confidenceMask.height;
+    if (!confidences.length || width < 8 || height < 8) return;
 
-    let backgroundSum = 0;
-    let backgroundCount = 0;
-    let foregroundSum = 0;
-    let foregroundCount = 0;
-    // Every 7th pixel is far more than enough for two means.
-    for (let i = 0; i < categories.length; i += 7) {
-      if (categories[i] === 0) {
-        backgroundSum += confidences[i];
-        backgroundCount += 1;
-      } else {
-        foregroundSum += confidences[i];
-        foregroundCount += 1;
+    // Preferred: the category mask states outright which pixels are background,
+    // so comparing the confidence values over each group settles it.
+    const categoryMask = result.categoryMask;
+    if (categoryMask) {
+      const categories = categoryMask.getAsUint8Array();
+      if (categories.length === confidences.length) {
+        let backgroundSum = 0;
+        let backgroundCount = 0;
+        let subjectSum = 0;
+        let subjectCount = 0;
+        // Every 7th pixel is far more than enough for two means.
+        for (let i = 0; i < categories.length; i += 7) {
+          if (categories[i] === 0) {
+            backgroundSum += confidences[i];
+            backgroundCount += 1;
+          } else {
+            subjectSum += confidences[i];
+            subjectCount += 1;
+          }
+        }
+        const total = backgroundCount + subjectCount;
+        // An all-person or all-background frame tells us nothing; wait for a better one.
+        if (total > 0 && backgroundCount / total >= 0.05 && subjectCount / total >= 0.05) {
+          this.invert = backgroundSum / backgroundCount > subjectSum / subjectCount ? 1 : 0;
+          return;
+        }
       }
     }
 
-    const total = backgroundCount + foregroundCount;
-    // An all-person or all-background frame tells us nothing; wait for a better one.
-    if (backgroundCount / total < 0.05 || foregroundCount / total < 0.05) return;
+    // Fallback for a model with no category mask: in webcam framing the outer
+    // border is background and the middle is the subject. Crude, but it only has
+    // to answer which of two directions the mask reads.
+    let borderSum = 0;
+    let borderCount = 0;
+    let centreSum = 0;
+    let centreCount = 0;
+    const borderX = Math.max(1, Math.floor(width * 0.08));
+    const borderY = Math.max(1, Math.floor(height * 0.08));
+    const centreX0 = Math.floor(width * 0.35);
+    const centreX1 = Math.floor(width * 0.65);
+    const centreY0 = Math.floor(height * 0.35);
+    const centreY1 = Math.floor(height * 0.65);
 
-    this.invert = backgroundSum / backgroundCount > foregroundSum / foregroundCount ? 1 : 0;
+    for (let y = 0; y < height; y += 2) {
+      for (let x = 0; x < width; x += 2) {
+        const value = confidences[y * width + x];
+        if (x < borderX || x >= width - borderX || y < borderY || y >= height - borderY) {
+          borderSum += value;
+          borderCount += 1;
+        } else if (x >= centreX0 && x < centreX1 && y >= centreY0 && y < centreY1) {
+          centreSum += value;
+          centreCount += 1;
+        }
+      }
+    }
+
+    if (borderCount > 0 && centreCount > 0) {
+      this.invert = borderSum / borderCount > centreSum / centreCount ? 1 : 0;
+    }
   }
 
   // ----------------------------------------------------------------- Plumbing
@@ -716,7 +814,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     gl.useProgram(alpha.program);
     bindTextureUnit(gl, 0, maskTexture, alpha.uniforms.u_mask);
     bindTextureUnit(gl, 1, history.texture, alpha.uniforms.u_history);
-    gl.uniform1f(alpha.uniforms.u_invert, this.invert ?? 0);
+    gl.uniform1f(alpha.uniforms.u_invert, this.resolvedInvert);
     // A wide ramp: only clip what is almost certainly background, only saturate
     // what is almost certainly body, and let everything between stay translucent.
     gl.uniform1f(alpha.uniforms.u_lo, 0.1);
@@ -814,6 +912,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     bindTextureUnit(gl, 2, this.feathered!.texture, composite.uniforms.u_alpha);
     gl.uniform2f(composite.uniforms.u_background_scale, scaleX, scaleY);
     gl.uniform2f(composite.uniforms.u_background_offset, (1 - scaleX) / 2, (1 - scaleY) / 2);
+    gl.uniform1f(composite.uniforms.u_swap_sides, this.options.target === 'subject' ? 1 : 0);
     drawQuad(gl, quad, composite.position, null, this.width, this.height);
   }
 }

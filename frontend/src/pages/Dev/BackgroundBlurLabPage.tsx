@@ -45,6 +45,10 @@ export default function BackgroundBlurLabPage() {
   const [quality, setQuality] = useState<SegmentationQuality>('balanced');
   const [resolutionIndex, setResolutionIndex] = useState(0);
   const [mode, setMode] = useState<'blur' | 'image'>('blur');
+  const [target, setTarget] = useState<'background' | 'subject'>('background');
+  // undefined = auto-detect; true/false force how the confidence mask is read.
+  const [invertMask, setInvertMask] = useState<boolean | undefined>(undefined);
+  const [polarity, setPolarity] = useState('');
   const [imageUrl, setImageUrl] = useState(PRESET_IMAGES[0].url);
   const [blurRadius, setBlurRadius] = useState(14);
   const [edgeFeather, setEdgeFeather] = useState(4);
@@ -92,9 +96,11 @@ export default function BackgroundBlurLabPage() {
           quality: nextQuality,
           mode,
           imageUrl: mode === 'image' ? imageUrl : null,
+          target,
           blurRadius,
           edgeFeather,
           temporalSmoothing,
+          invertMask,
         });
         await processor.init({ kind: Track.Kind.Video, track: cameraTrack });
         processorRef.current = processor;
@@ -118,7 +124,17 @@ export default function BackgroundBlurLabPage() {
         setBusy(false);
       }
     },
-    [teardown, resolutionIndex, blurRadius, edgeFeather, temporalSmoothing, mode, imageUrl],
+    [
+      teardown,
+      resolutionIndex,
+      blurRadius,
+      edgeFeather,
+      temporalSmoothing,
+      mode,
+      imageUrl,
+      target,
+      invertMask,
+    ],
   );
 
   const stop = useCallback(async () => {
@@ -130,8 +146,25 @@ export default function BackgroundBlurLabPage() {
 
   // Blur/feather/smoothing are read fresh every frame, so they update live.
   useEffect(() => {
-    processorRef.current?.updateOptions({ blurRadius, edgeFeather, temporalSmoothing });
-  }, [blurRadius, edgeFeather, temporalSmoothing]);
+    processorRef.current?.updateOptions({
+      blurRadius,
+      edgeFeather,
+      temporalSmoothing,
+      target,
+      invertMask,
+    });
+  }, [blurRadius, edgeFeather, temporalSmoothing, target, invertMask]);
+
+  // Surface what the processor decided about polarity, so a wrong guess reads as
+  // a wrong guess rather than just a broken-looking effect.
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => {
+      const p = processorRef.current?.maskPolarity;
+      if (p) setPolarity(`${p.inverted ? '背景スコア' : '人物スコア'} (${p.source})`);
+    }, 500);
+    return () => clearInterval(timer);
+  }, [running]);
 
   // Mode and image swap in place — no need to reload the segmentation model.
   useEffect(() => {
@@ -261,6 +294,7 @@ export default function BackgroundBlurLabPage() {
         <div className="text-xs text-gray-400">
           状態: <span className="text-gray-200">{status}</span>
           {running && <span className="ml-3">出力 {fps} fps</span>}
+          {running && polarity && <span className="ml-3">マスク: {polarity}</span>}
         </div>
       </div>
 
@@ -330,10 +364,62 @@ export default function BackgroundBlurLabPage() {
         </label>
       </div>
 
+      <div className="max-w-3xl grid gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <p className="text-xs text-gray-400">エフェクトの対象</p>
+          <div className="flex gap-1.5">
+            {(
+              [
+                { value: 'background', label: '背景' },
+                { value: 'subject', label: '人物' },
+              ] as const
+            ).map((option) => (
+              <button
+                key={option.value}
+                onClick={() => setTarget(option.value)}
+                className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
+                  target === option.value
+                    ? 'bg-indigo-500/20 border-indigo-400/60 text-indigo-200'
+                    : 'bg-gray-900 border-gray-700 text-gray-400 hover:bg-gray-800'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <p className="text-xs text-gray-400">マスクの向き（自動判定が外れたとき用）</p>
+          <div className="flex gap-1.5">
+            {(
+              [
+                { value: undefined, label: '自動' },
+                { value: true, label: '背景スコア' },
+                { value: false, label: '人物スコア' },
+              ] as const
+            ).map((option) => (
+              <button
+                key={String(option.value)}
+                onClick={() => setInvertMask(option.value)}
+                className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
+                  invertMask === option.value
+                    ? 'bg-indigo-500/20 border-indigo-400/60 text-indigo-200'
+                    : 'bg-gray-900 border-gray-700 text-gray-400 hover:bg-gray-800'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
       <ul className="text-[11px] text-gray-500 space-y-1 list-disc pl-4">
         <li>上下反転していないか / 人物と背景のボケが逆になっていないかを確認してください。</li>
         <li>髪の輪郭を見るなら「高精細」に切り替えて比較してください。</li>
         <li>フェザーを 0 にすると分離そのものの精度が見えます。</li>
+        <li>手を素早く振って、輪郭に残像が尾を引かないか確認してください。</li>
         <li>画像モードでは、上下反転・左右反転・引き伸ばし（cover 切り出し）を確認してください。</li>
       </ul>
     </div>
