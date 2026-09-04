@@ -43,6 +43,11 @@ interface UseMiniRoomsOptions {
   /** Applies a reconnect target to the actual LiveKit connection (owned by CallRoomPage,
    *  which feeds token/url into <LiveKitRoom>). */
   onReconnect: (target: ReconnectTarget) => void;
+  /** Called right before this hook intentionally disconnects the current room to switch
+   *  to another one. <LiveKitRoom>'s onDisconnected fires for this exact disconnect just
+   *  like it would for the participant actually leaving the call — this lets the caller
+   *  flag it as expected so it doesn't end the call before the reconnect happens. */
+  onBeforeReconnectDisconnect: () => void;
 }
 
 /**
@@ -64,7 +69,13 @@ interface UseMiniRoomsOptions {
  *    performs the move — this hook's own timer is what makes it happen);
  *  - exposes thin REST actions for create/move/close.
  */
-export function useMiniRooms({ mainRoomId, selfIdentity, isHost, onReconnect }: UseMiniRoomsOptions) {
+export function useMiniRooms({
+  mainRoomId,
+  selfIdentity,
+  isHost,
+  onReconnect,
+  onBeforeReconnectDisconnect,
+}: UseMiniRoomsOptions) {
   const room = useRoomContext();
 
   const [currentRoomId, setCurrentRoomId] = useState(mainRoomId);
@@ -78,16 +89,39 @@ export function useMiniRooms({ mainRoomId, selfIdentity, isHost, onReconnect }: 
     onReconnectRef.current = onReconnect;
   }, [onReconnect]);
 
+  const onBeforeReconnectDisconnectRef = useRef(onBeforeReconnectDisconnect);
+  useEffect(() => {
+    onBeforeReconnectDisconnectRef.current = onBeforeReconnectDisconnect;
+  }, [onBeforeReconnectDisconnect]);
+
   // Applies a reconnect target: captures the room's *current* mic/camera enabled state
   // (not the original join-time preference) so muting/camera-off survives the switch —
   // <LiveKitRoom>'s audio/video props otherwise only reflect how the call was first
   // joined, which would silently un-mute someone on every room switch.
+  //
+  // Must disconnect from the current room *before* handing the new token/url to
+  // <LiveKitRoom> (via onReconnect): the Room instance is reused across a move rather
+  // than remounted, and livekit-client's `Room.connect()` no-ops silently whenever the
+  // room is still in the Connected state — so without this, a move never actually
+  // reaches the destination room, it just leaves the client stuck in the old one.
   const applyReconnect = useCallback(
-    (target: { token: string; url: string; destinationRoomId: string }) => {
+    async (target: { token: string; url: string; destinationRoomId: string }) => {
+      console.log('[MiniRooms] applyReconnect: start', {
+        destinationRoomId: target.destinationRoomId,
+        url: target.url,
+        currentRoomState: room?.state,
+      });
       const audio = room?.localParticipant?.isMicrophoneEnabled ?? true;
       const video = room?.localParticipant?.isCameraEnabled ?? true;
       setCurrentRoomId(target.destinationRoomId);
       setPendingMove(null);
+      if (room) {
+        console.log('[MiniRooms] applyReconnect: disconnecting from current room', room.name, room.state);
+        onBeforeReconnectDisconnectRef.current();
+        await room.disconnect();
+        console.log('[MiniRooms] applyReconnect: disconnected, new state', room.state);
+      }
+      console.log('[MiniRooms] applyReconnect: calling onReconnect', { audio, video });
       onReconnectRef.current({ token: target.token, url: target.url, audio, video });
     },
     [room],
@@ -141,6 +175,8 @@ export function useMiniRooms({ mainRoomId, selfIdentity, isHost, onReconnect }: 
       try {
         const str = new TextDecoder().decode(payload);
         const data = JSON.parse(str);
+
+        console.log('[MiniRooms] DataReceived', { topic, data });
 
         if (topic === SYNC_TOPIC && Array.isArray(data.rooms)) {
           setRooms(data.rooms);
@@ -220,35 +256,49 @@ export function useMiniRooms({ mainRoomId, selfIdentity, isHost, onReconnect }: 
   // it immediately, no notify/delay (the participant already knows they asked for this).
   const moveSelf = useCallback(
     async (destinationRoomId: string) => {
+      console.log('[MiniRooms] moveSelf: requesting', { destinationRoomId, selfIdentity });
       const res = await apiClient.post(`/api/connect/rooms/${mainRoomId}/miniroom/move`, {
         targetIdentity: selfIdentity,
         destinationRoomId,
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
+        console.log('[MiniRooms] moveSelf: failed', res.status, body);
         throw new Error(body.error || `移動に失敗しました (${res.status})`);
       }
       const body = await res.json();
+      console.log('[MiniRooms] moveSelf: response', body);
       if (body.alreadyThere) return;
-      applyReconnect({ token: body.token, url: body.url, destinationRoomId: body.destinationRoomId });
+      await applyReconnect({ token: body.token, url: body.url, destinationRoomId: body.destinationRoomId });
     },
     [mainRoomId, selfIdentity, applyReconnect],
   );
 
-  // Host moving someone else: this only sends the request — the target's own client
-  // applies the move via the `miniroom_notify` data message it receives (handled above).
+  // Host moving someone else: normally this only sends the request — the target's own
+  // client applies the move via the `miniroom_notify` data message it receives (handled
+  // above). But if the host targets *their own* identity (e.g. picking themselves in the
+  // roster dropdown), the backend treats it as a self-move and answers with a token/url
+  // directly in this response instead of sending a notify — so that case must be applied
+  // here too, or the host's own move silently does nothing.
   const moveOther = useCallback(
     async (targetIdentity: string, destinationRoomId: string) => {
+      console.log('[MiniRooms] moveOther: requesting', { targetIdentity, destinationRoomId, selfIdentity });
       const res = await apiClient.post(`/api/connect/rooms/${mainRoomId}/miniroom/move`, {
         targetIdentity,
         destinationRoomId,
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
+        console.log('[MiniRooms] moveOther: failed', res.status, body);
         throw new Error(body.error || `移動に失敗しました (${res.status})`);
       }
+      const body = await res.json().catch(() => ({}));
+      console.log('[MiniRooms] moveOther: response', body);
+      if (targetIdentity === selfIdentity && body.token && body.url) {
+        await applyReconnect({ token: body.token, url: body.url, destinationRoomId: body.destinationRoomId });
+      }
     },
-    [mainRoomId],
+    [mainRoomId, selfIdentity, applyReconnect],
   );
 
   const closeMiniRoom = useCallback(

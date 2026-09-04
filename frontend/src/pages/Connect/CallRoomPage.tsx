@@ -1328,10 +1328,12 @@ function CallRoomInner({
   roomId,
   roomTitle,
   onReconnect,
+  onBeforeReconnectDisconnect,
 }: {
   roomId: string;
   roomTitle: string;
   onReconnect: (target: ReconnectTarget) => void;
+  onBeforeReconnectDisconnect: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -1347,6 +1349,7 @@ function CallRoomInner({
     selfIdentity: user?.id || '',
     isHost: isMiniRoomHost,
     onReconnect,
+    onBeforeReconnectDisconnect,
   });
 
   // Safe to call inside <LiveKitRoom>. selfIdentity comes from the authenticated user id
@@ -1629,7 +1632,24 @@ export default function CallRoomPage() {
     [choices],
   );
 
+  // A mini-room switch intentionally disconnects the current LiveKit connection before
+  // reconnecting to the destination room (see useMiniRooms' applyReconnect — required
+  // because livekit-client's Room.connect() silently no-ops while already connected).
+  // That disconnect fires the same RoomEvent.Disconnected / onDisconnected as a real
+  // "the user left the call", so without this flag handleLeave would treat every mini-
+  // room move as the participant leaving and end the call before the reconnect happens.
+  const isSwitchingRoomsRef = useRef(false);
+
+  const handleBeforeReconnectDisconnect = useCallback(() => {
+    isSwitchingRoomsRef.current = true;
+  }, []);
+
   const handleLeave = () => {
+    if (isSwitchingRoomsRef.current) {
+      console.log('[CallRoomPage] handleLeave: ignoring disconnect caused by mini-room switch');
+      isSwitchingRoomsRef.current = false;
+      return;
+    }
     setIsDisconnected(true);
   };
 
@@ -1639,6 +1659,7 @@ export default function CallRoomPage() {
   // silently undone by the reconnect (video/audio below otherwise only reflect the
   // original pre-join choice, not anything toggled mid-call).
   const handleReconnect = useCallback((target: ReconnectTarget) => {
+    console.log('[CallRoomPage] handleReconnect: setting new token/url', { url: target.url });
     setToken(target.token);
     setServerUrl(target.url);
     setChoices((prev) => (prev ? { ...prev, audioEnabled: target.audio, videoEnabled: target.video } : prev));
@@ -1733,6 +1754,7 @@ export default function CallRoomPage() {
           roomId={roomId!}
           roomTitle={roomTitle}
           onReconnect={handleReconnect}
+          onBeforeReconnectDisconnect={handleBeforeReconnectDisconnect}
         />
       </LiveKitRoom>
     </div>

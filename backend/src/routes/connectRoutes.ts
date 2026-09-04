@@ -775,12 +775,14 @@ router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req
 
     const userId = req.user!.id;
     const isSelfMove = targetIdentity === userId;
+    const isHost = await isSmiRingMemberHost(userId);
 
     if (isSelfMove) {
       // Returning to the main room is always allowed; joining a mini room yourself
-      // requires the session's allow_self_assign flag.
+      // requires the session's allow_self_assign flag, unless you're a host (hosts can
+      // already move anyone anywhere, so they shouldn't be blocked from moving themselves).
       const allowSelfAssign = miniRooms[0]?.allow_self_assign ?? false;
-      if (destinationRoomId !== roomId && !allowSelfAssign) {
+      if (destinationRoomId !== roomId && !allowSelfAssign && !isHost) {
         return res.status(403).json({ error: 'このルームへは自分で移動できません' });
       }
 
@@ -790,7 +792,6 @@ router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req
       return res.status(200).json({ ok: true, token, url: LIVEKIT_URL, destinationRoomId });
     }
 
-    const isHost = await isSmiRingMemberHost(userId);
     if (!isHost) {
       return res.status(403).json({ error: '他の参加者を移動させるにはホスト権限が必要です' });
     }

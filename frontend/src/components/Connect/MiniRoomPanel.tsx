@@ -199,11 +199,16 @@ function HostManagementView({
               <span className="text-xs font-semibold text-gray-200 truncate">{p.name}</span>
               <select
                 value={p.currentRoomId}
-                onChange={(e) =>
+                onChange={(e) => {
+                  console.log('[MiniRoomPanel] host dropdown: move requested', {
+                    identity: p.identity,
+                    from: p.currentRoomId,
+                    to: e.target.value,
+                  });
                   miniRooms
                     .moveOther(p.identity, e.target.value)
-                    .catch((err) => setError(getErrorMessage(err, '移動に失敗しました')))
-                }
+                    .catch((err) => setError(getErrorMessage(err, '移動に失敗しました')));
+                }}
                 className="bg-gray-900/80 border border-gray-700/80 rounded-lg text-[11px] text-gray-200 px-2 py-1 focus:outline-none max-w-[8.5rem]"
               >
                 {destinationOptions.map((opt) => (
