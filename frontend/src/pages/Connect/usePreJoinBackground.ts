@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Track } from 'livekit-client';
 import {
   MediapipeBackgroundProcessor,
   type EffectTarget,
@@ -15,17 +14,22 @@ import {
 import type { BackgroundEffectState } from './useBackgroundEffect';
 
 /**
- * The same background picker, for the pre-join screen.
+ * The background picker for the pre-join screen.
  *
- * There is no Room here — LiveKit's <PreJoin> owns its own preview and does not
- * hand the track out — so this opens a second camera stream of its own and runs
- * the processor on that. Browsers hand out a second track from an already-open
- * camera without complaint, and it only lives while the dialog is open.
+ * LiveKit's <PreJoin> takes a `videoProcessor`, so the effect can run on the
+ * preview it already owns — no second camera, and what you see before joining is
+ * the same pipeline that will run in the call.
  *
- * It writes the same localStorage entry the in-call hook reads, which is what
- * makes a choice made here take effect once the call actually starts.
+ * One processor instance is kept alive and mutated in place. LiveKit decides
+ * whether to rebuild the preview tracks by serialising the processor down to its
+ * `name`, so handing it a different instance with the same name would be ignored;
+ * the name carries the model for exactly that reason, which means only a quality
+ * change costs a rebuild.
+ *
+ * Choices are written to localStorage as they are made, which is what the call
+ * reads on join — so this screen configures the call, it does not just preview it.
  */
-export function usePreviewBackgroundEffect(active: boolean) {
+export function usePreJoinBackground() {
   const supported = useMemo(() => supportsMediapipeBackground(), []);
   const stored = useMemo(readStoredChoice, []);
 
@@ -35,44 +39,40 @@ export function usePreviewBackgroundEffect(active: boolean) {
   const [target, setTarget] = useState<EffectTarget>(stored.target ?? 'background');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
+
+  // Held in state, not a ref: <PreJoin> has to re-render when it changes.
+  const [processor, setProcessor] = useState<MediapipeBackgroundProcessor | null>(null);
+  const processorRef = useRef<MediapipeBackgroundProcessor | null>(null);
 
   const { uploads, imageUrlFor, uploadBackground, deleteBackground } =
-    useBackgroundLibrary(supported && active);
+    useBackgroundLibrary(supported);
 
-  const processorRef = useRef<MediapipeBackgroundProcessor | null>(null);
-  const cameraStreamRef = useRef<MediaStream | null>(null);
-
-  const teardown = useCallback(async () => {
-    const processor = processorRef.current;
-    processorRef.current = null;
-    if (processor) await processor.destroy().catch(() => {});
-    cameraStreamRef.current?.getTracks().forEach((t) => t.stop());
-    cameraStreamRef.current = null;
-    setPreviewStream(null);
-  }, []);
+  useEffect(
+    () => () => {
+      // PreJoin stops the tracks; the processor's own resources are ours to free.
+      void processorRef.current?.destroy().catch(() => {});
+      processorRef.current = null;
+    },
+    [],
+  );
 
   /**
-   * Rebuilds the preview for the given settings. Unlike the in-call path there is
-   * no published track to preserve, so this always constructs a fresh processor —
-   * simpler, and a stall in a preview costs nothing.
+   * Reconciles the live processor with the requested settings, reusing the
+   * instance whenever the model is unchanged.
    */
-  const applyToPreview = useCallback(
+  const syncProcessor = useCallback(
     async (
       nextMode: BackgroundMode,
       nextImageId: string | undefined,
       nextQuality: SegmentationQuality,
       nextTarget: EffectTarget,
     ) => {
-      const cameraTrack = cameraStreamRef.current?.getVideoTracks()[0];
-      if (!cameraTrack) return;
-
-      const previous = processorRef.current;
-      processorRef.current = null;
-      if (previous) await previous.destroy().catch(() => {});
-
-      if (nextMode === 'off') {
-        setPreviewStream(new MediaStream([cameraTrack]));
+      if (!supported || nextMode === 'off') {
+        const previous = processorRef.current;
+        processorRef.current = null;
+        setProcessor(null);
+        // PreJoin drops it from the track first; destroying after that is safe.
+        if (previous) await previous.destroy().catch(() => {});
         return;
       }
 
@@ -81,7 +81,17 @@ export function usePreviewBackgroundEffect(active: boolean) {
         throw new Error('選択した背景画像が見つかりませんでした。');
       }
 
-      const processor = new MediapipeBackgroundProcessor({
+      const current = processorRef.current;
+      if (current && current.quality === nextQuality) {
+        current.updateOptions({ target: nextTarget });
+        await current.setBackground({
+          mode: nextMode === 'image' ? 'image' : 'blur',
+          imageUrl: imageUrl ?? null,
+        });
+        return;
+      }
+
+      const next = new MediapipeBackgroundProcessor({
         quality: nextQuality,
         mode: nextMode === 'image' ? 'image' : 'blur',
         target: nextTarget,
@@ -90,61 +100,24 @@ export function usePreviewBackgroundEffect(active: boolean) {
         temporalSmoothing: 0.45,
         edgeFeather: 4,
       });
-      await processor.init({ kind: Track.Kind.Video, track: cameraTrack });
-      processorRef.current = processor;
-
-      const processed = processor.processedTrack;
-      setPreviewStream(processed ? new MediaStream([processed]) : new MediaStream([cameraTrack]));
+      processorRef.current = next;
+      setProcessor(next);
+      if (current) await current.destroy().catch(() => {});
     },
-    [imageUrlFor],
+    [supported, imageUrlFor],
   );
 
-  // Open the camera while the dialog is up, and hand it back as soon as it closes.
+  // Restore the saved effect once the image library is ready — an uploaded
+  // background cannot be resolved to a URL before its blob has been fetched.
+  const restoredRef = useRef(false);
   useEffect(() => {
-    if (!active || !supported) {
-      void teardown();
-      return;
-    }
-
-    let cancelled = false;
-    setBusy(true);
-    setError('');
-
-    (async () => {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 360 },
-        audio: false,
-      });
-      if (cancelled) {
-        stream.getTracks().forEach((t) => t.stop());
-        return;
-      }
-      cameraStreamRef.current = stream;
-      setPreviewStream(stream);
-      await applyToPreview(mode, imageId, quality, target);
-    })()
-      .catch((e) => {
-        console.error('[PreJoin] preview failed:', e);
-        if (!cancelled) {
-          setError(
-            e instanceof Error && e.name === 'NotReadableError'
-              ? 'カメラを開けませんでした。他のアプリが使用中かもしれません。'
-              : 'プレビューを開始できませんでした。設定の保存はできます。',
-          );
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setBusy(false);
-      });
-
-    return () => {
-      cancelled = true;
-      void teardown();
-    };
-    // Only the open/close transition should re-open the camera; setting changes
-    // are handled by commit() below, which reuses the stream already open.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, supported]);
+    if (!supported || restoredRef.current || mode === 'off') return;
+    if (mode === 'image' && imageId && !imageUrlFor(imageId)) return;
+    restoredRef.current = true;
+    void syncProcessor(mode, imageId, quality, target).catch((e) =>
+      console.error('[PreJoin] failed to restore background effect:', e),
+    );
+  }, [supported, syncProcessor, imageUrlFor, mode, imageId, quality, target]);
 
   const commit = useCallback(
     async (next: {
@@ -162,7 +135,7 @@ export function usePreviewBackgroundEffect(active: boolean) {
       setError('');
       try {
         // Save first: the preview is a nicety, the stored choice is the point, and
-        // it should stick even on a machine where the preview cannot run.
+        // it should stick even where the preview cannot run.
         writeStoredChoice({
           mode: nextMode,
           imageId: nextImageId,
@@ -173,7 +146,7 @@ export function usePreviewBackgroundEffect(active: boolean) {
         setImageId(nextImageId);
         setQuality(nextQuality);
         setTarget(nextTarget);
-        await applyToPreview(nextMode, nextImageId, nextQuality, nextTarget);
+        await syncProcessor(nextMode, nextImageId, nextQuality, nextTarget);
       } catch (e) {
         console.error('[PreJoin] failed to apply background effect:', e);
         setError(e instanceof Error ? e.message : '背景の適用に失敗しました');
@@ -181,7 +154,7 @@ export function usePreviewBackgroundEffect(active: boolean) {
         setBusy(false);
       }
     },
-    [applyToPreview, mode, imageId, quality, target],
+    [syncProcessor, mode, imageId, quality, target],
   );
 
   const handleUpload = useCallback(
@@ -193,7 +166,7 @@ export function usePreviewBackgroundEffect(active: boolean) {
         writeStoredChoice({ mode: 'image', imageId: uploaded.id, quality, target });
         setMode('image');
         setImageId(uploaded.id);
-        await applyToPreview('image', uploaded.id, quality, target);
+        await syncProcessor('image', uploaded.id, quality, target);
       } catch (e) {
         console.error('[PreJoin] background upload failed:', e);
         setError(e instanceof Error ? e.message : 'アップロードに失敗しました');
@@ -201,7 +174,7 @@ export function usePreviewBackgroundEffect(active: boolean) {
         setBusy(false);
       }
     },
-    [applyToPreview, uploadBackground, quality, target],
+    [syncProcessor, uploadBackground, quality, target],
   );
 
   const handleDelete = useCallback(
@@ -214,7 +187,7 @@ export function usePreviewBackgroundEffect(active: boolean) {
           writeStoredChoice({ mode: 'blur', quality, target });
           setMode('blur');
           setImageId(undefined);
-          await applyToPreview('blur', undefined, quality, target);
+          await syncProcessor('blur', undefined, quality, target);
         }
       } catch (e) {
         console.error('[PreJoin] background delete failed:', e);
@@ -223,7 +196,7 @@ export function usePreviewBackgroundEffect(active: boolean) {
         setBusy(false);
       }
     },
-    [applyToPreview, deleteBackground, imageId, quality, target],
+    [syncProcessor, deleteBackground, imageId, quality, target],
   );
 
   const state: BackgroundEffectState = {
@@ -241,5 +214,5 @@ export function usePreviewBackgroundEffect(active: boolean) {
     imageUrlFor,
   };
 
-  return { state, previewStream };
+  return { state, processor };
 }

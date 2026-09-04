@@ -7,7 +7,8 @@ import {
 import '@livekit/components-styles';
 import { ArrowLeft, Video, AlertTriangle, Loader2, Copy, Check } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
-import PreJoinBackgroundDialog from '../../components/Connect/PreJoinBackgroundDialog';
+import PreJoinBackgroundPanel from '../../components/Connect/PreJoinBackgroundPanel';
+import { usePreJoinBackground } from './usePreJoinBackground';
 import { useAuth } from '../../context/AuthContext';
 
 type Phase = 'prejoin' | 'in-room' | 'error';
@@ -120,7 +121,10 @@ export default function ConnectRoomPage() {
 
   // Track whether a custom name is being used
   const [isCustomName, setIsCustomName] = useState(false);
-  const [backgroundDialogOpen, setBackgroundDialogOpen] = useState(false);
+  const [backgroundPanelOpen, setBackgroundPanelOpen] = useState(false);
+  // The processor runs on <PreJoin>'s own preview track, so what is shown here is
+  // exactly what the call will publish.
+  const { state: backgroundState, processor: backgroundProcessor } = usePreJoinBackground();
 
   // Initial username calculation:
   // 1. Custom entered name from localStorage if exists
@@ -383,6 +387,7 @@ export default function ConnectRoomPage() {
                   `}</style>
 
                   <PreJoin
+                    videoProcessor={backgroundProcessor ?? undefined}
                     defaults={preJoinDefaults}
                     persistUserChoices={false}
                     onSubmit={handlePreJoinSubmit}
@@ -397,7 +402,7 @@ export default function ConnectRoomPage() {
                   <div className="max-w-[480px] mx-auto mt-3 px-1">
                     <button
                       type="button"
-                      onClick={() => setBackgroundDialogOpen(true)}
+                      onClick={() => setBackgroundPanelOpen((v) => !v)}
                       className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-white hover:bg-indigo-50 text-indigo-600 hover:text-indigo-700 border border-slate-200 hover:border-indigo-200 font-bold text-sm rounded-xl shadow-xs transition-all active:scale-95"
                     >
                       <svg
@@ -415,9 +420,11 @@ export default function ConnectRoomPage() {
                         <circle cx="9" cy="9" r="2" />
                         <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
                       </svg>
-                      <span>背景エフェクトを設定</span>
+                      <span>{backgroundPanelOpen ? '背景エフェクトを閉じる' : '背景エフェクトを設定'}</span>
                     </button>
                   </div>
+
+                  <PreJoinBackgroundPanel open={backgroundPanelOpen} state={backgroundState} />
 
                   {/* Reset to Default Name Button (rendered cleanly in React) */}
                   {isCustomName && defaultDisplayName && (
@@ -481,11 +488,6 @@ export default function ConnectRoomPage() {
           )}
         </div>
       </div>
-
-      <PreJoinBackgroundDialog
-        open={backgroundDialogOpen}
-        onClose={() => setBackgroundDialogOpen(false)}
-      />
     </div>
   );
 }

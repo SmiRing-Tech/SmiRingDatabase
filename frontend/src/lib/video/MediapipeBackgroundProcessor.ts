@@ -145,7 +145,13 @@ type Programs = {
 };
 
 export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.Video> {
-  name = 'mediapipe-background-blur';
+  /**
+   * Includes the model, because LiveKit identifies a processor by this string
+   * (it serialises `processor` down to `.name` when deciding whether preview
+   * tracks need rebuilding). Everything else about this processor can be changed
+   * in place; the model cannot, so the name has to change with it.
+   */
+  name: string;
 
   processedTrack?: MediaStreamTrack;
 
@@ -219,6 +225,11 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
   private maskIndex = 0;
 
+  /** Label map from the model, if it ships one. Used to pick the mask, never the polarity. */
+  private labels: string[] = [];
+
+  private maskIndexResolved = false;
+
   private lastSegmentationMs = 0;
 
   private lastTimestampMs = 0;
@@ -227,6 +238,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
   constructor(options: MediapipeBackgroundOptions = {}) {
     this.options = { ...DEFAULTS, ...options };
+    this.name = `mediapipe-background-${this.options.quality}`;
   }
 
   /** The model this processor was built with; changing it requires a new instance. */
@@ -475,14 +487,11 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       outputCategoryMask: true,
     });
 
-    // Preferred path: the model ships a label map, so we know exactly which
-    // confidence mask is the background one and never touch the CPU for it.
-    const labels = this.segmenter.getLabels();
-    const backgroundIndex = labels.findIndex((label) => label.toLowerCase() === 'background');
-    if (backgroundIndex >= 0) {
-      this.maskIndex = backgroundIndex;
-      this.invert = 1;
-    }
+    // Keep the label map for picking which mask to read. Deliberately do NOT
+    // infer polarity from it: the binary selfie model lists a "background" label
+    // yet hands back a single mask scoring the *subject*, so trusting the labels
+    // here inverted the whole effect on that model.
+    this.labels = this.segmenter.getLabels();
   }
 
   /**
@@ -783,7 +792,21 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     // masks are only valid inside it.
     segmenter.segmentForVideo(source, timestamp, (result) => {
       try {
-        const mask = result.confidenceMasks?.[this.maskIndex];
+        const masks = result.confidenceMasks;
+        if (!masks?.length) return;
+
+        if (!this.maskIndexResolved) {
+          // Labels line up with masks only when there is one mask per label; with
+          // a single mask there is nothing to choose and index 0 is the answer.
+          const backgroundIndex = this.labels.findIndex(
+            (label) => label.toLowerCase() === 'background',
+          );
+          this.maskIndex =
+            masks.length === this.labels.length && backgroundIndex >= 0 ? backgroundIndex : 0;
+          this.maskIndexResolved = true;
+        }
+
+        const mask = masks[this.maskIndex];
         if (!mask) return;
         // Take the GPU texture before anything else: detectPolarity pulls the
         // masks down to CPU arrays, and we would rather not depend on MPMask
