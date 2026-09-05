@@ -95,12 +95,22 @@ export default function ClampedVideoTrack({
     }
   }, [trackRef, isRef]);
 
-  const onVideoLoadedMetadata = useCallback((e: React.SyntheticEvent<HTMLVideoElement>) => {
-    const video = e.currentTarget;
-    if (video.videoWidth > 0 && video.videoHeight > 0) {
-      setNativeRatio(video.videoWidth / video.videoHeight);
-    }
-  }, []);
+  const onVideoLoadedMetadata = useCallback(
+    (e: React.SyntheticEvent<HTMLVideoElement>) => {
+      const video = e.currentTarget;
+      console.log('[ClampedVideoTrack] loadedmetadata', {
+        isLocal: trackRef.participant?.isLocal,
+        identity: trackRef.participant?.identity,
+        source: trackRef.source,
+        videoWidth: video.videoWidth,
+        videoHeight: video.videoHeight,
+      });
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setNativeRatio(video.videoWidth / video.videoHeight);
+      }
+    },
+    [trackRef],
+  );
 
   const fit = useMemo<FitBox | null>(() => {
     if (!containerSize) return null;

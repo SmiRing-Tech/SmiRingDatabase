@@ -72,8 +72,23 @@ export function useStableTileOrder(
   // pin tiles to their stale placeholder and the video would never appear.
   return useMemo(() => {
     const byId = new Map(tracks.map((t) => [tileId(t), t]));
-    return orderedIds
+    const ordered = orderedIds
       .map((id) => byId.get(id))
       .filter((t): t is TrackReferenceOrPlaceholder => t !== undefined);
+    // `orderedIds` (state, above) is one render behind a fresh `tracks` — e.g. right
+    // when the local participant's `identity` goes from '' to its real value, every
+    // tileId derived from `tracks` changes on the same render that publishes the
+    // camera, before the effect above has a chance to fold that rename into
+    // `orderedIds`. Filtering strictly by `orderedIds` on that render drops the
+    // track entirely (nothing in `byId` matches any id `orderedIds` still knows),
+    // which briefly empties the whole grid — and if nothing ever forces another
+    // recompute, it can stay empty. Anything present in `tracks` but missing from
+    // `ordered` is appended rather than dropped, so a currently-live track is never
+    // lost for even one render; it just starts at the end until the effect catches
+    // up and gives it a stable position.
+    if (ordered.length === tracks.length) return ordered;
+    const knownIds = new Set(ordered.map(tileId));
+    const missing = tracks.filter((t) => !knownIds.has(tileId(t)));
+    return [...ordered, ...missing];
   }, [orderedIds, tracks]);
 }

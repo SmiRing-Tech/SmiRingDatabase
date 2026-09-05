@@ -97,6 +97,18 @@ export function ParticipantTileContent({
   // alternative is a black rectangle.
   const showPlaceholder = isCameraOff && (!isScreenShare || !renderVideo);
 
+  if (participant?.isLocal && trackReference.source === Track.Source.Camera) {
+    console.log('[ParticipantTileContent] local camera tile', {
+      isVideo,
+      showVideo,
+      isMuted: trackReference.publication?.isMuted,
+      isSubscribed: trackReference.publication?.isSubscribed,
+      hasPublication: !!trackReference.publication,
+      isCameraOff,
+      showPlaceholder,
+    });
+  }
+
   const avatarSize =
     density === 'compact'
       ? 'w-12 h-12 sm:w-14 sm:h-14'

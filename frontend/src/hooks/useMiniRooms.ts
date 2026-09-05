@@ -118,7 +118,12 @@ export function useMiniRooms({
       if (room) {
         console.log('[MiniRooms] applyReconnect: disconnecting from current room', room.name, room.state);
         onBeforeReconnectDisconnectRef.current();
-        await room.disconnect();
+        // `stopTracks: false` — the camera/mic tracks were captured once in
+        // PreJoinScreen (with any background processor already attached) and are
+        // republished as-is in the destination room (see CallRoomInner's publish
+        // effect); stopping them here would force a fresh getUserMedia() capture
+        // there instead of just reusing what's already running.
+        await room.disconnect(false);
         console.log('[MiniRooms] applyReconnect: disconnected, new state', room.state);
       }
       console.log('[MiniRooms] applyReconnect: calling onReconnect', { audio, video });

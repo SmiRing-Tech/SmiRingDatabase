@@ -73,8 +73,11 @@ export default function SmiRingConnectPage() {
     fetchRooms();
   }, []);
 
+  // Opens in a single new tab, which now hosts the pre-join lobby *and* the call
+  // itself (see CallRoomPage's `stage` state) — there's no separate `/connect/room`
+  // tab any more, so this is the only place a call session gets opened.
   const startNewMeeting = () => {
-    navigate(`/connect/room/${generateRoomId()}`);
+    window.open(`/connect/call/${generateRoomId()}`, '_blank');
   };
 
   const joinMeeting = (targetCode?: string) => {
@@ -84,7 +87,7 @@ export default function SmiRingConnectPage() {
       return;
     }
     setJoinError('');
-    navigate(`/connect/room/${code}`);
+    window.open(`/connect/call/${code}`, '_blank');
   };
 
   const createFixedRoom = async (e: React.FormEvent) => {

@@ -27,7 +27,6 @@ import SearchPage from './pages/Search/SearchPage';
 import ChatPage from './pages/Search/ChatPage';
 import AppsPage from './pages/Apps/AppsPage';
 import SmiRingConnectPage from './pages/Connect/SmiRingConnectPage';
-import ConnectRoomPage from './pages/Connect/ConnectRoomPage';
 import CallRoomPage from './pages/Connect/CallRoomPage';
 import ManagementConsolePage from './pages/Management/ManagementConsolePage';
 import EventManagementPage from './pages/Management/EventManagement/EventManagementPage';
@@ -249,7 +248,6 @@ const router = createBrowserRouter([
       { path: '/search/chat', element: <RequireInternalRole><ChatPage /></RequireInternalRole> },
       { path: '/apps', element: <RequireInternalRole><AppsPage /></RequireInternalRole> },
       { path: '/connect', element: <RequireInternalRole><SmiRingConnectPage /></RequireInternalRole> },
-      { path: '/connect/room/:roomId', element: <RequireInternalRole><ConnectRoomPage /></RequireInternalRole> },
       { path: '/event-management', element: (
         <RequireInternalRole>
           <RequirePermission resource="event-management" action="read">

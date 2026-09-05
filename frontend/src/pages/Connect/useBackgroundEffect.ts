@@ -77,11 +77,21 @@ export function useBackgroundEffect() {
         throw new Error('選択した背景画像が見つかりませんでした。');
       }
 
-      const current = processorRef.current;
+      // Don't trust processorRef alone: the track may already be carrying a
+      // processor this hook instance didn't create (e.g. the one PreJoinScreen
+      // attached before publish — see usePreJoinBackground). Ask the track
+      // itself, and adopt a match into processorRef rather than treating "not
+      // mine" as "not attached" and rebuilding — that raced the pre-join
+      // processor's own setProcessor() call and intermittently tore down its
+      // WebGL context / segmentation pipeline mid-flight.
+      const existingOnTrack = track.getProcessor();
+      const current =
+        existingOnTrack instanceof MediapipeBackgroundProcessor ? existingOnTrack : processorRef.current;
       const isAttached = !!current && track.getProcessor() === current;
       const qualityMatches = current?.quality === nextQuality;
 
       if (isAttached && qualityMatches) {
+        processorRef.current = current;
         // Only the model is baked in at construction time; everything else can be
         // swapped on the running processor, which avoids a reload stall.
         current!.updateOptions({ target: nextTarget });

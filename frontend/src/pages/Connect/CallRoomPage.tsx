@@ -4,6 +4,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type RefObject,
@@ -16,7 +17,6 @@ import {
   useLocalParticipant,
   useMediaDeviceSelect,
   useRoomContext,
-  type LocalUserChoices,
   RoomAudioRenderer,
   ConnectionStateToast,
   useTracks,
@@ -26,8 +26,10 @@ import {
   VideoPresets,
   Track,
   ParticipantEvent,
+  RoomEvent,
   type RoomOptions,
   type LocalAudioTrack,
+  type LocalVideoTrack,
 } from 'livekit-client';
 import { KrispNoiseFilter, isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter';
 import { MicVAD } from '@ricky0123/vad-web';
@@ -36,6 +38,7 @@ import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import '@livekit/components-styles';
 import {
   AlertTriangle,
+  ArrowLeft,
   Loader2,
   Copy,
   Check,
@@ -60,6 +63,7 @@ import {
   Image as ImageIcon,
 } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
+import PreJoinScreen, { type PreJoinChoices } from '../../components/Connect/PreJoinScreen';
 import MiniRoomPanel from '../../components/Connect/MiniRoomPanel';
 import MiniRoomMoveToast from '../../components/Connect/MiniRoomMoveToast';
 import { useAuth } from '../../context/AuthContext';
@@ -329,7 +333,14 @@ function useMediaEnhancementsState(localParticipant: ReturnType<typeof useLocalP
   const applyKrisp = useCallback(async (enabled: boolean, track: LocalAudioTrack) => {
     if (enabled) {
       if (!track.getProcessor()) {
-        await track.setProcessor(KrispNoiseFilter({ quality: 'high', useBVC: true }));
+        // TEMP DIAGNOSTIC: useBVC (Krisp's "Background Voice Cancellation") talks to
+        // Krisp's own cloud service, not our self-hosted LiveKit server — no API key
+        // is configured for it anywhere in this repo. It's the likely source of the
+        // "connect.smiring-ryugaku.com/settings" 404 / "Could not authenticate"
+        // uncaught rejection seen right before the intermittent black-video bug.
+        // Disabled here to test whether that's the actual trigger; revert (useBVC:
+        // true) once confirmed either way.
+        await track.setProcessor(KrispNoiseFilter({ quality: 'high', useBVC: false }));
       }
     } else if (track.getProcessor()) {
       await track.stopProcessor();
@@ -1124,6 +1135,34 @@ function CustomVideoConference({
   const { localParticipant } = useLocalParticipant();
   const mediaEnhancements = useMediaEnhancementsState(localParticipant);
 
+  // Forces exactly one remount of the grid/stage layout the moment the local
+  // camera's publication first appears. Under investigation: the local camera
+  // tile sometimes never re-renders after `localParticipant.publishTrack()`
+  // succeeds — the underlying `tracks` data is confirmed correct by then, but
+  // something in the grid's own memoization (`CustomParticipantTile`'s
+  // `tilePropsEqual`) intermittently keeps showing the pre-publish placeholder.
+  // A one-time remount sidesteps that regardless of which layer is stale, at the
+  // cost of a harmless reset of scroll/hover state in an otherwise near-empty grid
+  // this early in the call.
+  const hasLocalCameraPublication = layout.gridTracks
+    .concat(layout.stageTracks, layout.stripTracks)
+    .some(
+      (t) =>
+        t.participant.isLocal &&
+        t.source === Track.Source.Camera &&
+        'publication' in t &&
+        !!(t as { publication?: unknown }).publication,
+    );
+  const layoutKey = hasLocalCameraPublication ? 'camera-live' : 'camera-pending';
+  console.log('[CustomVideoConference] render', {
+    layoutKey,
+    hasLocalCameraPublication,
+    gridTracksLen: layout.gridTracks.length,
+    gridTracksLocalCam: layout.gridTracks
+      .filter((t) => t.participant.isLocal && t.source === Track.Source.Camera)
+      .map((t) => ({ hasPublication: 'publication' in t && !!(t as { publication?: unknown }).publication })),
+  });
+
   // Mini-room panel, opened by the control-bar button. Visible/openable by everyone —
   // MiniRoomPanel itself branches host vs. non-host content.
   const [showMiniRoomPanel, setShowMiniRoomPanel] = useState(false);
@@ -1249,12 +1288,14 @@ function CustomVideoConference({
           <div className="flex-1 min-h-0 relative">
             {layout.mode === 'grid' ? (
               <GridLayoutView
+                key={layoutKey}
                 tracks={layout.gridTracks}
                 pinned={layout.pinned}
                 onTogglePin={layout.togglePin}
               />
             ) : (
               <StageLayoutView
+                key={layoutKey}
                 stageTracks={layout.stageTracks}
                 stripTracks={layout.stripTracks}
                 pinned={layout.pinned}
@@ -1329,11 +1370,19 @@ function CallRoomInner({
   roomTitle,
   onReconnect,
   onBeforeReconnectDisconnect,
+  pendingVideoTrack,
+  pendingAudioTrack,
 }: {
   roomId: string;
   roomTitle: string;
   onReconnect: (target: ReconnectTarget) => void;
   onBeforeReconnectDisconnect: () => void;
+  /** The pre-join camera/mic tracks (background processor already attached, if
+   *  any) — published here instead of letting <LiveKitRoom> auto-capture fresh
+   *  ones, so the call never re-does getUserMedia() or shows an unprocessed frame.
+   *  Null once already published; see the publish effect below. */
+  pendingVideoTrack: LocalVideoTrack | null;
+  pendingAudioTrack: LocalAudioTrack | null;
 }) {
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -1360,6 +1409,100 @@ function CallRoomInner({
   const chat = useAdvancedChat({ roomId: miniRooms.currentRoomId, selfIdentity: user?.id || '' });
 
   const { localParticipant } = useLocalParticipant();
+  const room = useRoomContext();
+
+  // Publishes the pre-join camera/mic tracks once the room is actually connected
+  // — the initial join, and again after every mini-room switch (`useMiniRooms`'
+  // `applyReconnect` disconnects-then-reconnects this same <LiveKitRoom>, keeping
+  // these tracks alive via `room.disconnect(false)` rather than stopping them, so
+  // there's no re-capture and no processor re-attach between rooms either).
+  const videoPublishInFlightRef = useRef(false);
+  const audioPublishInFlightRef = useRef(false);
+  // Forces a re-render after a successful publish, independent of whichever SDK
+  // event(s) `useTracks()` reacts to — a defensive backstop for the (still
+  // unconfirmed) possibility that `RoomEvent.LocalTrackPublished` is sometimes
+  // missed by its subscription, which would otherwise leave the local camera tile
+  // showing the pre-publish placeholder indefinitely (until some unrelated event,
+  // e.g. another participant joining, forces a recompute).
+  const [, forcePublishRerender] = useReducer((c: number) => c + 1, 0);
+  useEffect(() => {
+    const logLocalTrackPublished = (pub: unknown) => {
+      console.log('[CallRoomPage] RoomEvent.LocalTrackPublished fired', pub);
+    };
+    room.on(RoomEvent.LocalTrackPublished, logLocalTrackPublished);
+    return () => {
+      room.off(RoomEvent.LocalTrackPublished, logLocalTrackPublished);
+    };
+  }, [room]);
+
+  useEffect(() => {
+    const publishPending = () => {
+      console.log('[CallRoomPage] publishPending: fired', {
+        roomState: room.state,
+        hasVideoTrack: !!pendingVideoTrack,
+        hasAudioTrack: !!pendingAudioTrack,
+        videoPublishInFlight: videoPublishInFlightRef.current,
+        audioPublishInFlight: audioPublishInFlightRef.current,
+        existingCameraPub: !!localParticipant.getTrackPublication(Track.Source.Camera),
+        existingMicPub: !!localParticipant.getTrackPublication(Track.Source.Microphone),
+      });
+      void (async () => {
+        try {
+          if (
+            pendingVideoTrack &&
+            !videoPublishInFlightRef.current &&
+            !localParticipant.getTrackPublication(Track.Source.Camera)
+          ) {
+            videoPublishInFlightRef.current = true;
+            const processor = pendingVideoTrack.getProcessor();
+            const settings = pendingVideoTrack.mediaStreamTrack.getSettings();
+            console.log('[CallRoomPage] publishing video track', {
+              hasProcessor: !!processor,
+              processorName: processor?.name,
+              processedTrack: !!processor?.processedTrack,
+              readyState: pendingVideoTrack.mediaStreamTrack.readyState,
+              muted: pendingVideoTrack.mediaStreamTrack.muted,
+              enabled: pendingVideoTrack.mediaStreamTrack.enabled,
+              settings,
+            });
+            const pub = await localParticipant.publishTrack(pendingVideoTrack);
+            console.log('[CallRoomPage] video publish result', {
+              sid: pub.trackSid,
+              isMuted: pub.isMuted,
+              isSubscribed: pub.isSubscribed,
+              dimensions: pub.dimensions,
+              trackIsSameObject: pub.track === pendingVideoTrack,
+            });
+            forcePublishRerender();
+            // DIAGNOSTIC: an immediate re-render alone didn't fix this (confirmed by
+            // the previous test round) — useTracks() apparently needs its own
+            // internal (RxJS) pipeline to finish processing LocalTrackPublished
+            // first. Retry on a short delay to see whether this is a timing gap
+            // rather than a genuinely missed/broken update.
+            setTimeout(() => forcePublishRerender(), 300);
+            setTimeout(() => forcePublishRerender(), 1000);
+          }
+          if (
+            pendingAudioTrack &&
+            !audioPublishInFlightRef.current &&
+            !localParticipant.getTrackPublication(Track.Source.Microphone)
+          ) {
+            audioPublishInFlightRef.current = true;
+            await localParticipant.publishTrack(pendingAudioTrack);
+            forcePublishRerender();
+          }
+        } catch (e) {
+          console.error('[CallRoomPage] failed to publish pre-join tracks:', e);
+        }
+      })();
+    };
+    room.on(RoomEvent.Connected, publishPending);
+    publishPending(); // covers the initial connect if it already fired before this effect attached
+    return () => {
+      room.off(RoomEvent.Connected, publishPending);
+    };
+  }, [room, localParticipant, pendingVideoTrack, pendingAudioTrack]);
+
   const tracks = useTracks(
     [
       { source: Track.Source.Camera, withPlaceholder: true },
@@ -1371,6 +1514,14 @@ function CallRoomInner({
     // silently dropped mute/unmute refreshes.
     { onlySubscribed: false },
   );
+
+  {
+    const localCam = tracks.find((t) => t.participant.isLocal && t.source === Track.Source.Camera);
+    console.log('[CallRoomInner] render: local camera track entry', {
+      found: !!localCam,
+      hasPublication: !!(localCam as { publication?: unknown } | undefined)?.publication,
+    });
+  }
 
   // Owns layout mode, pins, speaker tracking and screen-share auto-focus. Replaces
   // LiveKit's single-track `LayoutContext` pin entirely. Lifted up to this level
@@ -1504,16 +1655,158 @@ function CallRoomInner({
   );
 }
 
+/**
+ * The pre-join lobby: profile/room-title chrome around `PreJoinScreen`. Used to be
+ * its own route+tab (`ConnectRoomPage`, opened via `window.open`) with the call
+ * itself living at a separate URL — that let `/connect/call/:roomId` be hit
+ * directly, skipping the lobby entirely. Now it's just the first stage of
+ * `CallRoomPage`, so there is no call-only URL to skip to.
+ */
+function PreJoinStage({
+  roomId,
+  onJoin,
+  onError,
+}: {
+  roomId: string;
+  onJoin: (
+    choices: PreJoinChoices,
+    videoTrack: LocalVideoTrack | null,
+    audioTrack: LocalAudioTrack | null,
+  ) => void;
+  onError: (message: string) => void;
+}) {
+  const navigate = useNavigate();
+  const { user } = useAuth();
+
+  const [roomTitle, setRoomTitle] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [defaultDisplayName, setDefaultDisplayName] = useState('');
+  const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+
+  const userEmail = user?.email;
+  useEffect(() => {
+    let isMounted = true;
+    apiClient
+      .get('/api/basic_profile_info/me')
+      .then(async (res) => {
+        if (res.ok) {
+          const data = await res.json();
+          const nameEn = data.name_english?.trim();
+          const nameJp = data.name_kanji?.trim();
+          const fallback = userEmail?.split('@')[0] ?? 'guest';
+          if (isMounted) {
+            setDefaultDisplayName(nameEn || nameJp || fallback);
+            if (data.avatar_link) setMyAvatarUrl(data.avatar_link);
+          }
+        } else if (isMounted) {
+          setDefaultDisplayName(userEmail?.split('@')[0] ?? 'guest');
+        }
+      })
+      .catch(() => {
+        if (isMounted) setDefaultDisplayName(userEmail?.split('@')[0] ?? 'guest');
+      })
+      .finally(() => {
+        if (isMounted) setProfileLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [user?.id, userEmail]);
+
+  useEffect(() => {
+    apiClient
+      .get('/api/connect/rooms')
+      .then(async (res) => {
+        if (res.ok) {
+          const data = await res.json();
+          const found = data.rooms?.find((r: { room_id: string; room_title?: string }) => r.room_id === roomId);
+          if (found?.room_title) setRoomTitle(found.room_title);
+        }
+      })
+      .catch(() => {});
+  }, [roomId]);
+
+  const copyRoomId = async () => {
+    try {
+      await navigator.clipboard.writeText(roomId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore clipboard errors */
+    }
+  };
+
+  return (
+    <div className="h-dvh w-screen overflow-y-auto bg-slate-50/30 p-6 md:p-10 relative">
+      <div className="absolute top-[-20%] left-[-10%] w-[500px] h-[500px] rounded-full bg-indigo-400/5 blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-sky-400/5 blur-[120px] pointer-events-none" />
+
+      <div className="max-w-3xl mx-auto relative z-10">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+          <div>
+            <div className="flex items-center gap-2 mb-2 text-indigo-600 font-bold text-sm tracking-wide uppercase">
+              <Video className="w-4 h-4" />
+              <span>SmiRing Connect</span>
+            </div>
+            <h1 className="text-2xl md:text-3xl font-black text-gray-900 tracking-tight">
+              {roomTitle ? roomTitle : 'ミーティングに参加'}
+            </h1>
+            <button
+              onClick={copyRoomId}
+              className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 hover:border-indigo-300 rounded-lg text-sm font-bold text-gray-600 transition-all active:scale-95"
+              title="コードをコピー"
+            >
+              <span className="text-indigo-600">ルームコード:</span>
+              <span className="font-mono">{roomId}</span>
+              {copied ? (
+                <Check className="w-4 h-4 text-emerald-500" />
+              ) : (
+                <Copy className="w-4 h-4 text-slate-400" />
+              )}
+            </button>
+          </div>
+
+          <button
+            onClick={() => navigate('/connect')}
+            className="self-start flex items-center gap-2 px-4 py-2.5 bg-white border border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-gray-600 font-bold text-sm rounded-xl shadow-sm hover:shadow transition-all duration-200 active:scale-95"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>戻る</span>
+          </button>
+        </div>
+
+        <div className="bg-white border border-slate-100 rounded-3xl p-4 md:p-6 shadow-sm">
+          {profileLoading ? (
+            <div className="flex flex-col items-center justify-center py-20 text-gray-400 gap-3">
+              <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
+              <p className="text-xs font-semibold">プロフィール情報を読み込み中...</p>
+            </div>
+          ) : (
+            <PreJoinScreen
+              defaultUsername={defaultDisplayName}
+              avatarUrl={myAvatarUrl}
+              joinLabel="このルームに参加"
+              onSubmit={onJoin}
+              onError={(e) => onError(e.message)}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function CallRoomPage() {
   const navigate = useNavigate();
   const { roomId } = useParams<{ roomId: string }>();
   const { user } = useAuth();
 
+  const [stage, setStage] = useState<'prejoin' | 'connecting' | 'in-call'>('prejoin');
   const [token, setToken] = useState('');
   const [serverUrl, setServerUrl] = useState('');
   const [roomTitle, setRoomTitle] = useState('');
-  const [choices, setChoices] = useState<LocalUserChoices | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [choices, setChoices] = useState<PreJoinChoices | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [isDisconnected, setIsDisconnected] = useState(false);
 
@@ -1533,31 +1826,34 @@ export default function CallRoomPage() {
     };
   }, [isDisconnected, token, serverUrl]);
 
-  // Load choices from sessionStorage
-  useEffect(() => {
-    if (!roomId) return;
-    try {
-      const stored = sessionStorage.getItem(`smiring_connect_choices_${roomId}`);
-      if (stored) {
-        setChoices(JSON.parse(stored));
-      }
-    } catch (e) {
-      console.warn('[CallRoomPage] Failed to parse stored choices:', e);
-    }
-  }, [roomId]);
+  // The pre-join tracks (with any background processor already attached) captured
+  // in PreJoinStage. Handed to <CallRoomInner> to publish once connected (see its
+  // publish effect) instead of letting <LiveKitRoom> auto-capture fresh ones.
+  const [pendingVideoTrack, setPendingVideoTrack] = useState<LocalVideoTrack | null>(null);
+  const [pendingAudioTrack, setPendingAudioTrack] = useState<LocalAudioTrack | null>(null);
 
-  // Fetch token and connect to room
+  const handlePreJoinSubmit = useCallback(
+    (preJoinChoices: PreJoinChoices, videoTrack: LocalVideoTrack | null, audioTrack: LocalAudioTrack | null) => {
+      setPendingVideoTrack(videoTrack);
+      setPendingAudioTrack(audioTrack);
+      setChoices(preJoinChoices);
+      setStage('connecting');
+    },
+    [],
+  );
+
+  const handlePreJoinError = useCallback((message: string) => {
+    setErrorMsg(message);
+  }, []);
+
+  // Fetch token and connect to room, once the pre-join stage has been completed.
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId || stage !== 'connecting') return;
     let isMounted = true;
-    setLoading(true);
 
     const initConnection = async () => {
       try {
-        const storedChoices = sessionStorage.getItem(`smiring_connect_choices_${roomId}`);
-        const parsedChoices = storedChoices ? JSON.parse(storedChoices) : null;
-        const displayName =
-          parsedChoices?.username || user?.email?.split('@')[0] || 'guest';
+        const displayName = choices?.username || user?.email?.split('@')[0] || 'guest';
 
         const res = await apiClient.post('/api/connect/token', {
           room: roomId,
@@ -1572,14 +1868,12 @@ export default function CallRoomPage() {
             body.detail ||
               '通話サーバー（LiveKit）がまだ準備中です。カメラ・マイクの確認まではできています。',
           );
-          setLoading(false);
           return;
         }
 
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           setErrorMsg(body.error || `トークンの取得に失敗しました (${res.status})`);
-          setLoading(false);
           return;
         }
 
@@ -1589,13 +1883,10 @@ export default function CallRoomPage() {
         if (data.roomTitle) {
           setRoomTitle(data.roomTitle);
         }
+        setStage('in-call');
       } catch (e: any) {
         if (isMounted) {
           setErrorMsg(e?.message || '接続中にエラーが発生しました');
-        }
-      } finally {
-        if (isMounted) {
-          setLoading(false);
         }
       }
     };
@@ -1605,22 +1896,18 @@ export default function CallRoomPage() {
     return () => {
       isMounted = false;
     };
-  }, [roomId, user?.id]);
+  }, [roomId, stage, user?.id, choices?.username]);
 
+  // No videoCaptureDefaults/audioCaptureDefaults here any more: <LiveKitRoom>
+  // below no longer auto-captures (video/audio are false) — the camera/mic are
+  // captured once in PreJoinScreen and published manually (see CallRoomInner's
+  // publish effect), so there's nothing for capture defaults to configure.
+  // publishDefaults still applies to that manual publishTrack() call, since it's
+  // a Room-level default, not just for auto-publish.
   const roomOptions: RoomOptions = useMemo(
     () => ({
       adaptiveStream: true,
       dynacast: true,
-      videoCaptureDefaults: {
-        resolution: VideoPresets.h360.resolution,
-        deviceId: choices?.videoDeviceId || undefined,
-      },
-      audioCaptureDefaults: {
-        deviceId: choices?.audioDeviceId || undefined,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
       publishDefaults: {
         videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360],
         audioPreset: { maxBitrate: 32_000 },
@@ -1629,7 +1916,7 @@ export default function CallRoomPage() {
       },
       disconnectOnPageLeave: false,
     }),
-    [choices],
+    [],
   );
 
   // A mini-room switch intentionally disconnects the current LiveKit connection before
@@ -1698,25 +1985,14 @@ export default function CallRoomPage() {
     );
   }
 
-  if (loading) {
-    return (
-      <div className="h-dvh w-screen bg-[#0f1115] flex flex-col items-center justify-center gap-4 text-white">
-        <Loader2 className="w-10 h-10 animate-spin text-indigo-500" />
-        <p className="font-bold text-sm text-gray-300">ルームに接続しています...</p>
-      </div>
-    );
-  }
-
-  if (errorMsg || !token || !serverUrl) {
+  if (errorMsg) {
     return (
       <div className="h-dvh w-screen bg-[#0f1115] flex flex-col items-center justify-center p-6 text-white text-center">
         <div className="w-16 h-16 rounded-3xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center mb-4">
           <AlertTriangle className="w-8 h-8 text-rose-500" />
         </div>
         <h1 className="text-2xl font-black mb-2">接続できませんでした</h1>
-        <p className="text-sm text-gray-400 mb-8 max-w-md">
-          {errorMsg || 'ルーム情報の取得に失敗しました。'}
-        </p>
+        <p className="text-sm text-gray-400 mb-8 max-w-md">{errorMsg}</p>
         <div className="flex gap-3">
           <button
             onClick={() => window.location.reload()}
@@ -1735,14 +2011,27 @@ export default function CallRoomPage() {
     );
   }
 
+  if (stage === 'prejoin') {
+    return <PreJoinStage roomId={roomId!} onJoin={handlePreJoinSubmit} onError={handlePreJoinError} />;
+  }
+
+  if (stage === 'connecting' || !token || !serverUrl) {
+    return (
+      <div className="h-dvh w-screen bg-[#0f1115] flex flex-col items-center justify-center gap-4 text-white">
+        <Loader2 className="w-10 h-10 animate-spin text-indigo-500" />
+        <p className="font-bold text-sm text-gray-300">ルームに接続しています...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="h-dvh w-screen bg-[#0f1115] flex flex-col overflow-hidden select-none" data-lk-theme="default">
       <LiveKitRoom
         token={token}
         serverUrl={serverUrl}
         connect
-        video={choices?.videoEnabled ?? true}
-        audio={choices?.audioEnabled ?? true}
+        video={false}
+        audio={false}
         options={roomOptions}
         onDisconnected={handleLeave}
         onError={(e) => {
@@ -1755,6 +2044,8 @@ export default function CallRoomPage() {
           roomTitle={roomTitle}
           onReconnect={handleReconnect}
           onBeforeReconnectDisconnect={handleBeforeReconnectDisconnect}
+          pendingVideoTrack={pendingVideoTrack}
+          pendingAudioTrack={pendingAudioTrack}
         />
       </LiveKitRoom>
     </div>

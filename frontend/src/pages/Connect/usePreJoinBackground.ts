@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { LocalVideoTrack } from 'livekit-client';
 import {
   MediapipeBackgroundProcessor,
   type EffectTarget,
@@ -16,20 +17,16 @@ import type { BackgroundEffectState } from './useBackgroundEffect';
 /**
  * The background picker for the pre-join screen.
  *
- * LiveKit's <PreJoin> takes a `videoProcessor`, so the effect can run on the
- * preview it already owns — no second camera, and what you see before joining is
- * the same pipeline that will run in the call.
- *
- * One processor instance is kept alive and mutated in place. LiveKit decides
- * whether to rebuild the preview tracks by serialising the processor down to its
- * `name`, so handing it a different instance with the same name would be ignored;
- * the name carries the model for exactly that reason, which means only a quality
- * change costs a rebuild.
+ * Applies the effect directly to the caller's own `LocalVideoTrack` (the same track
+ * that will later be published for the call — see `PreJoinScreen`), via
+ * `track.setProcessor()`. This mirrors `useBackgroundEffect`'s `applyEffect` almost
+ * exactly; the two will merge once the in-call track is also just "the pre-join
+ * track, kept alive" rather than a separately-created one.
  *
  * Choices are written to localStorage as they are made, which is what the call
  * reads on join — so this screen configures the call, it does not just preview it.
  */
-export function usePreJoinBackground() {
+export function usePreJoinBackground(track: LocalVideoTrack | null) {
   const supported = useMemo(() => supportsMediapipeBackground(), []);
   const stored = useMemo(readStoredChoice, []);
 
@@ -40,39 +37,34 @@ export function usePreJoinBackground() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  // Held in state, not a ref: <PreJoin> has to re-render when it changes.
-  const [processor, setProcessor] = useState<MediapipeBackgroundProcessor | null>(null);
   const processorRef = useRef<MediapipeBackgroundProcessor | null>(null);
 
   const { uploads, imageUrlFor, uploadBackground, deleteBackground } =
     useBackgroundLibrary(supported);
 
-  useEffect(
-    () => () => {
-      // PreJoin stops the tracks; the processor's own resources are ours to free.
-      void processorRef.current?.destroy().catch(() => {});
-      processorRef.current = null;
-    },
-    [],
-  );
-
   /**
-   * Reconciles the live processor with the requested settings, reusing the
-   * instance whenever the model is unchanged.
+   * Brings the track in line with the requested effect. Reuses the running
+   * processor where it can — rebuilding one means reloading the segmentation
+   * model, which is a visible stall (and a 16 MB download on the 'high' model).
    */
-  const syncProcessor = useCallback(
+  const applyEffect = useCallback(
     async (
       nextMode: BackgroundMode,
       nextImageId: string | undefined,
       nextQuality: SegmentationQuality,
       nextTarget: EffectTarget,
     ) => {
-      if (!supported || nextMode === 'off') {
-        const previous = processorRef.current;
+      console.log('[PreJoin] applyEffect: called', {
+        nextMode,
+        nextQuality,
+        currentProcessorName: track?.getProcessor()?.name,
+        stack: new Error().stack,
+      });
+      if (!track) return;
+
+      if (nextMode === 'off') {
+        if (track.getProcessor()) await track.stopProcessor();
         processorRef.current = null;
-        setProcessor(null);
-        // PreJoin drops it from the track first; destroying after that is safe.
-        if (previous) await previous.destroy().catch(() => {});
         return;
       }
 
@@ -81,17 +73,29 @@ export function usePreJoinBackground() {
         throw new Error('選択した背景画像が見つかりませんでした。');
       }
 
-      const current = processorRef.current;
-      if (current && current.quality === nextQuality) {
-        current.updateOptions({ target: nextTarget });
-        await current.setBackground({
+      // Ask the track itself rather than trusting processorRef alone, and adopt
+      // a match — otherwise a second caller (or a StrictMode-doubled effect) that
+      // doesn't recognize the ref rebuilds a working processor from scratch,
+      // tearing down its WebGL context / segmentation pipeline mid-flight.
+      const existingOnTrack = track.getProcessor();
+      const current =
+        existingOnTrack instanceof MediapipeBackgroundProcessor ? existingOnTrack : processorRef.current;
+      const isAttached = !!current && track.getProcessor() === current;
+      const qualityMatches = current?.quality === nextQuality;
+
+      if (isAttached && qualityMatches) {
+        processorRef.current = current;
+        // Only the model is baked in at construction time; everything else can be
+        // swapped on the running processor, which avoids a reload stall.
+        current!.updateOptions({ target: nextTarget });
+        await current!.setBackground({
           mode: nextMode === 'image' ? 'image' : 'blur',
           imageUrl: imageUrl ?? null,
         });
         return;
       }
 
-      const next = new MediapipeBackgroundProcessor({
+      const processor = new MediapipeBackgroundProcessor({
         quality: nextQuality,
         mode: nextMode === 'image' ? 'image' : 'blur',
         target: nextTarget,
@@ -100,24 +104,12 @@ export function usePreJoinBackground() {
         temporalSmoothing: 0.45,
         edgeFeather: 4,
       });
-      processorRef.current = next;
-      setProcessor(next);
-      if (current) await current.destroy().catch(() => {});
+      if (track.getProcessor()) await track.stopProcessor();
+      await track.setProcessor(processor);
+      processorRef.current = processor;
     },
-    [supported, imageUrlFor],
+    [track, imageUrlFor],
   );
-
-  // Restore the saved effect once the image library is ready — an uploaded
-  // background cannot be resolved to a URL before its blob has been fetched.
-  const restoredRef = useRef(false);
-  useEffect(() => {
-    if (!supported || restoredRef.current || mode === 'off') return;
-    if (mode === 'image' && imageId && !imageUrlFor(imageId)) return;
-    restoredRef.current = true;
-    void syncProcessor(mode, imageId, quality, target).catch((e) =>
-      console.error('[PreJoin] failed to restore background effect:', e),
-    );
-  }, [supported, syncProcessor, imageUrlFor, mode, imageId, quality, target]);
 
   const commit = useCallback(
     async (next: {
@@ -146,7 +138,7 @@ export function usePreJoinBackground() {
         setImageId(nextImageId);
         setQuality(nextQuality);
         setTarget(nextTarget);
-        await syncProcessor(nextMode, nextImageId, nextQuality, nextTarget);
+        await applyEffect(nextMode, nextImageId, nextQuality, nextTarget);
       } catch (e) {
         console.error('[PreJoin] failed to apply background effect:', e);
         setError(e instanceof Error ? e.message : '背景の適用に失敗しました');
@@ -154,8 +146,30 @@ export function usePreJoinBackground() {
         setBusy(false);
       }
     },
-    [syncProcessor, mode, imageId, quality, target],
+    [applyEffect, mode, imageId, quality, target],
   );
+
+  // The track may not exist yet on first render (still being created), or may be
+  // replaced (device switch) — (re-)apply the stored effect whenever it shows up.
+  //
+  // Guard is `restoredRef.current` alone, checked and set synchronously — NOT
+  // `track.getProcessor()`, which stays null until the asynchronous `applyEffect`
+  // below actually finishes. In React's StrictMode dev double-invoke (mount ->
+  // cleanup -> mount again), the second invocation runs before the first
+  // `applyEffect` call has resolved; gating on `getProcessor()` let both
+  // invocations through, each building its own MediapipeBackgroundProcessor and
+  // racing to `setProcessor()` — the first one's WebGL context and pipeline gets
+  // torn down mid-flight, which is why the effect only sometimes actually worked.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (!supported || !track || mode === 'off') return;
+    if (mode === 'image' && imageId && !imageUrlFor(imageId)) return;
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    void applyEffect(mode, imageId, quality, target).catch((e) =>
+      console.error('[PreJoin] failed to restore background effect:', e),
+    );
+  }, [supported, track, applyEffect, imageUrlFor, mode, imageId, quality, target]);
 
   const handleUpload = useCallback(
     async (file: File) => {
@@ -163,10 +177,11 @@ export function usePreJoinBackground() {
       setError('');
       try {
         const uploaded = await uploadBackground(file);
-        writeStoredChoice({ mode: 'image', imageId: uploaded.id, quality, target });
+        // Select it immediately — uploading a background and not using it is not a thing.
+        await applyEffect('image', uploaded.id, quality, target);
         setMode('image');
         setImageId(uploaded.id);
-        await syncProcessor('image', uploaded.id, quality, target);
+        writeStoredChoice({ mode: 'image', imageId: uploaded.id, quality, target });
       } catch (e) {
         console.error('[PreJoin] background upload failed:', e);
         setError(e instanceof Error ? e.message : 'アップロードに失敗しました');
@@ -174,7 +189,7 @@ export function usePreJoinBackground() {
         setBusy(false);
       }
     },
-    [syncProcessor, uploadBackground, quality, target],
+    [applyEffect, uploadBackground, quality, target],
   );
 
   const handleDelete = useCallback(
@@ -183,11 +198,12 @@ export function usePreJoinBackground() {
       setError('');
       try {
         await deleteBackground(id);
+        // Deleting the background currently on screen leaves nothing to show.
         if (imageId === id) {
-          writeStoredChoice({ mode: 'blur', quality, target });
+          await applyEffect('blur', undefined, quality, target);
           setMode('blur');
           setImageId(undefined);
-          await syncProcessor('blur', undefined, quality, target);
+          writeStoredChoice({ mode: 'blur', quality, target });
         }
       } catch (e) {
         console.error('[PreJoin] background delete failed:', e);
@@ -196,7 +212,7 @@ export function usePreJoinBackground() {
         setBusy(false);
       }
     },
-    [syncProcessor, deleteBackground, imageId, quality, target],
+    [applyEffect, deleteBackground, imageId, quality, target],
   );
 
   const state: BackgroundEffectState = {
@@ -214,5 +230,5 @@ export function usePreJoinBackground() {
     imageUrlFor,
   };
 
-  return { state, processor };
+  return { state };
 }
