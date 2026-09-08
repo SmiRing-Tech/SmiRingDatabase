@@ -103,6 +103,7 @@ export default function CreateFixedMeetingModal({
   const [hostUserIds, setHostUserIds] = useState<string[]>([]);
   const [hostCode, setHostCode] = useState('');
   const [members, setMembers] = useState<ConnectMember[]>([]);
+  const [allDepartments, setAllDepartments] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -113,7 +114,12 @@ export default function CreateFixedMeetingModal({
     apiClient
       .get('/api/connect/members')
       .then((res) => (res.ok ? res.json() : { members: [] }))
-      .then((data) => setMembers(data.members ?? []))
+      .then((data) => {
+        setMembers(data.members ?? []);
+        if (Array.isArray(data.departments)) {
+          setAllDepartments(data.departments);
+        }
+      })
       .catch((e) => console.error('[Connect] Failed to fetch members:', e));
   }, [isOpen]);
 
@@ -216,6 +222,9 @@ export default function CreateFixedMeetingModal({
   }, [members, scopeAudienceIds, excludedUserIds]);
 
   const departmentOptions: DropdownOption[] = useMemo(() => {
+    if (allDepartments.length > 0) {
+      return allDepartments.map((d) => ({ label: d, value: d }));
+    }
     const names = new Set<string>();
     for (const m of members) {
       for (const d of m.departments) names.add(d);
@@ -223,7 +232,7 @@ export default function CreateFixedMeetingModal({
     return Array.from(names)
       .sort()
       .map((d) => ({ label: d, value: d }));
-  }, [members]);
+  }, [allDepartments, members]);
 
   const currentUserName = members.find((m) => m.id === currentUserId)?.name ?? '自分';
 

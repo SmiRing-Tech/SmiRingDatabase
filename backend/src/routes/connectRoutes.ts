@@ -445,10 +445,15 @@ interface ConnectMemberDirectoryEntry {
   departments: string[];
 }
 
+interface ConnectMembersDirectoryResult {
+  members: ConnectMemberDirectoryEntry[];
+  allDepartments: string[];
+}
+
 /** Full member directory (id, display name, internal flag, role_group, departments) —
  *  shared by /api/connect/members (viewer/host pickers) and /api/connect/rooms (to look
  *  up the requesting user's own role_group/departments for public-mode visibility). */
-async function getConnectMembersDirectory(): Promise<ConnectMemberDirectoryEntry[]> {
+async function getConnectMembersDirectory(): Promise<ConnectMembersDirectoryResult> {
   const { data, error } = await supabase
     .from('basic_profile_info')
     .select('id, name_english, name_kanji, smiring_department')
@@ -458,17 +463,27 @@ async function getConnectMembersDirectory(): Promise<ConnectMemberDirectoryEntry
 
   const rows = data ?? [];
   const memberIds = rows.map((m) => m.id);
-  const [internalIds, { data: roleMappingRows }] = await Promise.all([
-    getInternalUserIds(memberIds),
-    supabase
-      .from('user_role_mappings')
-      .select('user_id, user_role')
-      .in(
-        'user_role',
-        MEMBER_GROUP_ROLE_IDS.map((r) => r.id),
-      )
-      .in('user_id', memberIds),
-  ]);
+
+  const [internalIds, { data: roleMappingRows }, { data: deptRows }, { data: deptMappingRows }] =
+    await Promise.all([
+      getInternalUserIds(memberIds),
+      supabase
+        .from('user_role_mappings')
+        .select('user_id, user_role')
+        .in(
+          'user_role',
+          MEMBER_GROUP_ROLE_IDS.map((r) => r.id),
+        )
+        .in('user_id', memberIds),
+      supabase
+        .from('departments')
+        .select('id, name, sort_order')
+        .order('sort_order', { ascending: true }),
+      supabase
+        .from('member_department_mappings')
+        .select('user_id, department_id')
+        .in('user_id', memberIds),
+    ]);
 
   // 表示グループ用の代表ロール。1人が複数該当する場合は MEMBER_GROUP_ROLE_IDS の優先順で決める。
   const roleGroupByUserId = new Map<string, string>();
@@ -480,13 +495,45 @@ async function getConnectMembersDirectory(): Promise<ConnectMemberDirectoryEntry
     }
   }
 
-  return rows.map((m) => ({
-    id: m.id,
-    name: m.name_english || m.name_kanji || m.id,
-    is_internal: internalIds.has(m.id),
-    role_group: roleGroupByUserId.get(m.id) ?? 'other',
-    departments: m.smiring_department ?? [],
-  }));
+  // Management Consoleの部署マスタ (id -> name)
+  const deptNameById = new Map<string, string>();
+  const allDepartmentNames: string[] = [];
+  for (const d of deptRows ?? []) {
+    if (d.id && d.name) {
+      deptNameById.set(d.id, d.name);
+      allDepartmentNames.push(d.name);
+    }
+  }
+
+  // ユーザーごとの所属部署名リスト (member_department_mappings を正とする)
+  const departmentsByUserId = new Map<string, string[]>();
+  for (const dm of deptMappingRows ?? []) {
+    const deptName = deptNameById.get(dm.department_id);
+    if (deptName && dm.user_id) {
+      const list = departmentsByUserId.get(dm.user_id) || [];
+      if (!list.includes(deptName)) list.push(deptName);
+      departmentsByUserId.set(dm.user_id, list);
+    }
+  }
+
+  const members = rows.map((m) => {
+    // Management Consoleの部署設定を正とする。
+    // ※Management Consoleにマッピングが存在する場合はそれを100%使用。
+    // まだManagement Console未登録のユーザーのみ、旧smiring_departmentをフォールバックとして保持。
+    const mgmtDepts = departmentsByUserId.get(m.id);
+    const resolvedDepartments =
+      mgmtDepts !== undefined ? mgmtDepts : (m.smiring_department ?? []);
+
+    return {
+      id: m.id,
+      name: m.name_english || m.name_kanji || m.id,
+      is_internal: internalIds.has(m.id),
+      role_group: roleGroupByUserId.get(m.id) ?? 'other',
+      departments: resolvedDepartments,
+    };
+  });
+
+  return { members, allDepartments: allDepartmentNames };
 }
 
 /** Lightweight member roster for the viewer/host pickers in the create-meeting modal.
@@ -494,8 +541,8 @@ async function getConnectMembersDirectory(): Promise<ConnectMemberDirectoryEntry
  *  user creating a fixed meeting must be able to pick teammates. */
 router.get('/api/connect/members', authenticate, async (_req: Request, res: Response) => {
   try {
-    const members = await getConnectMembersDirectory();
-    return res.status(200).json({ members });
+    const { members, allDepartments } = await getConnectMembersDirectory();
+    return res.status(200).json({ members, departments: allDepartments });
   } catch (error: any) {
     console.error('[Connect] GET /api/connect/members failed:', error);
     return res.status(500).json({ error: error.message });
@@ -519,7 +566,7 @@ router.get('/api/connect/rooms', authenticate, async (req: Request, res: Respons
 
     const rooms = data ?? [];
 
-    const [directory, { data: viewerRows }, { data: hostRows }, { data: roleRows }, { data: deptRows }, { data: pinRows }] =
+    const [{ members: directory }, { data: viewerRows }, { data: hostRows }, { data: roleRows }, { data: deptRows }, { data: pinRows }] =
       await Promise.all([
         getConnectMembersDirectory(),
         supabase.from('connect_room_viewers').select('room_id').eq('user_id', userId),
