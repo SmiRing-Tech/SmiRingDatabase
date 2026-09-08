@@ -166,7 +166,7 @@ export default function PreJoinScreen({
     };
   }, [videoTrack]);
 
-  const { state: backgroundState } = usePreJoinBackground(videoTrack);
+  const { state: backgroundState, isReady: isBackgroundReady } = usePreJoinBackground(videoTrack);
   const [backgroundPanelOpen, setBackgroundPanelOpen] = useState(false);
 
   const micLevel = useMicLevel(audioTrack);
@@ -285,7 +285,9 @@ export default function PreJoinScreen({
     );
   }, [onSubmit, username, defaultUsername, videoEnabled, audioEnabled, videoDeviceId, audioDeviceId, videoTrack, audioTrack]);
 
-  const ready = !!videoTrack || !!audioTrack;
+  // Block preview until videoTrack/audioTrack exist AND background effect processor is attached
+  const isVideoReady = !videoTrack || isBackgroundReady;
+  const ready = (!!videoTrack || !!audioTrack) && isVideoReady;
 
   return (
     <div className="rounded-2xl overflow-hidden relative">
@@ -295,7 +297,7 @@ export default function PreJoinScreen({
           muted
           playsInline
           autoPlay
-          className={`w-full h-full object-cover ${videoEnabled ? '' : 'hidden'}`}
+          className={`w-full h-full object-cover ${videoEnabled && ready ? '' : 'hidden'}`}
           style={{ transform: 'scaleX(-1)' }}
         />
 

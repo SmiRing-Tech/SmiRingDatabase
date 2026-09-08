@@ -41,6 +41,9 @@ export function usePreJoinBackground(track: LocalVideoTrack | null) {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // When a background effect is stored, keep isReady false until the processor
+  // is attached so the raw room is never visible.
+  const [isReady, setIsReady] = useState(() => stored.mode === 'off');
 
   const processorRef = useRef<MediapipeBackgroundProcessor | null>(null);
 
@@ -59,6 +62,7 @@ export function usePreJoinBackground(track: LocalVideoTrack | null) {
       if (nextMode === 'off') {
         if (track.getProcessor()) await track.stopProcessor();
         processorRef.current = null;
+        setIsReady(true);
         return;
       }
 
@@ -83,6 +87,7 @@ export function usePreJoinBackground(track: LocalVideoTrack | null) {
           mode: nextMode === 'image' ? 'image' : 'blur',
           imageUrl: imageUrl ?? null,
         });
+        setIsReady(true);
         return;
       }
 
@@ -90,13 +95,16 @@ export function usePreJoinBackground(track: LocalVideoTrack | null) {
         quality: nextQuality,
         mode: nextMode === 'image' ? 'image' : 'blur',
         imageUrl: imageUrl ?? null,
-        blurRadius: 14,
-        temporalSmoothing: 0.45,
-        edgeFeather: 4,
+        blurRadius: 16,
+        temporalSmoothing: 0.25,
+        edgeFeather: 1.5,
+        matteLo: 0.3,
+        matteHi: 0.75,
       });
       if (track.getProcessor()) await track.stopProcessor();
       await track.setProcessor(processor);
       processorRef.current = processor;
+      setIsReady(true);
     },
     [track, imageUrlFor],
   );
@@ -117,12 +125,12 @@ export function usePreJoinBackground(track: LocalVideoTrack | null) {
         await applyEffect(nextMode, nextImageId, quality);
       } catch (e) {
         console.error('[PreJoin] failed to apply background effect:', e);
-        setError(e instanceof Error ? e.message : '背景の適用に失敗しました');
+        setError(e instanceof Error ? e.message : 'エフェクトの適用に失敗しました');
       } finally {
         setBusy(false);
       }
     },
-    [applyEffect, mode, imageId, quality],
+    [applyEffect, imageId, mode, quality],
   );
 
   // The track may not exist yet on first render (still being created), or may be
@@ -141,18 +149,28 @@ export function usePreJoinBackground(track: LocalVideoTrack | null) {
   // torn down mid-flight, which is why the effect only sometimes actually worked.
   const restoredRef = useRef(false);
   useEffect(() => {
-    if (!supported || !track || mode === 'off') return;
+    if (!supported || !track || mode === 'off') {
+      setIsReady(true);
+      return;
+    }
     if (mode === 'image' && imageId && !imageUrlFor(imageId)) return;
     if (restoredRef.current) return;
     restoredRef.current = true;
-    void applyEffect(mode, imageId, quality)
+
+    // Apply balanced first so camera unblocks fast with effect active,
+    // then silently upgrade to high model on desktop.
+    void applyEffect(mode, imageId, 'balanced')
       .then(() => {
-        if (quality === 'balanced' && !isMobileDevice()) {
+        setIsReady(true);
+        if (!isMobileDevice()) {
           return applyEffect(mode, imageId, 'high').then(() => setQuality('high'));
         }
       })
-      .catch((e) => console.error('[PreJoin] failed to restore background effect:', e));
-  }, [supported, track, applyEffect, imageUrlFor, mode, imageId, quality]);
+      .catch((e) => {
+        console.error('[PreJoin] failed to restore background effect:', e);
+        setIsReady(true);
+      });
+  }, [supported, track, applyEffect, imageUrlFor, mode, imageId]);
 
   const handleUpload = useCallback(
     async (file: File) => {
@@ -212,5 +230,5 @@ export function usePreJoinBackground(track: LocalVideoTrack | null) {
     imageUrlFor,
   };
 
-  return { state };
+  return { state, isReady };
 }

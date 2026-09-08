@@ -106,9 +106,11 @@ export function useBackgroundEffect() {
         quality: nextQuality,
         mode: nextMode === 'image' ? 'image' : 'blur',
         imageUrl: imageUrl ?? null,
-        blurRadius: 14,
-        temporalSmoothing: 0.45,
-        edgeFeather: 4,
+        blurRadius: 16,
+        temporalSmoothing: 0.25,
+        edgeFeather: 1.5,
+        matteLo: 0.3,
+        matteHi: 0.75,
       });
       if (track.getProcessor()) await track.stopProcessor();
       await track.setProcessor(processor);

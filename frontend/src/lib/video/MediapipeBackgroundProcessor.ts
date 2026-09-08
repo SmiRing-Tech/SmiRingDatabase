@@ -101,6 +101,10 @@ export type MediapipeBackgroundOptions = {
    * what `target` is for.
    */
   invertMask?: boolean;
+  /** Cutoff below which mask values are clamped to 0 (background). Default: 0.30 */
+  matteLo?: number;
+  /** Cutoff above which mask values are saturated to 1 (subject). Default: 0.75 */
+  matteHi?: number;
 };
 
 // Below this, two confidence averages are indistinguishable from rounding noise
@@ -111,15 +115,17 @@ const DEFAULTS = {
   mode: 'blur' as BackgroundMode,
   target: 'background' as EffectTarget,
   imageUrl: null as string | null,
-  blurRadius: 12,
+  blurRadius: 16,
   quality: 'balanced' as SegmentationQuality,
-  temporalSmoothing: 0.45,
-  edgeFeather: 4,
+  temporalSmoothing: 0.25,
+  edgeFeather: 1.5,
   // Enough to steady a stationary edge; the shader drops it toward zero wherever
   // the matte is moving, so raising it does not reintroduce trails.
   segmentationFps: 30,
   delegate: 'GPU' as const,
   invertMask: undefined as boolean | undefined,
+  matteLo: 0.3,
+  matteHi: 0.75,
 };
 
 /** True when the browser can run this processor at all. */
@@ -260,6 +266,8 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       | 'segmentationFps'
       | 'target'
       | 'invertMask'
+      | 'matteLo'
+      | 'matteHi'
     >,
   ) {
     this.options = { ...this.options, ...options };
@@ -826,8 +834,8 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     gl.uniform1f(alpha.uniforms.u_invert, this.resolvedInvert);
     // A wide ramp: only clip what is almost certainly background, only saturate
     // what is almost certainly body, and let everything between stay translucent.
-    gl.uniform1f(alpha.uniforms.u_lo, 0.1);
-    gl.uniform1f(alpha.uniforms.u_hi, 0.9);
+    gl.uniform1f(alpha.uniforms.u_lo, this.options.matteLo ?? 0.3);
+    gl.uniform1f(alpha.uniforms.u_hi, this.options.matteHi ?? 0.75);
     gl.uniform1f(
       alpha.uniforms.u_history_weight,
       this.hasMatteHistory ? Math.min(0.95, Math.max(0, this.options.temporalSmoothing)) : 0,
