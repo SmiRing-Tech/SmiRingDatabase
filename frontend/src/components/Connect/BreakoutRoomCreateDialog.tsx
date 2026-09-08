@@ -108,7 +108,7 @@ function DialogContent({
         </button>
 
         <div className="flex items-center gap-3 pr-6">
-          <div className="w-11 h-11 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
+          <div className="w-11 h-11 rounded-2xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0">
             <DoorOpen className="w-5 h-5" />
           </div>
           <div>
@@ -155,7 +155,7 @@ function DialogContent({
             type="checkbox"
             checked={allowSelfAssign}
             onChange={(e) => setAllowSelfAssign(e.target.checked)}
-            className="mt-0.5 w-3.5 h-3.5 rounded accent-indigo-500"
+            className="mt-0.5 w-3.5 h-3.5 rounded accent-sky-500"
           />
           <span className="text-xs text-gray-300 leading-relaxed">
             ルーム作成後、参加者が自分で入るルームを選べるようにする
@@ -177,7 +177,7 @@ function DialogContent({
             type="button"
             onClick={handleCreate}
             disabled={!canCreate || submitting}
-            className="flex-1 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white font-bold text-xs rounded-xl shadow-lg shadow-indigo-950/50 transition-all active:scale-95"
+            className="flex-1 py-2.5 px-4 bg-sky-600 hover:bg-sky-500 disabled:opacity-40 disabled:hover:bg-sky-600 text-white font-bold text-xs rounded-xl shadow-lg shadow-sky-950/50 transition-all active:scale-95"
           >
             {submitting ? '作成中...' : '作成'}
           </button>

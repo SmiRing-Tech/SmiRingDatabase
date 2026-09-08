@@ -85,11 +85,11 @@ export default function RecordingsListPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 px-4 py-10 md:px-8">
+    <div className="min-h-screen bg-gradient-to-br from-sky-50 via-white to-blue-50 px-4 py-10 md:px-8">
       <div className="max-w-6xl mx-auto space-y-8">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 mb-2 text-indigo-600 font-bold text-sm tracking-wide uppercase">
+            <div className="flex items-center gap-2 mb-2 text-sky-600 font-bold text-sm tracking-wide uppercase">
               <Film className="w-4 h-4" />
               <span>SmiRing Connect</span>
             </div>
@@ -113,7 +113,7 @@ export default function RecordingsListPage() {
 
         {!recordings && !error && (
           <div className="flex justify-center py-20">
-            <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
+            <Loader2 className="w-8 h-8 animate-spin text-sky-600" />
           </div>
         )}
 
@@ -132,7 +132,7 @@ export default function RecordingsListPage() {
                 <div
                   key={recording.id}
                   onClick={() => isPlayable && navigate(`/connect/recordings/${recording.id}`)}
-                  className={`text-left bg-white border border-slate-100 rounded-3xl overflow-hidden shadow-sm hover:shadow-md hover:border-indigo-200 transition-all duration-200 group ${
+                  className={`text-left bg-white border border-slate-100 rounded-3xl overflow-hidden shadow-sm hover:shadow-md hover:border-sky-200 transition-all duration-200 group ${
                     isPlayable ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'
                   }`}
                 >
@@ -149,7 +149,7 @@ export default function RecordingsListPage() {
                     {isPlayable && (
                       <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
                         <div className="w-11 h-11 rounded-full bg-white/90 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">
-                          <Play className="w-5 h-5 text-indigo-600 ml-0.5" fill="currentColor" />
+                          <Play className="w-5 h-5 text-sky-600 ml-0.5" fill="currentColor" />
                         </div>
                       </div>
                     )}
@@ -165,7 +165,7 @@ export default function RecordingsListPage() {
                     {recording.status === 'processing' && (
                       <div className="absolute bottom-0 inset-x-0 h-1.5 bg-black/40">
                         <div
-                          className="h-full bg-indigo-400 transition-[width] duration-700 ease-out"
+                          className="h-full bg-sky-400 transition-[width] duration-700 ease-out"
                           // Before the job reports anything there is still a visible sliver,
                           // so the bar reads as "started" rather than as not running at all.
                           style={{ width: `${Math.max(recording.progress ?? 0, 3)}%` }}

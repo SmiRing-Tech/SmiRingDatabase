@@ -203,7 +203,7 @@ export function ParticipantTileContent({
           }}
           title={isPinned ? 'ピン留めを解除' : 'ピン留め'}
           aria-pressed={isPinned}
-          className={`lk-focus-toggle-button ${isPinned ? '!opacity-100 text-indigo-300' : ''}`}
+          className={`lk-focus-toggle-button ${isPinned ? '!opacity-100 text-sky-300' : ''}`}
         >
           {isPinned ? <PinOff className="w-4 h-4" /> : <Pin className="w-4 h-4" />}
         </button>

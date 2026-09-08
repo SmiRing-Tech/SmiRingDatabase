@@ -71,10 +71,8 @@ import PreJoinScreen, { type PreJoinChoices } from '../../components/Connect/Pre
 import MiniRoomPanel from '../../components/Connect/MiniRoomPanel';
 import MiniRoomMoveToast from '../../components/Connect/MiniRoomMoveToast';
 import { useAuth } from '../../context/AuthContext';
-import { usePermission } from '../../hooks/usePermission';
 import { useRecording } from './useRecording';
 import { useRecordingSync } from './useRecordingSync';
-import { SMIRING_MEMBER_ROLE_ID } from '../../hooks/useIsInternal';
 import { useMiniRooms, type UseMiniRoomsResult, type ReconnectTarget } from '../../hooks/useMiniRooms';
 import { useDocumentPiP } from '../../hooks/useDocumentPiP';
 import { useActiveSpeakerVideoPip } from '../../hooks/useActiveSpeakerVideoPip';
@@ -105,7 +103,7 @@ function controlButtonClass(active: boolean, danger = false) {
   }
   return `${base} ${
     active
-      ? 'bg-indigo-600/90 text-white border-indigo-400/50 hover:bg-indigo-600'
+      ? 'bg-sky-600/90 text-white border-sky-400/50 hover:bg-sky-600'
       : 'bg-gray-900/80 text-gray-200 border-gray-700/80 hover:bg-gray-800'
   }`;
 }
@@ -450,7 +448,7 @@ function MicMenuDropdown({
       <div className="w-80 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl p-3.5 text-white space-y-3">
         <div className="flex items-center justify-between border-b border-gray-800 pb-2 px-1">
           <div className="flex items-center gap-1.5">
-            <Mic className="w-3.5 h-3.5 text-indigo-400" />
+            <Mic className="w-3.5 h-3.5 text-sky-400" />
             <h3 className="font-bold text-xs text-gray-100">マイク・スピーカー設定</h3>
           </div>
           <button
@@ -476,12 +474,12 @@ function MicMenuDropdown({
                   }}
                   className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs text-left transition-all ${
                     isSelected
-                      ? 'bg-indigo-600/30 text-indigo-300 font-bold border border-indigo-500/40'
+                      ? 'bg-sky-600/30 text-sky-300 font-bold border border-sky-500/40'
                       : 'text-gray-300 hover:bg-gray-800 hover:text-white'
                   }`}
                 >
                   <span className="truncate">{device.label || `マイク (${device.deviceId.slice(0, 5)}...)`}</span>
-                  {isSelected && <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                  {isSelected && <Check className="w-3.5 h-3.5 text-sky-400 shrink-0" />}
                 </button>
               );
             })}
@@ -507,12 +505,12 @@ function MicMenuDropdown({
                     }}
                     className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs text-left transition-all ${
                       isSelected
-                        ? 'bg-indigo-600/30 text-indigo-300 font-bold border border-indigo-500/40'
+                        ? 'bg-sky-600/30 text-sky-300 font-bold border border-sky-500/40'
                         : 'text-gray-300 hover:bg-gray-800 hover:text-white'
                     }`}
                   >
                     <span className="truncate">{device.label || `スピーカー (${device.deviceId.slice(0, 5)}...)`}</span>
-                    {isSelected && <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                    {isSelected && <Check className="w-3.5 h-3.5 text-sky-400 shrink-0" />}
                   </button>
                 );
               })}
@@ -524,7 +522,7 @@ function MicMenuDropdown({
         <div className="space-y-1.5 border-t border-gray-800/80 pt-2.5 px-1">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Volume2 className="w-4 h-4 text-indigo-400" />
+              <Volume2 className="w-4 h-4 text-sky-400" />
               <div>
                 <p className="text-xs font-bold text-gray-200">Krisp AI ノイズ除去</p>
                 <p className="text-[10px] text-gray-400">マイクの周囲の雑音を除去</p>
@@ -536,7 +534,7 @@ function MicMenuDropdown({
                 onClick={toggleKrisp}
                 disabled={krispLoading}
                 className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
-                  krispEnabled ? 'bg-indigo-500' : 'bg-gray-700'
+                  krispEnabled ? 'bg-sky-500' : 'bg-gray-700'
                 }`}
               >
                 <span
@@ -559,7 +557,7 @@ function MicMenuDropdown({
         <div className="space-y-1.5 border-t border-gray-800/80 pt-2.5 px-1">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <MicOff className="w-4 h-4 text-indigo-400" />
+              <MicOff className="w-4 h-4 text-sky-400" />
               <div>
                 <p className="text-xs font-bold text-gray-200">自動ミュート（発話検知）</p>
                 <p className="text-[10px] text-gray-400">話していない間は送信しない</p>
@@ -570,7 +568,7 @@ function MicMenuDropdown({
               onClick={() => setAutoGateEnabled((prev) => !prev)}
               disabled={autoGateLoading}
               className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
-                autoGateEnabled ? 'bg-indigo-500' : 'bg-gray-700'
+                autoGateEnabled ? 'bg-sky-500' : 'bg-gray-700'
               }`}
             >
               <span
@@ -623,7 +621,7 @@ function CameraMenuDropdown({
       <div className="w-80 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl p-3.5 text-white space-y-3">
         <div className="flex items-center justify-between border-b border-gray-800 pb-2 px-1">
           <div className="flex items-center gap-1.5">
-            <Video className="w-3.5 h-3.5 text-indigo-400" />
+            <Video className="w-3.5 h-3.5 text-sky-400" />
             <h3 className="font-bold text-xs text-gray-100">カメラ設定</h3>
           </div>
           <button
@@ -649,12 +647,12 @@ function CameraMenuDropdown({
                   }}
                   className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs text-left transition-all ${
                     isSelected
-                      ? 'bg-indigo-600/30 text-indigo-300 font-bold border border-indigo-500/40'
+                      ? 'bg-sky-600/30 text-sky-300 font-bold border border-sky-500/40'
                       : 'text-gray-300 hover:bg-gray-800 hover:text-white'
                   }`}
                 >
                   <span className="truncate">{device.label || `カメラ (${device.deviceId.slice(0, 5)}...)`}</span>
-                  {isSelected && <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                  {isSelected && <Check className="w-3.5 h-3.5 text-sky-400 shrink-0" />}
                 </button>
               );
             })}
@@ -679,7 +677,7 @@ function CameraMenuDropdown({
                 />
               ) : (
                 <div className="w-8 h-6 rounded-md bg-gray-900 border border-gray-700 flex items-center justify-center shrink-0">
-                  <CurrentBackgroundIcon className="w-3.5 h-3.5 text-indigo-400" />
+                  <CurrentBackgroundIcon className="w-3.5 h-3.5 text-sky-400" />
                 </div>
               )}
               <div className="min-w-0">
@@ -719,7 +717,7 @@ function MicButton({ mediaEnhancements }: { mediaEnhancements: MediaEnhancements
       ref={containerRef}
       className={`relative inline-flex items-stretch h-[52px] rounded-xl border transition-all duration-200 shrink-0 ${
         isMicrophoneEnabled
-          ? 'bg-indigo-600/90 border-indigo-400/50 text-white'
+          ? 'bg-sky-600/90 border-sky-400/50 text-white'
           : 'bg-gray-900/80 border-gray-700/80 text-gray-200'
       }`}
     >
@@ -737,7 +735,7 @@ function MicButton({ mediaEnhancements }: { mediaEnhancements: MediaEnhancements
         title="マイク・スピーカー設定"
         className={`flex items-center justify-center px-2 border-l transition-colors rounded-r-xl ${
           isMicrophoneEnabled
-            ? 'border-indigo-400/40 hover:bg-indigo-700/60 text-white/90'
+            ? 'border-sky-400/40 hover:bg-sky-700/60 text-white/90'
             : 'border-gray-700/80 hover:bg-gray-800 text-gray-400 hover:text-white'
         }`}
       >
@@ -773,7 +771,7 @@ function CameraButton({ mediaEnhancements }: { mediaEnhancements: MediaEnhanceme
       ref={containerRef}
       className={`relative inline-flex items-stretch h-[52px] rounded-xl border transition-all duration-200 shrink-0 ${
         isCameraEnabled
-          ? 'bg-indigo-600/90 border-indigo-400/50 text-white'
+          ? 'bg-sky-600/90 border-sky-400/50 text-white'
           : 'bg-gray-900/80 border-gray-700/80 text-gray-200'
       }`}
     >
@@ -791,7 +789,7 @@ function CameraButton({ mediaEnhancements }: { mediaEnhancements: MediaEnhanceme
         title="カメラ設定"
         className={`flex items-center justify-center px-2 border-l transition-colors rounded-r-xl ${
           isCameraEnabled
-            ? 'border-indigo-400/40 hover:bg-indigo-700/60 text-white/90'
+            ? 'border-sky-400/40 hover:bg-sky-700/60 text-white/90'
             : 'border-gray-700/80 hover:bg-gray-800 text-gray-400 hover:text-white'
         }`}
       >
@@ -861,7 +859,7 @@ function ScreenShareMenuItem({ onSelect }: { onSelect: () => void }) {
       }}
       className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
     >
-      <ScreenShare className="w-4 h-4 text-indigo-400" />
+      <ScreenShare className="w-4 h-4 text-sky-400" />
       <span>{isScreenShareEnabled ? '画面共有を停止' : '画面共有'}</span>
     </button>
   );
@@ -942,7 +940,7 @@ function ChatMenuItem({
       onClick={onClick}
       className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
     >
-      <MessageSquare className="w-4 h-4 text-indigo-400" />
+      <MessageSquare className="w-4 h-4 text-sky-400" />
       <span>{isOpen ? 'チャットを閉じる' : 'チャット'}</span>
       {unreadCount > 0 && (
         <span className="ml-auto min-w-4 h-4 px-1 bg-rose-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
@@ -970,7 +968,7 @@ function MiniRoomMenuItem({ onClick }: { onClick: () => void }) {
       onClick={onClick}
       className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
     >
-      <DoorOpen className="w-4 h-4 text-indigo-400" />
+      <DoorOpen className="w-4 h-4 text-sky-400" />
       <span>ミニルーム</span>
     </button>
   );
@@ -1026,11 +1024,11 @@ function RecordingMenuItem({
       className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors disabled:opacity-50"
     >
       {busy ? (
-        <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+        <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
       ) : isRecording ? (
         <StopCircle className="w-4 h-4 text-rose-400 animate-pulse" />
       ) : (
-        <CircleDot className="w-4 h-4 text-indigo-400" />
+        <CircleDot className="w-4 h-4 text-sky-400" />
       )}
       <span>{isRecording ? '録画を停止' : '録画を開始'}</span>
     </button>
@@ -1090,7 +1088,7 @@ function PipMenuItem({
       onClick={onClick}
       className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
     >
-      <PictureInPicture2 className="w-4 h-4 text-indigo-400" />
+      <PictureInPicture2 className="w-4 h-4 text-sky-400" />
       <span>{isPipActive ? 'PiP表示中' : 'PiPで開く'}</span>
     </button>
   );
@@ -1176,7 +1174,7 @@ function LayoutModeButton({
         title="表示レイアウトを変更"
         className="flex items-center gap-1.5 px-2.5 py-1 bg-gray-900/90 hover:bg-gray-800 border border-gray-700/80 hover:border-gray-600 rounded-md text-xs font-semibold text-gray-200 hover:text-white transition-all active:scale-95 shrink-0"
       >
-        <ActiveIcon className="w-3.5 h-3.5 text-indigo-400" />
+        <ActiveIcon className="w-3.5 h-3.5 text-sky-400" />
         <span>{activeLabel}</span>
       </button>
 
@@ -1194,12 +1192,12 @@ function LayoutModeButton({
                     setIsOpen(false);
                   }}
                   className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-colors ${
-                    isActive ? 'bg-indigo-600/25 text-white' : 'text-gray-200 hover:bg-gray-800'
+                    isActive ? 'bg-sky-600/25 text-white' : 'text-gray-200 hover:bg-gray-800'
                   }`}
                 >
-                  <Icon className={`w-4 h-4 ${isActive ? 'text-indigo-300' : 'text-indigo-400'}`} />
+                  <Icon className={`w-4 h-4 ${isActive ? 'text-sky-300' : 'text-sky-400'}`} />
                   <span>{label}</span>
-                  {isActive && <Check className="w-3.5 h-3.5 ml-auto text-indigo-300" />}
+                  {isActive && <Check className="w-3.5 h-3.5 ml-auto text-sky-300" />}
                 </button>
               );
             })}
@@ -1265,9 +1263,9 @@ function CustomVideoConference({
   // MiniRoomPanel itself branches host vs. non-host content.
   const [showMiniRoomPanel, setShowMiniRoomPanel] = useState(false);
 
-  // Starting/stopping is permission-gated, but the recording *state* is read by everyone:
+  // Starting/stopping is host-only, but the recording *state* is read by everyone:
   // participants who can't touch the controls still need to see that they're being recorded.
-  const canRecord = usePermission('connect_recording', 'write');
+  const canRecord = isMiniRoomHost;
   const recording = useRecording(mainRoomId);
 
   // Center control-bar items (Screen Share, Chat, and any future additions) fold into
@@ -1426,14 +1424,14 @@ function CustomVideoConference({
       {/* Screen Share PiP Suggestion Banner (Only for local screen share) */}
       {isLocalScreenSharing && isPipSupported && !isPipActive && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-top-2 duration-300">
-          <div className="flex items-center gap-3 px-4 py-2 bg-indigo-950/90 hover:bg-indigo-900/90 border border-indigo-500/50 backdrop-blur-md rounded-2xl shadow-2xl text-white">
+          <div className="flex items-center gap-3 px-4 py-2 bg-sky-950/90 hover:bg-sky-900/90 border border-sky-500/50 backdrop-blur-md rounded-2xl shadow-2xl text-white">
             <div className="flex items-center gap-2">
-              <ScreenShare className="w-4 h-4 text-indigo-400 animate-pulse" />
+              <ScreenShare className="w-4 h-4 text-sky-400 animate-pulse" />
               <span className="text-xs font-semibold">画面共有中：PiPを開くと参加者の顔を確認できます</span>
             </div>
             <button
               onClick={onOpenPip}
-              className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-1.5"
+              className="px-3 py-1 bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-1.5"
             >
               <PictureInPicture2 className="w-3.5 h-3.5" />
               <span>PiPで開く</span>
@@ -1536,6 +1534,7 @@ function CustomVideoConference({
 function CallRoomInner({
   roomId,
   roomTitle,
+  isHost,
   onReconnect,
   onBeforeReconnectDisconnect,
   pendingVideoTrack,
@@ -1543,6 +1542,10 @@ function CallRoomInner({
 }: {
   roomId: string;
   roomTitle: string;
+  /** Whether this user holds host privileges for this specific room (fixed-meeting
+   *  host/creator, or first joiner of an instant room) — decided server-side at token
+   *  issuance. Gates mini-room creation and screen recording. */
+  isHost: boolean;
   onReconnect: (target: ReconnectTarget) => void;
   onBeforeReconnectDisconnect: () => void;
   /** The pre-join camera/mic tracks (background processor already attached, if
@@ -1554,12 +1557,9 @@ function CallRoomInner({
 }) {
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
-  const { user, roles, roleIds } = useAuth();
+  const { user } = useAuth();
 
-  // Mini-room ("host") permission: for now the only people who can create mini rooms
-  // are smiring_member users. This is also where future per-room capabilities (start
-  // recording, force-enable screen share, ...) will hang off the same "host" concept.
-  const isMiniRoomHost = roles.includes('smiring_member') || roleIds.includes(SMIRING_MEMBER_ROLE_ID);
+  const isMiniRoomHost = isHost;
 
   const miniRooms = useMiniRooms({
     mainRoomId: roomId,
@@ -1694,10 +1694,11 @@ function CallRoomInner({
     }
   }, [isDocumentPipActive, closeDocumentPip, isVideoPipActive, exitVideoPip]);
 
-  const copyRoomId = async () => {
+  const copyRoomUrl = async () => {
     if (!roomId) return;
     try {
-      await navigator.clipboard.writeText(roomId);
+      const url = `${window.location.origin}/connect/call/${roomId}`;
+      await navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -1717,9 +1718,9 @@ function CallRoomInner({
 
           {/* Room Code Badge with Copy */}
           <button
-            onClick={copyRoomId}
+            onClick={copyRoomUrl}
             className="flex items-center gap-1.5 px-2 py-0.5 bg-gray-900/90 hover:bg-gray-800 border border-gray-700/80 hover:border-gray-600 rounded-md text-xs font-mono text-gray-300 hover:text-white transition-all active:scale-95 shrink-0"
-            title="ルームコードをコピー"
+            title="招待URLをコピー"
           >
             <span>{roomId}</span>
             {copied ? (
@@ -1732,7 +1733,7 @@ function CallRoomInner({
           {/* Current mini room indicator — the badge above always stays the shareable
               main-room invite code, this just supplements it while inside a mini room. */}
           {!miniRooms.isInMainRoom && (
-            <span className="flex items-center gap-1 px-2 py-0.5 bg-indigo-500/15 border border-indigo-500/30 rounded-md text-xs font-bold text-indigo-300 shrink-0">
+            <span className="flex items-center gap-1 px-2 py-0.5 bg-sky-500/15 border border-sky-500/30 rounded-md text-xs font-bold text-sky-300 shrink-0">
               現在: {miniRooms.rooms.find((r) => r.id === miniRooms.currentRoomId)?.name ?? 'ミニルーム'}
             </span>
           )}
@@ -1851,9 +1852,10 @@ function PreJoinStage({
       .catch(() => {});
   }, [roomId]);
 
-  const copyRoomId = async () => {
+  const copyRoomUrl = async () => {
     try {
-      await navigator.clipboard.writeText(roomId);
+      const url = `${window.location.origin}/connect/call/${roomId}`;
+      await navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -1863,13 +1865,13 @@ function PreJoinStage({
 
   return (
     <div className="h-dvh w-screen overflow-y-auto bg-slate-50/30 p-6 md:p-10 relative">
-      <div className="absolute top-[-20%] left-[-10%] w-[500px] h-[500px] rounded-full bg-indigo-400/5 blur-[120px] pointer-events-none" />
+      <div className="absolute top-[-20%] left-[-10%] w-[500px] h-[500px] rounded-full bg-sky-400/5 blur-[120px] pointer-events-none" />
       <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-sky-400/5 blur-[120px] pointer-events-none" />
 
       <div className="max-w-3xl mx-auto relative z-10">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
           <div>
-            <div className="flex items-center gap-2 mb-2 text-indigo-600 font-bold text-sm tracking-wide uppercase">
+            <div className="flex items-center gap-2 mb-2 text-sky-600 font-bold text-sm tracking-wide uppercase">
               <Video className="w-4 h-4" />
               <span>SmiRing Connect</span>
             </div>
@@ -1877,11 +1879,11 @@ function PreJoinStage({
               {roomTitle ? roomTitle : 'ミーティングに参加'}
             </h1>
             <button
-              onClick={copyRoomId}
-              className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 hover:border-indigo-300 rounded-lg text-sm font-bold text-gray-600 transition-all active:scale-95"
-              title="コードをコピー"
+              onClick={copyRoomUrl}
+              className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 hover:border-sky-300 rounded-lg text-sm font-bold text-gray-600 transition-all active:scale-95"
+              title="招待URLをコピー"
             >
-              <span className="text-indigo-600">ルームコード:</span>
+              <span className="text-sky-600">ルームコード:</span>
               <span className="font-mono">{roomId}</span>
               {copied ? (
                 <Check className="w-4 h-4 text-emerald-500" />
@@ -1903,7 +1905,7 @@ function PreJoinStage({
         <div className="bg-white border border-slate-100 rounded-3xl p-4 md:p-6 shadow-sm">
           {profileLoading ? (
             <div className="flex flex-col items-center justify-center py-20 text-gray-400 gap-3">
-              <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
+              <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
               <p className="text-xs font-semibold">プロフィール情報を読み込み中...</p>
             </div>
           ) : (
@@ -1930,6 +1932,7 @@ export default function CallRoomPage() {
   const [token, setToken] = useState('');
   const [serverUrl, setServerUrl] = useState('');
   const [roomTitle, setRoomTitle] = useState('');
+  const [isHost, setIsHost] = useState(false);
   const [choices, setChoices] = useState<PreJoinChoices | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [isDisconnected, setIsDisconnected] = useState(false);
@@ -2007,6 +2010,7 @@ export default function CallRoomPage() {
         if (data.roomTitle) {
           setRoomTitle(data.roomTitle);
         }
+        setIsHost(!!data.is_host);
         setStage('in-call');
       } catch (e: any) {
         if (isMounted) {
@@ -2101,8 +2105,8 @@ export default function CallRoomPage() {
   if (isDisconnected) {
     return (
       <div className="h-dvh w-screen bg-[#0f1115] flex flex-col items-center justify-center p-6 text-white text-center">
-        <div className="w-16 h-16 rounded-3xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center mb-4">
-          <Check className="w-8 h-8 text-indigo-400" />
+        <div className="w-16 h-16 rounded-3xl bg-sky-500/10 border border-sky-500/30 flex items-center justify-center mb-4">
+          <Check className="w-8 h-8 text-sky-400" />
         </div>
         <h1 className="text-2xl font-black mb-2">通話を終了しました</h1>
         <p className="text-sm text-gray-400 mb-8 max-w-sm">
@@ -2111,7 +2115,7 @@ export default function CallRoomPage() {
         <div className="flex gap-3">
           <button
             onClick={handleCloseWindow}
-            className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm rounded-xl shadow-lg shadow-indigo-900/30 transition-all active:scale-95"
+            className="px-6 py-3 bg-sky-600 hover:bg-sky-500 text-white font-bold text-sm rounded-xl shadow-lg shadow-sky-900/30 transition-all active:scale-95"
           >
             タブを閉じる
           </button>
@@ -2137,7 +2141,7 @@ export default function CallRoomPage() {
         <div className="flex gap-3">
           <button
             onClick={() => window.location.reload()}
-            className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm rounded-xl shadow-lg shadow-indigo-900/30 transition-all active:scale-95"
+            className="px-6 py-3 bg-sky-600 hover:bg-sky-500 text-white font-bold text-sm rounded-xl shadow-lg shadow-sky-900/30 transition-all active:scale-95"
           >
             再試行
           </button>
@@ -2159,7 +2163,7 @@ export default function CallRoomPage() {
   if (stage === 'connecting' || !token || !serverUrl) {
     return (
       <div className="h-dvh w-screen bg-[#0f1115] flex flex-col items-center justify-center gap-4 text-white">
-        <Loader2 className="w-10 h-10 animate-spin text-indigo-500" />
+        <Loader2 className="w-10 h-10 animate-spin text-sky-500" />
         <p className="font-bold text-sm text-gray-300">ルームに接続しています...</p>
       </div>
     );
@@ -2183,6 +2187,7 @@ export default function CallRoomPage() {
         <CallRoomInner
           roomId={roomId!}
           roomTitle={roomTitle}
+          isHost={isHost}
           onReconnect={handleReconnect}
           onBeforeReconnectDisconnect={handleBeforeReconnectDisconnect}
           pendingVideoTrack={pendingVideoTrack}

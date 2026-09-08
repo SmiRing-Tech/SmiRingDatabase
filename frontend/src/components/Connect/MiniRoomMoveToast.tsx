@@ -32,8 +32,8 @@ function Countdown({ pendingMove }: { pendingMove: PendingMiniRoomMove }) {
 
   return (
     <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-top-2 duration-300">
-      <div className="flex items-center gap-3 px-4 py-2 bg-indigo-950/90 border border-indigo-500/50 backdrop-blur-md rounded-2xl shadow-2xl text-white">
-        <DoorOpen className="w-4 h-4 text-indigo-400 animate-pulse shrink-0" />
+      <div className="flex items-center gap-3 px-4 py-2 bg-sky-950/90 border border-sky-500/50 backdrop-blur-md rounded-2xl shadow-2xl text-white">
+        <DoorOpen className="w-4 h-4 text-sky-400 animate-pulse shrink-0" />
         <span className="text-xs font-semibold">
           まもなく「{pendingMove.destinationName}」に移動します（{seconds}秒）
         </span>

@@ -301,7 +301,7 @@ export default function PreJoinScreen({
 
         {!ready && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-gray-400">
-            <Loader2 className="w-8 h-8 animate-spin text-indigo-400" />
+            <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
             <p className="text-xs font-semibold">カメラを準備しています...</p>
           </div>
         )}
@@ -364,14 +364,14 @@ export default function PreJoinScreen({
             spellCheck={false}
             value={username}
             onChange={(e) => handleUsernameChange(e.target.value)}
-            className="w-full box-border px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300"
+            className="w-full box-border px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-gray-900 focus:outline-none focus:ring-2 focus:ring-sky-200 focus:border-sky-300"
             placeholder="表示名を入力"
           />
           {isCustomName && defaultUsername && (
             <button
               type="button"
               onClick={handleResetToDefaultName}
-              className="mt-1.5 inline-flex items-center gap-1 text-xs font-bold text-indigo-600 hover:text-indigo-700"
+              className="mt-1.5 inline-flex items-center gap-1 text-xs font-bold text-sky-600 hover:text-sky-700"
             >
               <RotateCcw className="w-3 h-3" />
               <span>デフォルト（{defaultUsername}）に戻す</span>
@@ -426,7 +426,7 @@ export default function PreJoinScreen({
             disabled={testingSpeaker}
             className="w-full inline-flex items-center justify-center gap-2 px-4 py-2 bg-slate-50 hover:bg-slate-100 disabled:opacity-50 text-gray-600 border border-slate-200 font-bold text-xs rounded-xl transition-all active:scale-95"
           >
-            <Volume2 className={`w-3.5 h-3.5 ${testingSpeaker ? 'animate-pulse text-indigo-500' : ''}`} />
+            <Volume2 className={`w-3.5 h-3.5 ${testingSpeaker ? 'animate-pulse text-sky-500' : ''}`} />
             <span>{testingSpeaker ? '再生中...' : 'スピーカーをテスト'}</span>
           </button>
         )}
@@ -459,7 +459,7 @@ export default function PreJoinScreen({
           type="button"
           onClick={handleJoin}
           disabled={!ready}
-          className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-bold text-sm rounded-xl shadow-sm transition-all active:scale-95"
+          className="w-full py-3 bg-sky-600 hover:bg-sky-700 disabled:opacity-40 text-white font-bold text-sm rounded-xl shadow-sm transition-all active:scale-95"
         >
           {joinLabel}
         </button>

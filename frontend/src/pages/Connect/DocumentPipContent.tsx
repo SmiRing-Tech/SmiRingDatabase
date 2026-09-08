@@ -425,20 +425,20 @@ export default function DocumentPipContent({
             setCurrentTab('chat');
             setShowNotificationToast(false);
           }}
-          className="absolute top-11 left-2 right-2 z-50 bg-gray-950/95 border border-indigo-500/70 p-2.5 rounded-2xl shadow-2xl backdrop-blur-md flex items-center gap-2 cursor-pointer hover:bg-gray-900 transition-all animate-in fade-in slide-in-from-top-2 duration-200"
+          className="absolute top-11 left-2 right-2 z-50 bg-gray-950/95 border border-sky-500/70 p-2.5 rounded-2xl shadow-2xl backdrop-blur-md flex items-center gap-2 cursor-pointer hover:bg-gray-900 transition-all animate-in fade-in slide-in-from-top-2 duration-200"
         >
-          <div className="w-6 h-6 rounded-lg bg-indigo-600 flex items-center justify-center shrink-0 shadow-md">
+          <div className="w-6 h-6 rounded-lg bg-sky-600 flex items-center justify-center shrink-0 shadow-md">
             <MessageSquare className="w-3.5 h-3.5 text-white" />
           </div>
           <div className="flex-1 min-w-0 text-left">
-            <p className="text-[10px] font-bold text-indigo-400 truncate">
+            <p className="text-[10px] font-bold text-sky-400 truncate">
               {chat.lastNotificationMessage.sender.name}
             </p>
             <p className="text-xs text-white truncate font-medium">
               {chat.lastNotificationMessage.text}
             </p>
           </div>
-          <span className="text-[10px] text-indigo-400 font-bold shrink-0">開く</span>
+          <span className="text-[10px] text-sky-400 font-bold shrink-0">開く</span>
         </div>
       )}
 
@@ -458,7 +458,7 @@ export default function DocumentPipContent({
             onClick={() => setLayoutMode('grid')}
             className={`p-1 rounded-lg text-xs transition-colors flex items-center gap-1 ${
               layoutMode === 'grid' && !isCompact
-                ? 'bg-indigo-600/90 text-white font-bold'
+                ? 'bg-sky-600/90 text-white font-bold'
                 : 'text-gray-400 hover:text-white hover:bg-gray-800'
             }`}
             title="グリッド表示（全員）"
@@ -471,7 +471,7 @@ export default function DocumentPipContent({
             onClick={() => setLayoutMode('speaker')}
             className={`p-1 rounded-lg text-xs transition-colors flex items-center gap-1 ${
               layoutMode === 'speaker' || isCompact
-                ? 'bg-indigo-600/90 text-white font-bold'
+                ? 'bg-sky-600/90 text-white font-bold'
                 : 'text-gray-400 hover:text-white hover:bg-gray-800'
             }`}
             title="スピーカー表示（話者のみ）"
@@ -566,7 +566,7 @@ export default function DocumentPipContent({
                 </div>
               ) : (
                 <div className="flex flex-col items-center justify-center text-gray-500 gap-2">
-                  <Radio className="w-7 h-7 opacity-40 animate-pulse text-indigo-400" />
+                  <Radio className="w-7 h-7 opacity-40 animate-pulse text-sky-400" />
                   <p className="text-xs font-semibold">話者を待機中...</p>
                 </div>
               )}
@@ -627,7 +627,7 @@ export default function DocumentPipContent({
           className="relative p-2 rounded-xl border border-slate-700 bg-slate-800/90 text-white hover:bg-slate-700 transition-all active:scale-90 flex items-center justify-center"
           title="チャットを開く"
         >
-          <MessageSquare className="w-4 h-4 text-indigo-300" />
+          <MessageSquare className="w-4 h-4 text-sky-300" />
           {chat.totalUnreadCount > 0 && (
             <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 bg-rose-500 text-white text-[9px] font-bold rounded-full border-2 border-gray-950 flex items-center justify-center animate-pulse">
               {chat.totalUnreadCount}

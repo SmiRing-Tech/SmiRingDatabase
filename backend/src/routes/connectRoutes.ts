@@ -25,6 +25,18 @@ import {
 
 // smiring_member ロールID（ryugakusai-web / frontend/src/hooks/useIsInternal.ts と共通の定義）
 const SMIRING_MEMBER_ROLE_ID = 'c7f24039-c537-402e-91db-664684f5f8b3';
+// 内部メンバー判定用のロールID一式（frontend/src/hooks/useIsInternal.ts の INTERNAL_ROLE_IDS と同一）
+const PARTNER_ROLE_ID = 'e9b3b5b3-b95e-4c87-bf1c-6b65603189cf';
+const ADMIN_ROLE_ID = 'a6dfbd9b-f64b-446d-b89f-b7d876e26988';
+const ALUMNI_ROLE_ID = '535cde53-58d7-48a8-9036-527a48b624b7';
+const INTERNAL_ROLE_IDS = [SMIRING_MEMBER_ROLE_ID, PARTNER_ROLE_ID, ADMIN_ROLE_ID];
+
+// connect/membersピッカーの表示グループ分け用（この優先順で最初に一致したものをそのユーザーの代表ロールとする）
+const MEMBER_GROUP_ROLE_IDS: { id: string; group: string }[] = [
+  { id: SMIRING_MEMBER_ROLE_ID, group: 'smiring_member' },
+  { id: PARTNER_ROLE_ID, group: 'smiring_partner' },
+  { id: ALUMNI_ROLE_ID, group: 'smiring_alumni' },
+];
 
 const router = Router();
 
@@ -131,39 +143,55 @@ async function getDisplayProfile(userId: string, fallback: string) {
   return { displayName, avatarUrl };
 }
 
-/** True if the user holds the smiring_member role — the only "mini room host" grant today. */
-async function isSmiRingMemberHost(userId: string): Promise<boolean> {
-  const { data: mapping } = await supabase
-    .from('user_role_mappings')
-    .select('user_id')
-    .eq('user_id', userId)
-    .eq('user_role', SMIRING_MEMBER_ROLE_ID)
+/** True if userId holds host privileges for LiveKit room `roomId`. For a registered
+ *  fixed meeting this is its creator or anyone in connect_room_hosts; for an instant
+ *  (unregistered) room it's whoever connect_instant_hosts recorded for that room_id
+ *  (see POST /api/connect/token, which auto-registers the first joiner). */
+async function isRoomHost(userId: string, roomId: string): Promise<boolean> {
+  const { data: room } = await supabase
+    .from('connect_rooms')
+    .select('id, created_by')
+    .eq('room_id', roomId)
     .maybeSingle();
-  if (mapping) return true;
 
-  // Fallback: resolve the role id by name, in case the constant above ever drifts from the DB.
-  const { data: roleData } = await supabase
-    .from('user_roles')
-    .select('id')
-    .eq('role_name', 'smiring_member')
-    .maybeSingle();
-  if (!roleData?.id) return false;
+  if (room) {
+    if (room.created_by === userId) return true;
+    const { data } = await supabase
+      .from('connect_room_hosts')
+      .select('room_id')
+      .eq('room_id', room.id)
+      .eq('user_id', userId)
+      .maybeSingle();
+    return !!data;
+  }
 
-  const { data: fallbackMapping } = await supabase
-    .from('user_role_mappings')
-    .select('user_id')
+  const { data: instantHost } = await supabase
+    .from('connect_instant_hosts')
+    .select('room_id')
+    .eq('room_id', roomId)
     .eq('user_id', userId)
-    .eq('user_role', roleData.id)
     .maybeSingle();
-  return !!fallbackMapping;
+  return !!instantHost;
 }
 
-/** Gate for mini-room management routes: create/move-other/close all require the host grant. */
-async function requireMiniRoomHost(req: Request, res: Response, next: NextFunction) {
+/** Of the given user ids, which hold one of the internal roles (member/partner/admin) —
+ *  used for the connect/members "is_internal" flag and the create-room "内部メンバーのみ" snapshot. */
+async function getInternalUserIds(candidateIds: string[]): Promise<Set<string>> {
+  if (candidateIds.length === 0) return new Set();
+  const { data } = await supabase
+    .from('user_role_mappings')
+    .select('user_id')
+    .in('user_role', INTERNAL_ROLE_IDS)
+    .in('user_id', candidateIds);
+  return new Set((data ?? []).map((r) => r.user_id));
+}
+
+/** Gate for room-host-only actions: mini-room create/move-other/close and recording start/stop. */
+async function requireRoomHost(req: Request, res: Response, next: NextFunction) {
   try {
-    const isHost = await isSmiRingMemberHost(req.user!.id);
+    const isHost = await isRoomHost(req.user!.id, req.params.roomId as string);
     if (!isHost) {
-      return res.status(403).json({ error: 'ミニルームの操作にはホスト権限が必要です' });
+      return res.status(403).json({ error: 'この操作にはホスト権限が必要です' });
     }
     next();
   } catch (error: any) {
@@ -288,6 +316,13 @@ async function cleanupStaleRoomData(mainRoomId: string): Promise<void> {
     console.error('[Connect] Failed to delete stale chat messages:', chatError);
   }
 
+  // Instant-room host claim is only valid for the session it was made in; clear it so a
+  // reused room name lets the next joiner become its host again.
+  const { error: instantHostError } = await supabase.from('connect_instant_hosts').delete().eq('room_id', mainRoomId);
+  if (instantHostError) {
+    console.error('[Connect] Failed to delete stale instant host row:', instantHostError);
+  }
+
   const miniRooms = await getActiveMiniRooms(mainRoomId).catch((e) => {
     console.error('[Connect] Failed to list stale mini rooms:', e);
     return [] as MiniRoomRow[];
@@ -341,22 +376,51 @@ router.post('/api/connect/token', authenticate, async (req: Request, res: Respon
     const fallbackName = username?.trim() || req.user!.email?.split('@')[0] || userId;
     const token = await mintLiveKitToken(userId, room, fallbackName);
 
-    // Look up room_title if this room_id is registered in connect_rooms
+    // Look up room_title if this room_id is registered in connect_rooms, and determine
+    // whether this user holds host privileges for it (fixed meeting host list/creator,
+    // or — for an instant/unregistered room — whoever connect_instant_hosts auto-registered
+    // as its first joiner below).
     let roomTitle: string | null = null;
+    let isHost = false;
     try {
       const { data: roomData } = await supabase
         .from('connect_rooms')
-        .select('room_title')
+        .select('id, room_title, created_by')
         .eq('room_id', room)
         .maybeSingle();
-      if (roomData?.room_title) {
-        roomTitle = roomData.room_title;
+
+      if (roomData) {
+        roomTitle = roomData.room_title ?? null;
+        if (roomData.created_by === userId) {
+          isHost = true;
+        } else {
+          const { data: hostRow } = await supabase
+            .from('connect_room_hosts')
+            .select('room_id')
+            .eq('room_id', roomData.id)
+            .eq('user_id', userId)
+            .maybeSingle();
+          isHost = !!hostRow;
+        }
+      } else {
+        const { data: instantHosts } = await supabase
+          .from('connect_instant_hosts')
+          .select('user_id')
+          .eq('room_id', room);
+
+        if (!instantHosts || instantHosts.length === 0) {
+          // Nobody registered yet for this instant room — this joiner claims it.
+          await supabase.from('connect_instant_hosts').insert({ room_id: room, user_id: userId });
+          isHost = true;
+        } else {
+          isHost = instantHosts.some((h) => h.user_id === userId);
+        }
       }
     } catch (e) {
-      // Ignore DB lookup error
+      // Ignore DB lookup error — worst case, this joiner just isn't treated as host.
     }
 
-    return res.status(200).json({ token, url: LIVEKIT_URL, identity: userId, roomTitle });
+    return res.status(200).json({ token, url: LIVEKIT_URL, identity: userId, roomTitle, is_host: isHost });
   } catch (error: any) {
     console.error('[Connect] token issue failed:', error);
     return res.status(500).json({ error: error.message });
@@ -373,9 +437,76 @@ function generateDefaultRoomId(): string {
   return `${id.slice(0, 3)}-${id.slice(3, 6)}-${id.slice(6, 9)}`;
 }
 
-// GET /api/connect/rooms - List all fixed meetings
-router.get('/api/connect/rooms', authenticate, async (_req: Request, res: Response) => {
+interface ConnectMemberDirectoryEntry {
+  id: string;
+  name: string;
+  is_internal: boolean;
+  role_group: string;
+  departments: string[];
+}
+
+/** Full member directory (id, display name, internal flag, role_group, departments) —
+ *  shared by /api/connect/members (viewer/host pickers) and /api/connect/rooms (to look
+ *  up the requesting user's own role_group/departments for public-mode visibility). */
+async function getConnectMembersDirectory(): Promise<ConnectMemberDirectoryEntry[]> {
+  const { data, error } = await supabase
+    .from('basic_profile_info')
+    .select('id, name_english, name_kanji, smiring_department')
+    .order('name_english', { ascending: true });
+
+  if (error) throw error;
+
+  const rows = data ?? [];
+  const memberIds = rows.map((m) => m.id);
+  const [internalIds, { data: roleMappingRows }] = await Promise.all([
+    getInternalUserIds(memberIds),
+    supabase
+      .from('user_role_mappings')
+      .select('user_id, user_role')
+      .in(
+        'user_role',
+        MEMBER_GROUP_ROLE_IDS.map((r) => r.id),
+      )
+      .in('user_id', memberIds),
+  ]);
+
+  // 表示グループ用の代表ロール。1人が複数該当する場合は MEMBER_GROUP_ROLE_IDS の優先順で決める。
+  const roleGroupByUserId = new Map<string, string>();
+  for (const { id: roleId, group } of MEMBER_GROUP_ROLE_IDS) {
+    for (const row of roleMappingRows ?? []) {
+      if (row.user_role === roleId && !roleGroupByUserId.has(row.user_id)) {
+        roleGroupByUserId.set(row.user_id, group);
+      }
+    }
+  }
+
+  return rows.map((m) => ({
+    id: m.id,
+    name: m.name_english || m.name_kanji || m.id,
+    is_internal: internalIds.has(m.id),
+    role_group: roleGroupByUserId.get(m.id) ?? 'other',
+    departments: m.smiring_department ?? [],
+  }));
+}
+
+/** Lightweight member roster for the viewer/host pickers in the create-meeting modal.
+ *  Unlike /api/management/members this needs no `management` permission — any logged-in
+ *  user creating a fixed meeting must be able to pick teammates. */
+router.get('/api/connect/members', authenticate, async (_req: Request, res: Response) => {
   try {
+    const members = await getConnectMembersDirectory();
+    return res.status(200).json({ members });
+  } catch (error: any) {
+    console.error('[Connect] GET /api/connect/members failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/connect/rooms - List fixed meetings visible to the requesting user
+router.get('/api/connect/rooms', authenticate, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+
     const { data, error } = await supabase
       .from('connect_rooms')
       .select('*')
@@ -386,20 +517,172 @@ router.get('/api/connect/rooms', authenticate, async (_req: Request, res: Respon
       return res.status(500).json({ error: error.message });
     }
 
-    return res.status(200).json({ rooms: data ?? [] });
+    const rooms = data ?? [];
+
+    const [directory, { data: viewerRows }, { data: hostRows }, { data: roleRows }, { data: deptRows }, { data: pinRows }] =
+      await Promise.all([
+        getConnectMembersDirectory(),
+        supabase.from('connect_room_viewers').select('room_id').eq('user_id', userId),
+        supabase.from('connect_room_hosts').select('room_id').eq('user_id', userId),
+        supabase.from('connect_room_visibility_roles').select('room_id, role_group'),
+        supabase.from('connect_room_visibility_departments').select('room_id, department'),
+        supabase.from('connect_room_pins').select('room_id').eq('user_id', userId),
+      ]);
+
+    const pinnedRoomIds = new Set((pinRows ?? []).map((p) => p.room_id));
+
+    const self = directory.find((m) => m.id === userId);
+    const selfRoleGroup = self?.role_group ?? 'other';
+    const selfDepartments = new Set(self?.departments ?? []);
+
+    // private時=見られる固定名簿、public時=当てはまっていても常に除外する人、の両方に使う
+    const viewerRoomIds = new Set((viewerRows ?? []).map((v) => v.room_id));
+    const hostRoomIds = new Set((hostRows ?? []).map((h) => h.room_id));
+
+    const allowedRolesByRoom = new Map<string, Set<string>>();
+    for (const row of roleRows ?? []) {
+      if (!allowedRolesByRoom.has(row.room_id)) allowedRolesByRoom.set(row.room_id, new Set());
+      allowedRolesByRoom.get(row.room_id)!.add(row.role_group);
+    }
+    const allowedDeptsByRoom = new Map<string, Set<string>>();
+    for (const row of deptRows ?? []) {
+      if (!allowedDeptsByRoom.has(row.room_id)) allowedDeptsByRoom.set(row.room_id, new Set());
+      allowedDeptsByRoom.get(row.room_id)!.add(row.department);
+    }
+
+    const visibleRooms = rooms
+      .filter((room) => {
+        if (room.created_by === userId || hostRoomIds.has(room.id)) return true;
+
+        if (room.access_mode === 'private') {
+          return viewerRoomIds.has(room.id);
+        }
+
+        // public: 永久除外リストにいれば問答無用で見えない
+        if (viewerRoomIds.has(room.id)) return false;
+        if (room.public_all) return true;
+
+        const allowedRoles = allowedRolesByRoom.get(room.id);
+        const allowedDepts = allowedDeptsByRoom.get(room.id);
+        const roleMatches = !!allowedRoles?.has(selfRoleGroup);
+        const deptMatches = allowedDepts ? Array.from(selfDepartments).some((d) => allowedDepts.has(d)) : false;
+        return roleMatches || deptMatches;
+      })
+      .map((room) => ({
+        ...room,
+        is_host: hostRoomIds.has(room.id) || room.created_by === userId,
+        is_pinned: pinnedRoomIds.has(room.id),
+      }))
+      // ピン留め済みを先頭に。同じピン状態内では元の created_at desc 順を維持する（stable sort）
+      .sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned));
+
+    return res.status(200).json({ rooms: visibleRooms });
   } catch (error: any) {
     console.error('[Connect] GET /api/connect/rooms failed:', error);
     return res.status(500).json({ error: error.message });
   }
 });
 
+/** Fetches a connect_rooms row by its internal (table) id and checks whether userId is its
+ *  creator or a registered host. Shared by DELETE/PATCH/detail-GET — the "can manage this
+ *  specific fixed meeting" checks — as opposed to isRoomHost() above, which takes a LiveKit
+ *  room_id text and gates in-call actions (recording, mini rooms). */
+async function loadRoomForHostAction(
+  roomTableId: string,
+  userId: string,
+): Promise<{ room: any; isHost: boolean } | null> {
+  const { data: room, error } = await supabase
+    .from('connect_rooms')
+    .select('*')
+    .eq('id', roomTableId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!room) return null;
+
+  let isHost = room.created_by === userId;
+  if (!isHost) {
+    const { data: hostRow } = await supabase
+      .from('connect_room_hosts')
+      .select('room_id')
+      .eq('room_id', roomTableId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    isHost = !!hostRow;
+  }
+  return { room, isHost };
+}
+
+/** Writes the host/viewer(-or-exclude)/role/department child rows for a fixed meeting.
+ *  `viewerRows` is private-mode's fixed roster or public-mode's permanent exclude list —
+ *  same connect_room_viewers table either way (see isRoomHost's comment on that table).
+ *  Shared by create (POST) and edit (PATCH). */
+async function writeRoomChildRows(
+  roomTableId: string,
+  {
+    hostIds,
+    viewerRows,
+    roleGroups,
+    departments,
+  }: { hostIds: string[]; viewerRows: string[]; roleGroups: string[]; departments: string[] },
+): Promise<any> {
+  const inserts: PromiseLike<{ error: any }>[] = [];
+
+  if (hostIds.length > 0) {
+    inserts.push(
+      supabase.from('connect_room_hosts').insert(hostIds.map((uid) => ({ room_id: roomTableId, user_id: uid }))),
+    );
+  }
+  if (viewerRows.length > 0) {
+    inserts.push(
+      supabase
+        .from('connect_room_viewers')
+        .insert(viewerRows.map((uid) => ({ room_id: roomTableId, user_id: uid }))),
+    );
+  }
+  if (roleGroups.length > 0) {
+    inserts.push(
+      supabase
+        .from('connect_room_visibility_roles')
+        .insert(roleGroups.map((g) => ({ room_id: roomTableId, role_group: g }))),
+    );
+  }
+  if (departments.length > 0) {
+    inserts.push(
+      supabase
+        .from('connect_room_visibility_departments')
+        .insert(departments.map((d) => ({ room_id: roomTableId, department: d }))),
+    );
+  }
+
+  const results = await Promise.all(inserts);
+  return results.find((r) => r.error)?.error ?? null;
+}
+
+const ROOM_ACCESS_MODES = ['public', 'private'] as const;
+
 // POST /api/connect/rooms - Create a fixed meeting
 router.post('/api/connect/rooms', authenticate, async (req: Request, res: Response) => {
   try {
-    const { room_title, room_id: requestedRoomId } = req.body ?? {};
+    const userId = req.user!.id;
+    const {
+      room_title,
+      room_id: requestedRoomId,
+      access_mode,
+      public_all,
+      public_role_groups,
+      public_departments,
+      excluded_user_ids,
+      viewer_user_ids,
+      host_user_ids,
+      host_code,
+    } = req.body ?? {};
 
     if (!room_title || typeof room_title !== 'string' || !room_title.trim()) {
       return res.status(400).json({ error: 'ミーティング名を入力してください' });
+    }
+
+    if (!ROOM_ACCESS_MODES.includes(access_mode)) {
+      return res.status(400).json({ error: '公開/非公開の指定が不正です' });
     }
 
     let finalRoomId = requestedRoomId?.trim();
@@ -420,12 +703,25 @@ router.post('/api/connect/rooms', authenticate, async (req: Request, res: Respon
       return res.status(400).json({ error: `ルームID「${finalRoomId}」は既に登録されています` });
     }
 
-    const { data, error } = await supabase
+    const isPublic = access_mode === 'public';
+    const isPublicAll = isPublic && !!public_all;
+    const roleGroups = isPublic && !isPublicAll ? Array.from(new Set(Array.isArray(public_role_groups) ? public_role_groups : [])) : [];
+    const departments = isPublic && !isPublicAll ? Array.from(new Set(Array.isArray(public_departments) ? public_departments : [])) : [];
+    // private時は「見られる固定名簿」、public時は「当てはまっていても常に除外する人」として同じ connect_room_viewers を使う
+    const viewerRows = isPublic
+      ? Array.from(new Set(Array.isArray(excluded_user_ids) ? excluded_user_ids : []))
+      : Array.from(new Set(Array.isArray(viewer_user_ids) ? viewer_user_ids : []));
+
+    const { data: room, error } = await supabase
       .from('connect_rooms')
       .insert([
         {
           room_id: finalRoomId,
           room_title: room_title.trim(),
+          access_mode,
+          public_all: isPublicAll,
+          host_code: typeof host_code === 'string' && host_code.trim() ? host_code.trim() : null,
+          created_by: userId,
         },
       ])
       .select()
@@ -436,19 +732,42 @@ router.post('/api/connect/rooms', authenticate, async (req: Request, res: Respon
       return res.status(500).json({ error: error.message });
     }
 
-    return res.status(201).json({ room: data });
+    // 自分は必ずホストに含める
+    const hostIds = Array.from(new Set([userId, ...(Array.isArray(host_user_ids) ? host_user_ids : [])]));
+
+    const childError = await writeRoomChildRows(room.id, { hostIds, viewerRows, roleGroups, departments }).catch(
+      (e) => e,
+    );
+    if (childError) {
+      console.error('[Connect] Failed to insert room viewer/host/visibility rows, rolling back room:', childError);
+      await supabase.from('connect_rooms').delete().eq('id', room.id);
+      return res.status(500).json({ error: '固定ミーティングの作成に失敗しました' });
+    }
+
+    return res.status(201).json({ room: { ...room, is_host: true } });
   } catch (error: any) {
     console.error('[Connect] POST /api/connect/rooms failed:', error);
     return res.status(500).json({ error: error.message });
   }
 });
 
-// DELETE /api/connect/rooms/:id - Delete a fixed meeting
+// DELETE /api/connect/rooms/:id - Delete a fixed meeting (creator or host only)
 router.delete('/api/connect/rooms/:id', authenticate, async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
+    const userId = req.user!.id;
     if (!id) {
       return res.status(400).json({ error: 'IDが指定されていません' });
+    }
+
+    const loaded = await loadRoomForHostAction(id, userId).catch((e) => {
+      throw e;
+    });
+    if (!loaded) {
+      return res.status(404).json({ error: 'ミーティングが見つかりません' });
+    }
+    if (!loaded.isHost) {
+      return res.status(403).json({ error: 'このミーティングを削除できるのは作成者かホストのみです' });
     }
 
     const { error } = await supabase
@@ -464,6 +783,171 @@ router.delete('/api/connect/rooms/:id', authenticate, async (req: Request, res: 
     return res.status(200).json({ success: true });
   } catch (error: any) {
     console.error('[Connect] DELETE /api/connect/rooms/:id failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/rooms/:id/pin - Pin a fixed meeting for myself (personal, doesn't affect others)
+router.post('/api/connect/rooms/:id/pin', authenticate, async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const userId = req.user!.id;
+    const { error } = await supabase
+      .from('connect_room_pins')
+      .upsert({ room_id: id, user_id: userId }, { onConflict: 'room_id,user_id', ignoreDuplicates: true });
+
+    if (error) {
+      console.error('[Connect] Failed to pin room:', error);
+      return res.status(500).json({ error: error.message });
+    }
+    return res.status(200).json({ success: true });
+  } catch (error: any) {
+    console.error('[Connect] POST /api/connect/rooms/:id/pin failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /api/connect/rooms/:id/pin - Unpin a fixed meeting for myself
+router.delete('/api/connect/rooms/:id/pin', authenticate, async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const userId = req.user!.id;
+    const { error } = await supabase
+      .from('connect_room_pins')
+      .delete()
+      .eq('room_id', id)
+      .eq('user_id', userId);
+
+    if (error) {
+      console.error('[Connect] Failed to unpin room:', error);
+      return res.status(500).json({ error: error.message });
+    }
+    return res.status(200).json({ success: true });
+  } catch (error: any) {
+    console.error('[Connect] DELETE /api/connect/rooms/:id/pin failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/connect/rooms/:id/detail - Full editable detail for the edit modal (host only)
+router.get('/api/connect/rooms/:id/detail', authenticate, async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const userId = req.user!.id;
+
+    const loaded = await loadRoomForHostAction(id, userId);
+    if (!loaded) {
+      return res.status(404).json({ error: 'ミーティングが見つかりません' });
+    }
+    if (!loaded.isHost) {
+      return res.status(403).json({ error: 'この操作にはホスト権限が必要です' });
+    }
+
+    const [{ data: viewerRows }, { data: hostRows }, { data: roleRows }, { data: deptRows }] = await Promise.all([
+      supabase.from('connect_room_viewers').select('user_id').eq('room_id', id),
+      supabase.from('connect_room_hosts').select('user_id').eq('room_id', id),
+      supabase.from('connect_room_visibility_roles').select('role_group').eq('room_id', id),
+      supabase.from('connect_room_visibility_departments').select('department').eq('room_id', id),
+    ]);
+
+    return res.status(200).json({
+      id: loaded.room.id,
+      room_title: loaded.room.room_title,
+      room_id: loaded.room.room_id,
+      access_mode: loaded.room.access_mode,
+      public_all: loaded.room.public_all,
+      host_code: loaded.room.host_code,
+      role_groups: (roleRows ?? []).map((r) => r.role_group),
+      departments: (deptRows ?? []).map((d) => d.department),
+      viewer_user_ids: (viewerRows ?? []).map((v) => v.user_id),
+      host_user_ids: (hostRows ?? []).map((h) => h.user_id),
+    });
+  } catch (error: any) {
+    console.error('[Connect] GET /api/connect/rooms/:id/detail failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// PATCH /api/connect/rooms/:id - Update a fixed meeting (host only). room_id (the LiveKit
+// room name) is intentionally not editable — changing it would break existing shared links.
+router.patch('/api/connect/rooms/:id', authenticate, async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const userId = req.user!.id;
+    const {
+      room_title,
+      access_mode,
+      public_all,
+      public_role_groups,
+      public_departments,
+      excluded_user_ids,
+      viewer_user_ids,
+      host_user_ids,
+      host_code,
+    } = req.body ?? {};
+
+    if (!room_title || typeof room_title !== 'string' || !room_title.trim()) {
+      return res.status(400).json({ error: 'ミーティング名を入力してください' });
+    }
+    if (!ROOM_ACCESS_MODES.includes(access_mode)) {
+      return res.status(400).json({ error: '公開/非公開の指定が不正です' });
+    }
+
+    const loaded = await loadRoomForHostAction(id, userId);
+    if (!loaded) {
+      return res.status(404).json({ error: 'ミーティングが見つかりません' });
+    }
+    if (!loaded.isHost) {
+      return res.status(403).json({ error: 'この操作にはホスト権限が必要です' });
+    }
+
+    const isPublic = access_mode === 'public';
+    const isPublicAll = isPublic && !!public_all;
+    const roleGroups = isPublic && !isPublicAll ? Array.from(new Set(Array.isArray(public_role_groups) ? public_role_groups : [])) : [];
+    const departments = isPublic && !isPublicAll ? Array.from(new Set(Array.isArray(public_departments) ? public_departments : [])) : [];
+    const viewerRows = isPublic
+      ? Array.from(new Set(Array.isArray(excluded_user_ids) ? excluded_user_ids : []))
+      : Array.from(new Set(Array.isArray(viewer_user_ids) ? viewer_user_ids : []));
+    const hostIds = Array.from(new Set([userId, ...(Array.isArray(host_user_ids) ? host_user_ids : [])]));
+
+    const { data: room, error } = await supabase
+      .from('connect_rooms')
+      .update({
+        room_title: room_title.trim(),
+        access_mode,
+        public_all: isPublicAll,
+        host_code: typeof host_code === 'string' && host_code.trim() ? host_code.trim() : null,
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[Connect] Failed to update connect_rooms:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    const [delViewers, delHosts, delRoles, delDepts] = await Promise.all([
+      supabase.from('connect_room_viewers').delete().eq('room_id', id),
+      supabase.from('connect_room_hosts').delete().eq('room_id', id),
+      supabase.from('connect_room_visibility_roles').delete().eq('room_id', id),
+      supabase.from('connect_room_visibility_departments').delete().eq('room_id', id),
+    ]);
+    const delError = [delViewers, delHosts, delRoles, delDepts].find((r) => r.error)?.error;
+    if (delError) {
+      console.error('[Connect] Failed to clear room child rows before rewrite:', delError);
+      return res.status(500).json({ error: '固定ミーティングの更新に失敗しました' });
+    }
+
+    const childError = await writeRoomChildRows(id, { hostIds, viewerRows, roleGroups, departments });
+    if (childError) {
+      console.error('[Connect] Failed to rewrite room child rows:', childError);
+      return res.status(500).json({ error: '固定ミーティングの更新に失敗しました' });
+    }
+
+    return res.status(200).json({ room: { ...room, is_host: true } });
+  } catch (error: any) {
+    console.error('[Connect] PATCH /api/connect/rooms/:id failed:', error);
     return res.status(500).json({ error: error.message });
   }
 });
@@ -615,7 +1099,7 @@ router.get('/api/connect/rooms/:roomId/miniroom', authenticate, async (req: Requ
 router.post(
   '/api/connect/rooms/:roomId/miniroom',
   authenticate,
-  requireMiniRoomHost,
+  requireRoomHost,
   async (req: Request, res: Response) => {
     try {
       const { roomId } = req.params;
@@ -703,7 +1187,7 @@ router.post(
 router.get(
   '/api/connect/rooms/:roomId/miniroom/participants',
   authenticate,
-  requireMiniRoomHost,
+  requireRoomHost,
   async (req: Request, res: Response) => {
     try {
       const { roomId } = req.params;
@@ -790,7 +1274,7 @@ router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req
 
     const userId = req.user!.id;
     const isSelfMove = targetIdentity === userId;
-    const isHost = await isSmiRingMemberHost(userId);
+    const isHost = await isRoomHost(userId, roomId);
 
     if (isSelfMove) {
       // Returning to the main room is always allowed; joining a mini room yourself
@@ -859,7 +1343,7 @@ router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req
 router.post(
   '/api/connect/rooms/:roomId/miniroom/close',
   authenticate,
-  requireMiniRoomHost,
+  requireRoomHost,
   async (req: Request, res: Response) => {
     try {
       const { roomId } = req.params;
@@ -959,7 +1443,7 @@ router.post(
 router.post(
   '/api/connect/rooms/:roomId/recording/start',
   authenticate,
-  requirePermission('connect_recording', 'write'),
+  requireRoomHost,
   async (req: Request, res: Response) => {
     const roomId = req.params.roomId;
     if (!isValidRoomName(roomId)) {
@@ -1040,7 +1524,7 @@ router.post(
 router.post(
   '/api/connect/rooms/:roomId/recording/stop',
   authenticate,
-  requirePermission('connect_recording', 'write'),
+  requireRoomHost,
   async (req: Request, res: Response) => {
     const roomId = req.params.roomId;
     if (!isValidRoomName(roomId)) {

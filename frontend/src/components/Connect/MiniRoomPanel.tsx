@@ -74,7 +74,7 @@ export default function MiniRoomPanel({ isOpen, onClose, isHost, mainRoomId, min
         </button>
 
         <div className="flex items-center gap-3 pr-6">
-          <div className="w-11 h-11 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
+          <div className="w-11 h-11 rounded-2xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0">
             <DoorOpen className="w-5 h-5" />
           </div>
           <div>
@@ -172,7 +172,7 @@ function HostManagementView({
         <button
           onClick={handleAddRoom}
           disabled={adding || !newRoomName.trim()}
-          className="p-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white transition-colors shrink-0"
+          className="p-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white transition-colors shrink-0"
           title="ルームを追加"
         >
           <Plus className="w-4 h-4" />
@@ -184,7 +184,7 @@ function HostManagementView({
           type="checkbox"
           checked={allowSelfAssignDraft}
           onChange={(e) => setAllowSelfAssignDraft(e.target.checked)}
-          className="mt-0.5 w-3.5 h-3.5 rounded accent-indigo-500"
+          className="mt-0.5 w-3.5 h-3.5 rounded accent-sky-500"
         />
         <span className="text-xs text-gray-300 leading-relaxed">
           参加者が自分で入るルームを選べるようにする（次にルームを追加した時に反映されます）
@@ -278,7 +278,7 @@ function ParticipantPickerView({
             >
               <span>{room.name}へ参加</span>
               {miniRooms.currentRoomId === room.id && (
-                <span className="text-[10px] font-bold text-indigo-400">現在ここ</span>
+                <span className="text-[10px] font-bold text-sky-400">現在ここ</span>
               )}
             </button>
           ))}

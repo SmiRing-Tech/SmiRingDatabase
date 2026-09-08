@@ -27,7 +27,7 @@ function renderMessageContent(text: string, isMe: boolean) {
       <div
         className={`${chatContentStyles} ${
           isMe
-            ? 'text-indigo-100 prose-invert prose-headings:text-white prose-p:text-indigo-100 prose-strong:text-white prose-strong:font-extrabold'
+            ? 'text-sky-100 prose-invert prose-headings:text-white prose-p:text-sky-100 prose-strong:text-white prose-strong:font-extrabold'
             : 'text-gray-200 prose-strong:text-white prose-strong:font-extrabold'
         }`}
         dangerouslySetInnerHTML={{ __html: text }}
@@ -48,8 +48,8 @@ function renderMessageContent(text: string, isMe: boolean) {
               rel="noopener noreferrer"
               className={`underline break-all font-semibold transition-colors ${
                 isMe
-                  ? 'text-indigo-200 hover:text-white'
-                  : 'text-indigo-400 hover:text-indigo-300'
+                  ? 'text-sky-200 hover:text-white'
+                  : 'text-sky-400 hover:text-sky-300'
               }`}
               onClick={(e) => e.stopPropagation()}
             >
@@ -246,7 +246,7 @@ export default function AdvancedChat({
   // tab bar reads at a glance instead of every non-broadcast thread looking the same.
   const renderThreadIcon = (t: ChatThread, sizeClass: string) => {
     if (t.isEveryone) {
-      return <Users className={`${sizeClass} text-indigo-400 shrink-0`} />;
+      return <Users className={`${sizeClass} text-sky-400 shrink-0`} />;
     }
     if (t.participantIdentities.length > 1) {
       return <UsersRound className={`${sizeClass} text-emerald-400 shrink-0`} />;
@@ -341,7 +341,7 @@ export default function AdvancedChat({
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0 ml-2">
                         {member.isSelf && (
-                          <span className="text-[10px] text-indigo-400 bg-indigo-950/60 border border-indigo-800/50 px-1 rounded font-medium">
+                          <span className="text-[10px] text-sky-400 bg-sky-950/60 border border-sky-800/50 px-1 rounded font-medium">
                             自分
                           </span>
                         )}
@@ -363,7 +363,7 @@ export default function AdvancedChat({
         {/* New DM Button */}
         <button
           onClick={() => setShowNewDmModal(true)}
-          className="flex items-center gap-1 px-2.5 py-1 bg-indigo-600/90 hover:bg-indigo-600 text-white rounded-lg text-xs font-semibold shadow-sm transition-all active:scale-95 shrink-0"
+          className="flex items-center gap-1 px-2.5 py-1 bg-sky-500/90 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-all active:scale-95 shrink-0"
           title="個別・グループDMを作成"
         >
           <Plus className="w-3.5 h-3.5" />
@@ -403,7 +403,7 @@ export default function AdvancedChat({
           <div className="w-full max-w-sm bg-gray-900 border border-gray-700/80 rounded-2xl p-4 shadow-2xl space-y-4">
             <div className="flex items-center justify-between border-b border-gray-800 pb-2.5">
               <div className="flex items-center gap-2">
-                <MessageSquare className="w-4 h-4 text-indigo-400" />
+                <MessageSquare className="w-4 h-4 text-sky-400" />
                 <h4 className="font-bold text-sm text-gray-100">DMの宛先を選択</h4>
               </div>
               <button
@@ -436,7 +436,7 @@ export default function AdvancedChat({
                       onClick={() => handleToggleParticipant(p.identity)}
                       className={`w-full flex items-center justify-between p-2 rounded-xl text-xs transition-colors border ${
                         isSelected
-                          ? 'bg-indigo-600/20 border-indigo-500/50 text-white'
+                          ? 'bg-sky-500/20 border-sky-500/50 text-white'
                           : 'bg-gray-800/60 border-transparent text-gray-300 hover:bg-gray-800'
                       }`}
                     >
@@ -457,7 +457,7 @@ export default function AdvancedChat({
                       <div
                         className={`w-4 h-4 rounded-md border flex items-center justify-center ${
                           isSelected
-                            ? 'bg-indigo-600 border-indigo-500 text-white'
+                            ? 'bg-sky-500 border-sky-500 text-white'
                             : 'border-gray-600'
                         }`}
                       >
@@ -473,7 +473,7 @@ export default function AdvancedChat({
               <button
                 disabled={selectedParticipants.length === 0}
                 onClick={handleStartDm}
-                className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white font-bold text-xs rounded-xl shadow transition-all active:scale-95"
+                className="flex-1 py-2 bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:hover:bg-sky-500 text-white font-bold text-xs rounded-xl shadow transition-all active:scale-95"
               >
                 チャットを開始 ({selectedParticipants.length})
               </button>
@@ -539,7 +539,7 @@ export default function AdvancedChat({
                     <div
                       className={`px-3 py-2 rounded-2xl text-xs break-words whitespace-pre-wrap leading-relaxed shadow-sm select-text ${
                         isMe
-                          ? 'bg-indigo-600 text-white rounded-br-xs'
+                          ? 'bg-sky-500 text-white rounded-br-xs'
                           : 'bg-gray-800 text-gray-100 rounded-bl-xs border border-gray-700/60'
                       }`}
                     >

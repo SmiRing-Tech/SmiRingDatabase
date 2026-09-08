@@ -12,7 +12,7 @@ export default function BackgroundControls({ state }: { state: BackgroundEffectS
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <ImageIcon className="w-4 h-4 text-indigo-400" />
+            <ImageIcon className="w-4 h-4 text-sky-400" />
             <div>
               <p className="text-xs font-bold text-gray-200">背景エフェクト</p>
               <p className="text-[10px] text-gray-400">ぼかし / 画像で背景を差し替え</p>
@@ -32,11 +32,11 @@ export default function BackgroundControls({ state }: { state: BackgroundEffectS
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 pr-6">
-        <ImageIcon className="w-4 h-4 text-indigo-400" />
+        <ImageIcon className="w-4 h-4 text-sky-400" />
         <div className="flex-1">
           <p className="text-xs font-bold text-gray-200">背景エフェクト</p>
         </div>
-        {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />}
+        {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-400" />}
       </div>
 
       {/* なし / ぼかし / プリセット画像 / アップロード画像 / 追加、を1つの選択肢一覧に */}
@@ -46,7 +46,7 @@ export default function BackgroundControls({ state }: { state: BackgroundEffectS
           disabled={busy}
           title="なし"
           className={`relative aspect-video rounded-lg overflow-hidden border-2 transition disabled:opacity-50 flex flex-col items-center justify-center gap-1 bg-gray-800/60 ${
-            isSelected('off') ? 'border-indigo-400' : 'border-transparent hover:border-gray-600'
+            isSelected('off') ? 'border-sky-400' : 'border-transparent hover:border-gray-600'
           }`}
         >
           <Ban className="w-4 h-4 text-gray-400" />
@@ -58,7 +58,7 @@ export default function BackgroundControls({ state }: { state: BackgroundEffectS
           disabled={busy}
           title="ぼかし"
           className={`relative aspect-video rounded-lg overflow-hidden border-2 transition disabled:opacity-50 flex flex-col items-center justify-center gap-1 bg-gray-800/60 ${
-            isSelected('blur') ? 'border-indigo-400' : 'border-transparent hover:border-gray-600'
+            isSelected('blur') ? 'border-sky-400' : 'border-transparent hover:border-gray-600'
           }`}
         >
           <Droplets className="w-4 h-4 text-gray-400" />
@@ -72,7 +72,7 @@ export default function BackgroundControls({ state }: { state: BackgroundEffectS
             disabled={busy}
             title={preset.label}
             className={`relative aspect-video rounded-lg overflow-hidden border-2 transition disabled:opacity-50 ${
-              isSelected(preset.id) ? 'border-indigo-400' : 'border-transparent hover:border-gray-600'
+              isSelected(preset.id) ? 'border-sky-400' : 'border-transparent hover:border-gray-600'
             }`}
           >
             <img src={preset.url} alt={preset.label} className="w-full h-full object-cover" />
@@ -83,7 +83,7 @@ export default function BackgroundControls({ state }: { state: BackgroundEffectS
           <div
             key={upload.id}
             className={`relative aspect-video rounded-lg overflow-hidden border-2 group ${
-              isSelected(upload.id) ? 'border-indigo-400' : 'border-transparent hover:border-gray-600'
+              isSelected(upload.id) ? 'border-sky-400' : 'border-transparent hover:border-gray-600'
             }`}
           >
             <button
@@ -108,7 +108,7 @@ export default function BackgroundControls({ state }: { state: BackgroundEffectS
           onClick={() => fileInputRef.current?.click()}
           disabled={busy}
           title="画像をアップロード"
-          className="aspect-video rounded-lg border-2 border-dashed border-gray-700 text-gray-500 hover:border-indigo-400 hover:text-indigo-300 transition flex items-center justify-center disabled:opacity-50"
+          className="aspect-video rounded-lg border-2 border-dashed border-gray-700 text-gray-500 hover:border-sky-400 hover:text-sky-300 transition flex items-center justify-center disabled:opacity-50"
         >
           <Plus className="w-4 h-4" />
         </button>

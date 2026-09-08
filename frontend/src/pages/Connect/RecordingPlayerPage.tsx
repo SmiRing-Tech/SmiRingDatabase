@@ -64,7 +64,7 @@ export default function RecordingPlayerPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 px-4 py-8 md:px-8">
+    <div className="min-h-screen bg-gradient-to-br from-sky-50 via-white to-blue-50 px-4 py-8 md:px-8">
       <div className="max-w-5xl mx-auto space-y-6">
         <div className="flex items-center justify-between gap-4">
           <button
@@ -100,7 +100,7 @@ export default function RecordingPlayerPage() {
 
         {!recording && !error && (
           <div className="flex justify-center py-32">
-            <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
+            <Loader2 className="w-8 h-8 animate-spin text-sky-600" />
           </div>
         )}
 

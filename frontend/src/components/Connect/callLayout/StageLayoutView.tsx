@@ -166,7 +166,7 @@ function StageTile({ track, isPinned, onTogglePin }: StageTileProps) {
               type="button"
               onClick={reset}
               title="等倍に戻す"
-              className="rounded-lg p-1.5 text-indigo-300 transition-colors hover:bg-gray-800 active:scale-95"
+              className="rounded-lg p-1.5 text-sky-300 transition-colors hover:bg-gray-800 active:scale-95"
             >
               <Minimize2 className="h-4 w-4" />
             </button>

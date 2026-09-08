@@ -26,7 +26,7 @@ export const chatContentStyles =
   'prose-ul:my-1 prose-ul:pl-4 prose-ul:list-disc ' +
   'prose-ol:my-1 prose-ol:pl-4 prose-ol:list-decimal ' +
   'prose-li:my-0.5 ' +
-  'prose-code:bg-gray-800/90 prose-code:text-indigo-300 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-[11px] prose-code:font-mono prose-code:before:content-none prose-code:after:content-none';
+  'prose-code:bg-gray-800/90 prose-code:text-sky-300 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-[11px] prose-code:font-mono prose-code:before:content-none prose-code:after:content-none';
 
 export default function ChatRichEditor({
   onSend,
@@ -116,7 +116,7 @@ export default function ChatRichEditor({
   if (!editor) return null;
 
   return (
-    <div className="flex flex-col bg-gray-900 border border-gray-700/90 rounded-xl overflow-hidden transition-colors focus-within:border-indigo-500">
+    <div className="flex flex-col bg-gray-900 border border-gray-700/90 rounded-xl overflow-hidden transition-colors focus-within:border-sky-500">
       {/* Editor Content Area */}
       <EditorContent editor={editor} className="select-text" />
 
@@ -132,7 +132,7 @@ export default function ChatRichEditor({
             }}
             className={`p-1 rounded-md transition-all ${
               editor.isActive('bold')
-                ? 'bg-indigo-600 text-white font-bold shadow-xs'
+                ? 'bg-sky-500 text-white font-bold shadow-xs'
                 : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
             }`}
             title="太字 (Cmd/Ctrl + B)"
@@ -148,7 +148,7 @@ export default function ChatRichEditor({
             }}
             className={`p-1 rounded-md transition-all ${
               editor.isActive('italic')
-                ? 'bg-indigo-600 text-white font-bold shadow-xs'
+                ? 'bg-sky-500 text-white font-bold shadow-xs'
                 : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
             }`}
             title="斜体 (Cmd/Ctrl + I)"
@@ -164,7 +164,7 @@ export default function ChatRichEditor({
             }}
             className={`p-1 rounded-md transition-all ${
               editor.isActive('heading', { level: 3 })
-                ? 'bg-indigo-600 text-white font-bold shadow-xs'
+                ? 'bg-sky-500 text-white font-bold shadow-xs'
                 : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
             }`}
             title="見出し"
@@ -182,7 +182,7 @@ export default function ChatRichEditor({
             }}
             className={`p-1 rounded-md transition-all ${
               editor.isActive('bulletList')
-                ? 'bg-indigo-600 text-white font-bold shadow-xs'
+                ? 'bg-sky-500 text-white font-bold shadow-xs'
                 : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
             }`}
             title="箇条書きリスト"
@@ -198,7 +198,7 @@ export default function ChatRichEditor({
             }}
             className={`p-1 rounded-md transition-all ${
               editor.isActive('orderedList')
-                ? 'bg-indigo-600 text-white font-bold shadow-xs'
+                ? 'bg-sky-500 text-white font-bold shadow-xs'
                 : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
             }`}
             title="番号付きリスト"
@@ -214,7 +214,7 @@ export default function ChatRichEditor({
             }}
             className={`p-1 rounded-md transition-all ${
               editor.isActive('code')
-                ? 'bg-indigo-600 text-white font-bold shadow-xs'
+                ? 'bg-sky-500 text-white font-bold shadow-xs'
                 : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
             }`}
             title="インラインコード"
@@ -232,7 +232,7 @@ export default function ChatRichEditor({
             type="button"
             disabled={isEmpty || disabled}
             onClick={handleSendSubmit}
-            className="p-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-30 disabled:hover:bg-indigo-600 text-white rounded-lg shadow-sm transition-all active:scale-95"
+            className="p-1.5 bg-sky-500 hover:bg-sky-400 disabled:opacity-30 disabled:hover:bg-sky-500 text-white rounded-lg shadow-sm transition-all active:scale-95"
             title="送信 (Enter)"
           >
             <Send className="w-3 h-3" />
