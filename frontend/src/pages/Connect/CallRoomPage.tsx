@@ -61,7 +61,6 @@ import {
   DoorOpen,
   Ban,
   Droplets,
-  Circle,
   CircleDot,
   StopCircle,
   Image as ImageIcon,
