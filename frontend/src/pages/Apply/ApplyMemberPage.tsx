@@ -119,7 +119,7 @@ export default function ApplyMemberPage() {
         icon={<CheckCircle2 className="w-9 h-9 text-emerald-500" />}
         iconBg="bg-emerald-50"
         title="すでに承認済みです"
-        message={<>あなたはすでにSmiRingの内部運営メンバー／協力者として登録されています。</>}
+        message={<>あなたはすでにSmiRingの内部運営メンバー／サポーターとして登録されています。</>}
         onHome={goHome}
       />
     );
@@ -131,7 +131,7 @@ export default function ApplyMemberPage() {
         icon={<Clock className="w-9 h-9 text-sky-500" />}
         iconBg="bg-sky-50"
         title={pageState === 'submitted' ? '申請を送信しました' : 'すでに申請済みです'}
-        message={<>管理者の承認をお待ちください。承認されると、SmiRing内部運営メンバー（または協力者）としての機能が使えるようになります。</>}
+        message={<>管理者の承認をお待ちください。承認されると、SmiRingのメンバーとして活動できるようになります。</>}
         onHome={goHome}
       />
     );
@@ -143,7 +143,7 @@ export default function ApplyMemberPage() {
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 md:p-8">
           <h1 className="text-lg font-black text-gray-900">SmiRingメンバー申請</h1>
           <p className="text-sm text-gray-400 mt-1 mb-6">
-            SmiRingの運営に関わっている方・関わりたい方はこちらから申請してください。
+            SmiRingの運営メンバーまたはサポーターへの申請はこちらから。
           </p>
 
           <form onSubmit={handleSubmit} className="space-y-6">
@@ -153,15 +153,15 @@ export default function ApplyMemberPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <RoleOptionCard
                   icon={<Users className="w-5 h-5" />}
-                  label="SmiRing内部運営メンバー"
-                  description="SmiRingの運営チームの一員として活動しています"
+                  label="SmiRing本部運営メンバー"
+                  description="SmiRing本部の運営チームの一員として活動していきます"
                   selected={requestedRole === 'smiring_member'}
                   onClick={() => setRequestedRole('smiring_member')}
                 />
                 <RoleOptionCard
                   icon={<Building2 className="w-5 h-5" />}
-                  label="外部協力者"
-                  description="団体外から特定の形でSmiRingに関わっています"
+                  label="SmiRingサポーター"
+                  description="特定のイベントやプロジェクトでSmiRingに関わっていきます"
                   selected={requestedRole === 'partner'}
                   onClick={() => setRequestedRole('partner')}
                 />
@@ -170,7 +170,7 @@ export default function ApplyMemberPage() {
 
             {requestedRole === 'smiring_member' ? (
               <div className="space-y-2">
-                <h3 className="text-sm font-bold text-gray-700">希望部署（複数選択可）</h3>
+                <h3 className="text-sm font-bold text-gray-700">配属部署（複数選択可）</h3>
                 <CustomDropdown
                   multiple
                   searchable
@@ -182,12 +182,12 @@ export default function ApplyMemberPage() {
               </div>
             ) : (
               <div className="space-y-2">
-                <h3 className="text-sm font-bold text-gray-700">どのように関わっていますか？</h3>
+                <h3 className="text-sm font-bold text-gray-700">どのように関わっていきますか？</h3>
                 <textarea
                   value={description}
                   onChange={e => setDescription(e.target.value)}
                   rows={4}
-                  placeholder="例: 留学祭のスポンサー窓口を担当しています"
+                  placeholder="例: 留学祭のスポンサー窓口を担当します"
                   className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm
                              focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-400 focus:bg-white
                              transition-all duration-200 placeholder:text-gray-300 resize-none"

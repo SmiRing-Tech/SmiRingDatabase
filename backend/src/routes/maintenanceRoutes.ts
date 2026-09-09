@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { cleanupStaleTempRecordings } from '../lib/recording';
+import { supabase } from '../lib/supabase';
 
 const router = Router();
 
@@ -37,8 +38,21 @@ async function runHourlyTasks() {
   );
 }
 
+/**
+ * connect_room_waitlist の掃除。pending/left/admitted/denied を問わず、作られてから24時間
+ * 経った行はそのルームが疾うに終わっている前提で消してよい（ハートビートによる 'left' 判定
+ * は connectRoutes.ts の GET .../waitlist 側でリアルタイムに行っており、ここはその後始末）。
+ */
+async function cleanupStaleWaitlistRows() {
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const { error } = await supabase.from('connect_room_waitlist').delete().lt('created_at', cutoff);
+  if (error) throw error;
+}
+
 async function runDailyTasks() {
-  // TODO: 1日ごとにやりたい処理をここに実装する
+  await cleanupStaleWaitlistRows().catch((e) =>
+    console.error('[Maintenance] cleanupStaleWaitlistRows failed:', e),
+  );
 }
 
 router.post('/api/maintenance/tick', async (req: Request, res: Response) => {

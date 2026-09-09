@@ -10,7 +10,7 @@ import {
   useBackgroundLibrary,
   readStoredChoice,
   writeStoredChoice,
-  isMobileDevice,
+  detectSegmentationQuality,
   type BackgroundMode,
 } from './backgroundLibrary';
 
@@ -39,14 +39,17 @@ export function useBackgroundEffect() {
   const [mode, setMode] = useState<BackgroundMode>(stored.mode);
   const [imageId, setImageId] = useState<string | undefined>(stored.imageId);
   // Starts at whatever the track already has attached (e.g. PreJoin already
-  // upgraded it to 'high' before publish) so this hook doesn't ping-pong the
-  // quality back down to 'balanced' the moment it takes over. See the
-  // auto-upgrade effect below for how a fresh track gets from 'balanced' to
-  // 'high' in the first place.
-  const [quality, setQuality] = useState<SegmentationQuality>(() => {
+  // picked a quality before publish) so this hook doesn't rebuild the
+  // processor at a different quality the moment it takes over. Otherwise the
+  // stored manual override, or a fresh capability-based guess — see
+  // detectSegmentationQuality(). There is no runtime upgrade path (see
+  // MediapipeBackgroundProcessor.init()'s doc comment for why not: only one
+  // segmenter may be alive at a time).
+  const [quality, setQualityState] = useState<SegmentationQuality>(() => {
     const publication = localParticipant.getTrackPublication(Track.Source.Camera);
     const existing = (publication?.track as LocalVideoTrack | undefined)?.getProcessor();
-    return existing instanceof MediapipeBackgroundProcessor ? existing.quality : 'balanced';
+    if (existing instanceof MediapipeBackgroundProcessor) return existing.quality;
+    return stored.quality ?? detectSegmentationQuality();
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -102,6 +105,16 @@ export function useBackgroundEffect() {
         return;
       }
 
+      // Different quality means a whole new processor, which means a new
+      // segmenter load. MediaPipe's tasks-vision WASM build pools GPU buffers
+      // globally rather than scoping them per ImageSegmenter instance, so two
+      // segmenters alive at once corrupt each other's GL state — stop the old
+      // one *before* building the new one, not after (letting setProcessor()
+      // build the replacement first and tear down the old one internally is
+      // exactly the ordering that leaves both alive simultaneously for a
+      // moment). See MediapipeBackgroundProcessor.init()'s doc comment.
+      if (track.getProcessor()) await track.stopProcessor();
+
       const processor = new MediapipeBackgroundProcessor({
         quality: nextQuality,
         mode: nextMode === 'image' ? 'image' : 'blur',
@@ -112,7 +125,6 @@ export function useBackgroundEffect() {
         matteLo: 0.3,
         matteHi: 0.75,
       });
-      if (track.getProcessor()) await track.stopProcessor();
       await track.setProcessor(processor);
       processorRef.current = processor;
     },
@@ -130,7 +142,7 @@ export function useBackgroundEffect() {
         await applyEffect(nextMode, nextImageId, quality);
         setMode(nextMode);
         setImageId(nextImageId);
-        writeStoredChoice({ mode: nextMode, imageId: nextImageId });
+        writeStoredChoice({ mode: nextMode, imageId: nextImageId, quality });
       } catch (e) {
         console.error('[Connect] failed to apply background effect:', e);
         setError(e instanceof Error ? e.message : '背景の適用に失敗しました');
@@ -141,22 +153,15 @@ export function useBackgroundEffect() {
     [applyEffect, mode, imageId, quality],
   );
 
-  // The camera track may be published after this mounts (joined with the camera
-  // off, or switched devices), so re-apply whenever a new one shows up. Once
-  // that succeeds, also try upgrading a fresh 'balanced' processor up to
-  // 'high' — skipped on mobile (see isMobileDevice) — so people see the
-  // effect instantly and only pay for the bigger model in the background.
+  // The camera track may be published after this mounts (joined with the
+  // camera off, or switched devices), so re-apply whenever a new one shows up.
   useEffect(() => {
     if (!supported || mode === 'off') return;
 
     const reapply = () => {
-      void applyEffect(mode, imageId, quality)
-        .then(() => {
-          if (quality === 'balanced' && !isMobileDevice()) {
-            return applyEffect(mode, imageId, 'high').then(() => setQuality('high'));
-          }
-        })
-        .catch((e) => console.error('[Connect] failed to re-apply background effect:', e));
+      void applyEffect(mode, imageId, quality).catch((e) =>
+        console.error('[Connect] failed to re-apply background effect:', e),
+      );
     };
 
     reapply();
@@ -176,7 +181,7 @@ export function useBackgroundEffect() {
         await applyEffect('image', uploaded.id, quality);
         setMode('image');
         setImageId(uploaded.id);
-        writeStoredChoice({ mode: 'image', imageId: uploaded.id });
+        writeStoredChoice({ mode: 'image', imageId: uploaded.id, quality });
       } catch (e) {
         console.error('[Connect] background upload failed:', e);
         setError(e instanceof Error ? e.message : 'アップロードに失敗しました');
@@ -198,7 +203,7 @@ export function useBackgroundEffect() {
           await applyEffect('blur', undefined, quality);
           setMode('blur');
           setImageId(undefined);
-          writeStoredChoice({ mode: 'blur' });
+          writeStoredChoice({ mode: 'blur', quality });
         }
       } catch (e) {
         console.error('[Connect] background delete failed:', e);
@@ -210,6 +215,25 @@ export function useBackgroundEffect() {
     [applyEffect, deleteBackground, imageId, quality],
   );
 
+  /** The manual Balanced/High toggle — see BackgroundControls. */
+  const setQuality = useCallback(
+    async (nextQuality: SegmentationQuality) => {
+      setBusy(true);
+      setError('');
+      try {
+        writeStoredChoice({ mode, imageId, quality: nextQuality });
+        setQualityState(nextQuality);
+        await applyEffect(mode, imageId, nextQuality);
+      } catch (e) {
+        console.error('[Connect] failed to change segmentation quality:', e);
+        setError(e instanceof Error ? e.message : '画質の変更に失敗しました');
+      } finally {
+        setBusy(false);
+      }
+    },
+    [applyEffect, mode, imageId],
+  );
+
   return {
     supported,
     mode,
@@ -219,6 +243,7 @@ export function useBackgroundEffect() {
     busy,
     error,
     commit,
+    setQuality,
     handleUpload,
     handleDelete,
     imageUrlFor,

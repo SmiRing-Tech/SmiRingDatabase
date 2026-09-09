@@ -28,6 +28,7 @@ import ChatPage from './pages/Search/ChatPage';
 import AppsPage from './pages/Apps/AppsPage';
 import SmiRingConnectPage from './pages/Connect/SmiRingConnectPage';
 import CallRoomPage from './pages/Connect/CallRoomPage';
+import JoinExternalMeetingPage from './pages/Connect/JoinExternalMeetingPage';
 import RecordingsListPage from './pages/Connect/RecordingsListPage';
 import RecordingPlayerPage from './pages/Connect/RecordingPlayerPage';
 import ManagementConsolePage from './pages/Management/ManagementConsolePage';
@@ -190,6 +191,9 @@ const router = createBrowserRouter([
   { path: '/forgot-password', element: <ForgotPasswordPage /> },
   { path: '/reset-password', element: <ResetPasswordPage /> },
 
+  // 1-2. 招待URL経由の外部ミーティング参加（DBアカウント不要・完全公開・レイアウト無し）
+  { path: '/j/:token', element: <JoinExternalMeetingPage /> },
+
   // 2. オンボーディング（ログイン必須・レイアウト無し）
   {
     path: '/onboarding',
@@ -211,13 +215,12 @@ const router = createBrowserRouter([
   },
 
   // 2-3. 通話専用画面（ログイン必須・レイアウト無し・別タブで全画面起動）
+  // 内部/外部どちらのメンバーも参加できる（固定ミーティングの作成のみ内部限定）
   {
     path: '/connect/call/:roomId',
     element: (
       <ProtectedRoute>
-        <RequireInternalRole>
-          <CallRoomPage />
-        </RequireInternalRole>
+        <CallRoomPage />
       </ProtectedRoute>
     ),
   },
@@ -249,7 +252,7 @@ const router = createBrowserRouter([
       { path: '/search', element: <RequireInternalRole><SearchPage /></RequireInternalRole> },
       { path: '/search/chat', element: <RequireInternalRole><ChatPage /></RequireInternalRole> },
       { path: '/apps', element: <RequireInternalRole><AppsPage /></RequireInternalRole> },
-      { path: '/connect', element: <RequireInternalRole><SmiRingConnectPage /></RequireInternalRole> },
+      { path: '/connect', element: <SmiRingConnectPage /> },
       { path: '/connect/recordings', element: (
         <RequireInternalRole>
           <RequirePermission resource="connect_recording" action="read">

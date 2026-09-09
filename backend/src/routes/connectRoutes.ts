@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { AccessToken, RoomServiceClient, WebhookReceiver, DataPacket_Kind } from 'livekit-server-sdk';
 import { ParticipantInfo_Kind } from '@livekit/protocol';
 import { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
@@ -58,6 +59,32 @@ const webhookReceiver =
 /** Allow only safe room names (alphanumeric, hyphen, underscore). */
 function isValidRoomName(room: unknown): room is string {
   return typeof room === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(room);
+}
+
+const MEETING_TYPES = ['fixed', 'external'] as const;
+type MeetingType = (typeof MEETING_TYPES)[number];
+
+/** Unguessable token embedded in an external meeting's no-login invite URL
+ *  (/j/:token, added separately). Same "passcode, not a credential" trust level
+ *  as host_code — stored in plaintext so it can be re-shown/copied later. */
+function generateInviteToken(): string {
+  return crypto.randomBytes(24).toString('base64url');
+}
+
+/** Parses a required ISO datetime string, rejecting anything unparsable or already past. */
+function parseFutureDate(value: unknown): Date | null {
+  if (typeof value !== 'string' || !value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime()) || date.getTime() <= Date.now()) return null;
+  return date;
+}
+
+/** Parses an optional ISO datetime string; returns undefined if omitted, null if invalid. */
+function parseOptionalDate(value: unknown): Date | null | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string') return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 /** Deterministic thread id from a set of participant identities (server is the single source of truth). */
@@ -268,6 +295,31 @@ async function broadcastMiniRoomSync(
         .catch((e) => console.warn(`[Connect] miniroom_sync broadcast to ${roomId} failed:`, e)),
     ),
   );
+}
+
+/** Pings a room's data channel so any connected host's Participants panel refetches the
+ *  waitlist immediately instead of waiting for its fallback poll. Best-effort: the actual
+ *  data (who's pending) is never in the payload — clients treat this as "something about
+ *  the waitlist changed, go re-fetch" and hit GET .../waitlist for the authoritative list. */
+async function broadcastWaitlistUpdate(roomId: string) {
+  if (!roomService) return;
+  const payload = Buffer.from(JSON.stringify({ type: 'connect_waitlist_updated' }), 'utf8');
+  try {
+    await roomService.sendData(roomId, payload, DataPacket_Kind.RELIABLE, { topic: 'connect_waitlist' });
+  } catch (e) {
+    console.warn(`[Connect] waitlist broadcast to ${roomId} failed:`, e);
+  }
+}
+
+/** 403s and returns false unless req.user (must be set — call after `authenticate`) is
+ *  this room's creator or a registered host. Shared by the waitlist admin routes below. */
+async function ensureRoomHost(req: Request, res: Response, roomId: string): Promise<boolean> {
+  const host = await isRoomHost(req.user!.id, roomId);
+  if (!host) {
+    res.status(403).json({ error: 'この操作にはホスト権限が必要です' });
+    return false;
+  }
+  return true;
 }
 
 /** True if a room currently has no connected participants on LiveKit. */
@@ -599,6 +651,11 @@ router.get('/api/connect/rooms', authenticate, async (req: Request, res: Respons
 
     const visibleRooms = rooms
       .filter((room) => {
+        // external: 失効後は誰からも新規に見えなくする（作成者自身の一覧からも消える）
+        if (room.meeting_type === 'external' && room.expires_at && new Date(room.expires_at) <= new Date()) {
+          return false;
+        }
+
         if (room.created_by === userId || hostRoomIds.has(room.id)) return true;
 
         if (room.access_mode === 'private') {
@@ -708,12 +765,13 @@ async function writeRoomChildRows(
 const ROOM_ACCESS_MODES = ['public', 'private'] as const;
 
 // POST /api/connect/rooms - Create a fixed meeting
-router.post('/api/connect/rooms', authenticate, async (req: Request, res: Response) => {
+router.post('/api/connect/rooms', authenticate, requirePermission('connect', 'write'), async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const {
       room_title,
       room_id: requestedRoomId,
+      meeting_type,
       access_mode,
       public_all,
       public_role_groups,
@@ -722,14 +780,39 @@ router.post('/api/connect/rooms', authenticate, async (req: Request, res: Respon
       viewer_user_ids,
       host_user_ids,
       host_code,
+      expires_at,
+      scheduled_start_at,
+      scheduled_end_at,
     } = req.body ?? {};
 
     if (!room_title || typeof room_title !== 'string' || !room_title.trim()) {
       return res.status(400).json({ error: 'ミーティング名を入力してください' });
     }
 
-    if (!ROOM_ACCESS_MODES.includes(access_mode)) {
+    const resolvedMeetingType: MeetingType = meeting_type === 'external' ? 'external' : 'fixed';
+    const isExternal = resolvedMeetingType === 'external';
+
+    // 外部ミーティングは常に private（作成者 + 明示的に共有した内部メンバーのみ一覧に見える）
+    if (!isExternal && !ROOM_ACCESS_MODES.includes(access_mode)) {
       return res.status(400).json({ error: '公開/非公開の指定が不正です' });
+    }
+
+    let expiresAt: Date | null = null;
+    let scheduledStartAt: Date | null | undefined;
+    let scheduledEndAt: Date | null | undefined;
+    if (isExternal) {
+      expiresAt = parseFutureDate(expires_at);
+      if (!expiresAt) {
+        return res.status(400).json({ error: '失効日時を（未来の日時で）指定してください' });
+      }
+      scheduledStartAt = parseOptionalDate(scheduled_start_at);
+      scheduledEndAt = parseOptionalDate(scheduled_end_at);
+      if (scheduledStartAt === null || scheduledEndAt === null) {
+        return res.status(400).json({ error: '開催予定時刻の形式が不正です' });
+      }
+      if (scheduledStartAt && scheduledEndAt && scheduledEndAt.getTime() < scheduledStartAt.getTime()) {
+        return res.status(400).json({ error: '開催予定の終了時刻は開始時刻より後にしてください' });
+      }
     }
 
     let finalRoomId = requestedRoomId?.trim();
@@ -750,11 +833,12 @@ router.post('/api/connect/rooms', authenticate, async (req: Request, res: Respon
       return res.status(400).json({ error: `ルームID「${finalRoomId}」は既に登録されています` });
     }
 
-    const isPublic = access_mode === 'public';
+    const isPublic = !isExternal && access_mode === 'public';
     const isPublicAll = isPublic && !!public_all;
     const roleGroups = isPublic && !isPublicAll ? Array.from(new Set(Array.isArray(public_role_groups) ? public_role_groups : [])) : [];
     const departments = isPublic && !isPublicAll ? Array.from(new Set(Array.isArray(public_departments) ? public_departments : [])) : [];
     // private時は「見られる固定名簿」、public時は「当てはまっていても常に除外する人」として同じ connect_room_viewers を使う
+    // （外部ミーティングは常にprivate側の「見られる固定名簿」として扱う）
     const viewerRows = isPublic
       ? Array.from(new Set(Array.isArray(excluded_user_ids) ? excluded_user_ids : []))
       : Array.from(new Set(Array.isArray(viewer_user_ids) ? viewer_user_ids : []));
@@ -765,10 +849,15 @@ router.post('/api/connect/rooms', authenticate, async (req: Request, res: Respon
         {
           room_id: finalRoomId,
           room_title: room_title.trim(),
-          access_mode,
+          meeting_type: resolvedMeetingType,
+          access_mode: isExternal ? 'private' : access_mode,
           public_all: isPublicAll,
           host_code: typeof host_code === 'string' && host_code.trim() ? host_code.trim() : null,
           created_by: userId,
+          expires_at: isExternal ? expiresAt!.toISOString() : null,
+          scheduled_start_at: isExternal && scheduledStartAt ? scheduledStartAt.toISOString() : null,
+          scheduled_end_at: isExternal && scheduledEndAt ? scheduledEndAt.toISOString() : null,
+          invite_token: isExternal ? generateInviteToken() : null,
         },
       ])
       .select()
@@ -901,9 +990,14 @@ router.get('/api/connect/rooms/:id/detail', authenticate, async (req: Request, r
       id: loaded.room.id,
       room_title: loaded.room.room_title,
       room_id: loaded.room.room_id,
+      meeting_type: loaded.room.meeting_type,
       access_mode: loaded.room.access_mode,
       public_all: loaded.room.public_all,
       host_code: loaded.room.host_code,
+      expires_at: loaded.room.expires_at,
+      scheduled_start_at: loaded.room.scheduled_start_at,
+      scheduled_end_at: loaded.room.scheduled_end_at,
+      invite_token: loaded.room.invite_token,
       role_groups: (roleRows ?? []).map((r) => r.role_group),
       departments: (deptRows ?? []).map((d) => d.department),
       viewer_user_ids: (viewerRows ?? []).map((v) => v.user_id),
@@ -931,13 +1025,13 @@ router.patch('/api/connect/rooms/:id', authenticate, async (req: Request, res: R
       viewer_user_ids,
       host_user_ids,
       host_code,
+      expires_at,
+      scheduled_start_at,
+      scheduled_end_at,
     } = req.body ?? {};
 
     if (!room_title || typeof room_title !== 'string' || !room_title.trim()) {
       return res.status(400).json({ error: 'ミーティング名を入力してください' });
-    }
-    if (!ROOM_ACCESS_MODES.includes(access_mode)) {
-      return res.status(400).json({ error: '公開/非公開の指定が不正です' });
     }
 
     const loaded = await loadRoomForHostAction(id, userId);
@@ -948,7 +1042,32 @@ router.patch('/api/connect/rooms/:id', authenticate, async (req: Request, res: R
       return res.status(403).json({ error: 'この操作にはホスト権限が必要です' });
     }
 
-    const isPublic = access_mode === 'public';
+    // meeting_type は作成後に変更不可。既存の値によってどのフィールドを更新するか分岐する。
+    const isExternal = loaded.room.meeting_type === 'external';
+
+    if (!isExternal && !ROOM_ACCESS_MODES.includes(access_mode)) {
+      return res.status(400).json({ error: '公開/非公開の指定が不正です' });
+    }
+
+    let expiresAt: Date | null = null;
+    let scheduledStartAt: Date | null | undefined;
+    let scheduledEndAt: Date | null | undefined;
+    if (isExternal) {
+      expiresAt = parseFutureDate(expires_at);
+      if (!expiresAt) {
+        return res.status(400).json({ error: '失効日時を（未来の日時で）指定してください' });
+      }
+      scheduledStartAt = parseOptionalDate(scheduled_start_at);
+      scheduledEndAt = parseOptionalDate(scheduled_end_at);
+      if (scheduledStartAt === null || scheduledEndAt === null) {
+        return res.status(400).json({ error: '開催予定時刻の形式が不正です' });
+      }
+      if (scheduledStartAt && scheduledEndAt && scheduledEndAt.getTime() < scheduledStartAt.getTime()) {
+        return res.status(400).json({ error: '開催予定の終了時刻は開始時刻より後にしてください' });
+      }
+    }
+
+    const isPublic = !isExternal && access_mode === 'public';
     const isPublicAll = isPublic && !!public_all;
     const roleGroups = isPublic && !isPublicAll ? Array.from(new Set(Array.isArray(public_role_groups) ? public_role_groups : [])) : [];
     const departments = isPublic && !isPublicAll ? Array.from(new Set(Array.isArray(public_departments) ? public_departments : [])) : [];
@@ -961,9 +1080,16 @@ router.patch('/api/connect/rooms/:id', authenticate, async (req: Request, res: R
       .from('connect_rooms')
       .update({
         room_title: room_title.trim(),
-        access_mode,
+        access_mode: isExternal ? 'private' : access_mode,
         public_all: isPublicAll,
         host_code: typeof host_code === 'string' && host_code.trim() ? host_code.trim() : null,
+        ...(isExternal
+          ? {
+              expires_at: expiresAt!.toISOString(),
+              scheduled_start_at: scheduledStartAt ? scheduledStartAt.toISOString() : null,
+              scheduled_end_at: scheduledEndAt ? scheduledEndAt.toISOString() : null,
+            }
+          : {}),
       })
       .eq('id', id)
       .select()
@@ -1801,6 +1927,343 @@ router.delete(
     }
   },
 );
+
+// ============================================================================
+// 完全外部ユーザー（DBアカウントなし）向けの招待URL経由の参加フロー。
+// ここから4本のルートは意図的に `authenticate` を付けない — ログインしていない
+// ブラウザから呼ばれる前提のエンドポイントのため。その代わり、すべての操作は
+// `meeting_type === 'external'` かつ有効な `invite_token`（連想推測不可能なランダム値、
+// host_codeと同じ「合言葉」的信頼レベル）を提示できることでのみ許可される。
+// `fixed` なミーティングに対してこれらのルートが何かを漏らす・許可することは絶対にない
+// ——固定ミーティングは常に認証必須のまま。
+//
+// 待機室（connect_room_waitlist）は今回、外部ミーティングでは常にON、固定ミーティングでは
+// 常にOFFという決め打ち（切り替えUIはまだ無い）。ホストが承認する画面（参加許可UI）は次の
+// スコープで作るため、/join-request で作られる行は今のところ pending のまま留まり続ける
+// ——admitted に進める手段は本ラウンドでは未実装（意図的な範囲外）。
+// ============================================================================
+
+/** Loads a connect_rooms row by its LiveKit room_id (text), or null if unregistered. */
+async function findRoomByRoomId(roomId: string) {
+  const { data, error } = await supabase.from('connect_rooms').select('*').eq('room_id', roomId).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+/** Validates that `room` is a live, unexpired external meeting reachable via `inviteToken`. */
+function checkExternalInvite(room: any, inviteToken: unknown): string | null {
+  if (!room || room.meeting_type !== 'external') {
+    return 'このミーティングは招待URLでの参加に対応していません';
+  }
+  if (!room.invite_token || typeof inviteToken !== 'string' || inviteToken !== room.invite_token) {
+    return '招待URLが無効です';
+  }
+  if (!room.expires_at || new Date(room.expires_at).getTime() <= Date.now()) {
+    return 'この招待URLは失効しています';
+  }
+  return null;
+}
+
+// GET /api/connect/invite/:token - Resolve an invite token to its room, for the /j/:token
+// landing page to know what it's rendering PreJoin for before the visitor has entered a name.
+router.get('/api/connect/invite/:token', async (req: Request, res: Response) => {
+  try {
+    const token = req.params.token as string;
+    const { data: room, error } = await supabase
+      .from('connect_rooms')
+      .select('room_id, room_title, meeting_type, expires_at, invite_token')
+      .eq('invite_token', token)
+      .maybeSingle();
+    if (error) throw error;
+
+    const invalidReason = checkExternalInvite(room, token);
+    if (invalidReason) {
+      return res.status(404).json({ error: invalidReason });
+    }
+
+    return res.status(200).json({
+      room_id: room!.room_id,
+      room_title: room!.room_title,
+    });
+  } catch (error: any) {
+    console.error('[Connect] GET /api/connect/invite/:token failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/rooms/:roomId/join-request - Registers a pending waitlist entry for an
+// anonymous invite-link visitor (waiting room is hardcoded ON for every external meeting).
+router.post('/api/connect/rooms/:roomId/join-request', async (req: Request, res: Response) => {
+  try {
+    const roomId = req.params.roomId as string;
+    const { invite_token, username } = req.body ?? {};
+    if (!isValidRoomName(roomId)) {
+      return res.status(400).json({ error: 'ルーム名が不正です' });
+    }
+    if (typeof username !== 'string' || !username.trim()) {
+      return res.status(400).json({ error: '表示名を入力してください' });
+    }
+
+    const room = await findRoomByRoomId(roomId);
+    const invalidReason = checkExternalInvite(room, invite_token);
+    if (invalidReason) {
+      return res.status(403).json({ error: invalidReason });
+    }
+
+    const { data: waitlistRow, error } = await supabase
+      .from('connect_room_waitlist')
+      .insert([{ room_id: roomId, display_name: username.trim(), status: 'pending' }])
+      .select('id, status')
+      .single();
+    if (error) throw error;
+
+    await broadcastWaitlistUpdate(roomId);
+
+    return res.status(201).json({ status: waitlistRow.status, waitlist_id: waitlistRow.id });
+  } catch (error: any) {
+    console.error('[Connect] POST /api/connect/rooms/:roomId/join-request failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/connect/rooms/:roomId/join-request/:waitlistId - Polled by the waiting-room screen
+// to find out once a host admits this visitor. The waitlist row's own uuid acts as the bearer
+// capability here (same trust level as invite_token) since there's no account to check against.
+router.get('/api/connect/rooms/:roomId/join-request/:waitlistId', async (req: Request, res: Response) => {
+  try {
+    const roomId = req.params.roomId as string;
+    const waitlistId = req.params.waitlistId as string;
+    const { data: waitlistRow, error } = await supabase
+      .from('connect_room_waitlist')
+      .select('status')
+      .eq('id', waitlistId)
+      .eq('room_id', roomId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!waitlistRow) {
+      return res.status(404).json({ error: '入室リクエストが見つかりません' });
+    }
+
+    return res.status(200).json({ status: waitlistRow.status });
+  } catch (error: any) {
+    console.error('[Connect] GET /api/connect/rooms/:roomId/join-request/:waitlistId failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /api/connect/rooms/:roomId/join-request/:waitlistId - Lets a waiting visitor
+// withdraw their own still-pending request (the waiting-room screen's "戻る" button calls
+// this). Only ever deletes a `pending` row — never touches one already admitted/denied, so
+// this can't be used to erase that history. Without this, cancelling out of the waiting
+// room left the row behind forever with no admission UI yet to ever resolve it.
+router.delete('/api/connect/rooms/:roomId/join-request/:waitlistId', async (req: Request, res: Response) => {
+  try {
+    const roomId = req.params.roomId as string;
+    const waitlistId = req.params.waitlistId as string;
+    const { error } = await supabase
+      .from('connect_room_waitlist')
+      .delete()
+      .eq('id', waitlistId)
+      .eq('room_id', roomId)
+      .eq('status', 'pending');
+    if (error) throw error;
+
+    await broadcastWaitlistUpdate(roomId);
+
+    return res.status(200).json({ success: true });
+  } catch (error: any) {
+    console.error('[Connect] DELETE /api/connect/rooms/:roomId/join-request/:waitlistId failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/rooms/:roomId/join-request/:waitlistId/heartbeat - The waiting-room
+// screen pings this every 5s so the host's Participants panel can tell a visitor who closed
+// their tab (or lost network) apart from one still actually there — see the staleness check
+// in GET .../waitlist below, which is what actually flips a quiet row to 'left'. Self-healing:
+// pinging a row already flipped to 'left' revives it back to 'pending', so a transient network
+// blip that missed one or two heartbeats doesn't permanently drop the visitor from the queue.
+router.post(
+  '/api/connect/rooms/:roomId/join-request/:waitlistId/heartbeat',
+  async (req: Request, res: Response) => {
+    try {
+      const roomId = req.params.roomId as string;
+      const waitlistId = req.params.waitlistId as string;
+      const { error } = await supabase
+        .from('connect_room_waitlist')
+        .update({ status: 'pending', last_seen_at: new Date().toISOString() })
+        .eq('id', waitlistId)
+        .eq('room_id', roomId)
+        .in('status', ['pending', 'left']); // never revives an admitted/denied (terminal) row
+      if (error) throw error;
+
+      return res.status(200).json({ success: true });
+    } catch (error: any) {
+      console.error(
+        '[Connect] POST /api/connect/rooms/:roomId/join-request/:waitlistId/heartbeat failed:',
+        error,
+      );
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// ============================================================================
+// ホスト向けの参加許可UI（Participantsパネル）が使う、ログイン必須のエンドポイント。
+// 上のjoin-request系（招待URL経由の匿名アクセス）とは信頼レベルが逆で、こちらは
+// authenticate必須 + isRoomHost() チェック必須。
+// ============================================================================
+
+// GET /api/connect/rooms/:roomId/waitlist - Host-only: current pending join requests.
+router.get('/api/connect/rooms/:roomId/waitlist', authenticate, async (req: Request, res: Response) => {
+  try {
+    const roomId = req.params.roomId as string;
+    if (!(await ensureRoomHost(req, res, roomId))) return;
+
+    // A visitor whose heartbeat has gone quiet for 20s+ (tab closed, network dropped,
+    // browser crashed, ...) is treated as having left — flip them out of 'pending' before
+    // reading the list below, rather than running a separate scheduled job for it: this
+    // endpoint is already polled every 8s by the host's Participants panel, which is timely
+    // enough. A row flipped here is revived back to 'pending' if a heartbeat does land later
+    // (see the heartbeat endpoint above), so a transient blip isn't mistaken for a real leave.
+    const staleCutoff = new Date(Date.now() - 20_000).toISOString();
+    const { error: staleError } = await supabase
+      .from('connect_room_waitlist')
+      .update({ status: 'left' })
+      .eq('room_id', roomId)
+      .eq('status', 'pending')
+      .lt('last_seen_at', staleCutoff);
+    if (staleError) {
+      console.error('[Connect] failed to flip stale waitlist rows for', roomId, staleError);
+    }
+
+    const { data, error } = await supabase
+      .from('connect_room_waitlist')
+      .select('id, display_name, created_at')
+      .eq('room_id', roomId)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+
+    return res.status(200).json({ waitlist: data ?? [] });
+  } catch (error: any) {
+    console.error('[Connect] GET /api/connect/rooms/:roomId/waitlist failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/rooms/:roomId/waitlist/:waitlistId/admit - Host-only.
+router.post(
+  '/api/connect/rooms/:roomId/waitlist/:waitlistId/admit',
+  authenticate,
+  async (req: Request, res: Response) => {
+    try {
+      const roomId = req.params.roomId as string;
+    const waitlistId = req.params.waitlistId as string;
+      if (!(await ensureRoomHost(req, res, roomId))) return;
+
+      const { error } = await supabase
+        .from('connect_room_waitlist')
+        .update({ status: 'admitted', updated_at: new Date().toISOString() })
+        .eq('id', waitlistId)
+        .eq('room_id', roomId)
+        .eq('status', 'pending');
+      if (error) throw error;
+
+      await broadcastWaitlistUpdate(roomId);
+
+      return res.status(200).json({ success: true });
+    } catch (error: any) {
+      console.error('[Connect] POST /api/connect/rooms/:roomId/waitlist/:waitlistId/admit failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// POST /api/connect/rooms/:roomId/waitlist/:waitlistId/deny - Host-only.
+router.post(
+  '/api/connect/rooms/:roomId/waitlist/:waitlistId/deny',
+  authenticate,
+  async (req: Request, res: Response) => {
+    try {
+      const roomId = req.params.roomId as string;
+    const waitlistId = req.params.waitlistId as string;
+      if (!(await ensureRoomHost(req, res, roomId))) return;
+
+      const { error } = await supabase
+        .from('connect_room_waitlist')
+        .update({ status: 'denied', updated_at: new Date().toISOString() })
+        .eq('id', waitlistId)
+        .eq('room_id', roomId)
+        .eq('status', 'pending');
+      if (error) throw error;
+
+      await broadcastWaitlistUpdate(roomId);
+
+      return res.status(200).json({ success: true });
+    } catch (error: any) {
+      console.error('[Connect] POST /api/connect/rooms/:roomId/waitlist/:waitlistId/deny failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// POST /api/connect/rooms/:roomId/anonymous-token - Mints a LiveKit token for an admitted,
+// unauthenticated invite-link visitor. Requires an `admitted` waitlist row — an anonymous
+// visitor can never skip the waiting room (there's no host bypass without an account).
+router.post('/api/connect/rooms/:roomId/anonymous-token', async (req: Request, res: Response) => {
+  try {
+    if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+      return res.status(503).json({
+        error: 'LiveKit is not configured',
+        detail: 'サーバー側で LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET が未設定です。',
+      });
+    }
+
+    const roomId = req.params.roomId as string;
+    const { invite_token, username, waitlist_id } = req.body ?? {};
+    if (!isValidRoomName(roomId)) {
+      return res.status(400).json({ error: 'ルーム名が不正です' });
+    }
+    if (typeof username !== 'string' || !username.trim()) {
+      return res.status(400).json({ error: '表示名を入力してください' });
+    }
+
+    const room = await findRoomByRoomId(roomId);
+    const invalidReason = checkExternalInvite(room, invite_token);
+    if (invalidReason) {
+      return res.status(403).json({ error: invalidReason });
+    }
+
+    if (typeof waitlist_id !== 'string' || !waitlist_id) {
+      return res.status(403).json({ error: '入室リクエストが必要です' });
+    }
+    const { data: waitlistRow, error: waitlistError } = await supabase
+      .from('connect_room_waitlist')
+      .select('status')
+      .eq('id', waitlist_id)
+      .eq('room_id', roomId)
+      .maybeSingle();
+    if (waitlistError) throw waitlistError;
+    if (!waitlistRow || waitlistRow.status !== 'admitted') {
+      return res.status(403).json({ error: 'まだ入室が許可されていません' });
+    }
+
+    const anonymousId = `guest_${crypto.randomUUID()}`;
+    const token = await mintLiveKitToken(anonymousId, roomId, username.trim());
+
+    return res.status(200).json({
+      token,
+      url: LIVEKIT_URL,
+      identity: anonymousId,
+      roomTitle: room.room_title,
+      is_host: false,
+    });
+  } catch (error: any) {
+    console.error('[Connect] POST /api/connect/rooms/:roomId/anonymous-token failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
 
 // POST /api/connect/webhook - LiveKit webhook receiver.
 // No `authenticate` here: this is called by the LiveKit server itself, not a logged-in

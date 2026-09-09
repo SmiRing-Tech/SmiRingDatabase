@@ -13,11 +13,17 @@ import {
   Loader2,
   Info,
   Calendar,
+  Link2,
+  Globe2,
 } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import { usePermission } from '../../hooks/usePermission';
 import { useAuth } from '../../context/AuthContext';
 import CreateFixedMeetingModal from '../../components/Connect/CreateFixedMeetingModal';
+import CreateExternalMeetingModal, {
+  type CreatedExternalMeeting,
+} from '../../components/Connect/CreateExternalMeetingModal';
+import ExternalMeetingLinkModal from '../../components/Connect/ExternalMeetingLinkModal';
 
 interface ConnectRoom {
   id: string;
@@ -25,11 +31,29 @@ interface ConnectRoom {
   room_id: string;
   room_title: string;
   metadata?: string | null;
+  meeting_type?: 'fixed' | 'external';
   access_mode?: 'public' | 'private';
   public_all?: boolean;
   created_by?: string | null;
   is_host?: boolean;
   is_pinned?: boolean;
+  expires_at?: string | null;
+  scheduled_start_at?: string | null;
+  scheduled_end_at?: string | null;
+  invite_token?: string | null;
+}
+
+function inviteUrlFor(token: string): string {
+  return `${window.location.origin}/j/${token}`;
+}
+
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('ja-JP', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function visibilityLabel(room: ConnectRoom): string {
@@ -53,12 +77,17 @@ export default function SmiRingConnectPage() {
   const [joinCode, setJoinCode] = useState('');
   const [joinError, setJoinError] = useState('');
   const canViewRecordings = usePermission('connect_recording', 'read');
+  const canCreateFixedMeeting = usePermission('connect', 'write');
 
   // Fixed rooms state
   const [rooms, setRooms] = useState<ConnectRoom[]>([]);
   const [loadingRooms, setLoadingRooms] = useState(true);
   // 'closed' | 'create' | <room id being edited>
   const [modalMode, setModalMode] = useState<'closed' | 'create' | string>('closed');
+  // 外部ミーティング作成/編集モーダル。同じく 'closed' | 'create' | <room id>
+  const [externalModalMode, setExternalModalMode] = useState<'closed' | 'create' | string>('closed');
+  // 作成直後に「URLをコピー」ポップアップを出すための一時state
+  const [justCreatedExternal, setJustCreatedExternal] = useState<CreatedExternalMeeting | null>(null);
 
   // Copy state
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -128,12 +157,131 @@ export default function SmiRingConnectPage() {
     }
   };
 
+  const copyInviteUrl = async (token: string) => {
+    try {
+      await navigator.clipboard.writeText(inviteUrlFor(token));
+      setCopiedId(`invite:${token}`);
+      setTimeout(() => setCopiedId(null), 1500);
+    } catch {
+      /* ignore clipboard errors */
+    }
+  };
+
   // Match registered fixed room for entered joinCode (handles raw ID or full URL)
   const cleanJoinCode = joinCode.includes('/connect/call/')
     ? joinCode.split('/connect/call/')[1].split('?')[0].split('#')[0].trim()
     : joinCode.trim();
   const matchedFixedRoom = rooms.find(
     (r) => r.room_id.toLowerCase() === cleanJoinCode.toLowerCase(),
+  );
+
+  // 外部ミーティングは固定ミーティングとは別枠（一段上）で表示する
+  const externalRooms = rooms.filter((r) => r.meeting_type === 'external');
+  const fixedRooms = rooms.filter((r) => r.meeting_type !== 'external');
+
+  const renderRoomCard = (room: ConnectRoom) => (
+    <div
+      key={room.id}
+      className="bg-white border border-slate-100 hover:border-sky-200 rounded-3xl p-5 shadow-sm hover:shadow-md transition-all duration-200 flex flex-col justify-between gap-4 group"
+    >
+      <div className="space-y-2">
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="font-black text-gray-900 text-base group-hover:text-sky-600 transition-colors line-clamp-1">
+            {room.room_title}
+          </h3>
+          <div className="flex items-center gap-0.5 shrink-0">
+            <button
+              onClick={() => togglePin(room)}
+              className={`p-1.5 rounded-lg transition-colors ${
+                room.is_pinned
+                  ? 'text-sky-600 hover:bg-sky-50'
+                  : 'text-gray-300 hover:text-sky-500 hover:bg-sky-50'
+              }`}
+              title={room.is_pinned ? 'ピン留めを解除' : 'ピン留めする'}
+            >
+              {room.is_pinned ? <Pin className="w-4 h-4 fill-current" /> : <PinOff className="w-4 h-4" />}
+            </button>
+            {room.is_host && (
+              <button
+                onClick={() =>
+                  room.meeting_type === 'external' ? setExternalModalMode(room.id) : setModalMode(room.id)
+                }
+                className="text-gray-300 hover:text-sky-600 p-1.5 rounded-lg hover:bg-sky-50 transition-colors"
+                title={room.meeting_type === 'external' ? '外部ミーティングを編集' : '固定ミーティングを編集'}
+              >
+                <Pencil className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {room.meeting_type === 'external' && room.invite_token ? (
+            <button
+              type="button"
+              onClick={() => copyInviteUrl(room.invite_token!)}
+              className="inline-flex items-center gap-1.5 text-[11px] font-mono text-gray-600 bg-slate-50 hover:bg-blue-50 hover:text-blue-700 border border-slate-200 hover:border-blue-200 px-2.5 py-1 rounded-lg transition-colors group cursor-pointer active:scale-95"
+              title="外部共有用URLをコピー"
+            >
+              <Link2 className="w-3.5 h-3.5 text-gray-400 group-hover:text-blue-600 shrink-0" />
+              <span>外部共有URL</span>
+              {copiedId === `invite:${room.invite_token}` ? (
+                <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+              ) : (
+                <Copy className="w-3.5 h-3.5 text-gray-400 group-hover:text-blue-600 shrink-0" />
+              )}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => copyRoomUrl(room.room_id)}
+              className="inline-flex items-center gap-1.5 text-[11px] font-mono text-gray-600 bg-slate-50 hover:bg-sky-50 hover:text-sky-700 border border-slate-200 hover:border-sky-200 px-2.5 py-1 rounded-lg transition-colors group cursor-pointer active:scale-95"
+              title="ミーティングURLをコピー"
+            >
+              <span>ID: {room.room_id}</span>
+              {copiedId === room.room_id ? (
+                <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+              ) : (
+                <Copy className="w-3.5 h-3.5 text-gray-400 group-hover:text-sky-600 shrink-0" />
+              )}
+            </button>
+          )}
+          {room.meeting_type === 'external' ? (
+            <span className="text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-100 px-2 py-1 rounded-lg">
+              外部ミーティング
+            </span>
+          ) : (
+            <span className="text-[10px] font-bold text-slate-500 bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg">
+              {visibilityLabel(room)}
+            </span>
+          )}
+          {room.is_host && (
+            <span className="text-[10px] font-bold text-sky-700 bg-sky-50 border border-sky-100 px-2 py-1 rounded-lg">
+              ホスト
+            </span>
+          )}
+        </div>
+
+        {room.meeting_type === 'external' && room.expires_at ? (
+          <p className="text-[10px] text-gray-400 font-medium">
+            失効: {formatDateTime(room.expires_at)}
+            {room.scheduled_start_at && <> ・ 開催予定: {formatDateTime(room.scheduled_start_at)}</>}
+          </p>
+        ) : (
+          <p className="text-[10px] text-gray-400 font-medium">
+            作成日: {new Date(room.created_at).toLocaleDateString('ja-JP')}
+          </p>
+        )}
+      </div>
+
+      <button
+        onClick={() => joinMeeting(room.room_id)}
+        className="w-full py-2.5 bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs rounded-xl shadow-sm hover:shadow transition-all active:scale-95 flex items-center justify-center gap-1.5"
+      >
+        <Video className="w-3.5 h-3.5" />
+        <span>ワンクリックで参加</span>
+      </button>
+    </div>
   );
 
   return (
@@ -260,36 +408,38 @@ export default function SmiRingConnectPage() {
             </div>
           </div>
 
-          {/* Card 3: Create fixed meeting (Marine / Deep Blue tone) */}
-          <div
-            onClick={() => setModalMode('create')}
-            className="group relative bg-white border border-slate-100 rounded-3xl p-6 shadow-sm hover:shadow-xl hover:border-blue-100 transition-all duration-300 flex flex-col justify-between items-start gap-4 cursor-pointer active:scale-[0.98]"
-          >
-            <div className="w-full flex justify-between items-center">
-              <div className="p-4 rounded-2xl bg-gradient-to-br border flex items-center justify-center group-hover:scale-110 group-hover:rotate-3 transition-transform duration-300 shadow-sm from-blue-50 to-blue-100/80 border-blue-200 text-blue-600">
-                <Pin className="w-6 h-6 text-blue-600" />
+          {/* Card 3: Create external meeting (Marine / Deep Blue tone) — 作成は内部メンバー限定 */}
+          {canCreateFixedMeeting && (
+            <div
+              onClick={() => setExternalModalMode('create')}
+              className="group relative bg-white border border-slate-100 rounded-3xl p-6 shadow-sm hover:shadow-xl hover:border-blue-100 transition-all duration-300 flex flex-col justify-between items-start gap-4 cursor-pointer active:scale-[0.98]"
+            >
+              <div className="w-full flex justify-between items-center">
+                <div className="p-4 rounded-2xl bg-gradient-to-br border flex items-center justify-center group-hover:scale-110 group-hover:rotate-3 transition-transform duration-300 shadow-sm from-blue-50 to-blue-100/80 border-blue-200 text-blue-600">
+                  <Globe2 className="w-6 h-6 text-blue-600" />
+                </div>
+                <span className="text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-100 px-2.5 py-1 rounded-full">
+                  外部共有
+                </span>
               </div>
-              <span className="text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-100 px-2.5 py-1 rounded-full">
-                常設ルーム
-              </span>
-            </div>
 
-            <div className="flex-1 flex flex-col gap-1.5 mt-2">
-              <h3 className="text-lg font-black text-gray-900 group-hover:text-blue-600 transition-colors">
-                固定ミーティングを作成
-              </h3>
-              <p className="text-xs text-gray-400 leading-relaxed font-semibold">
-                いつも使うミーティング名・公開範囲・ホストを設定して永続ルームを作成します
-              </p>
-            </div>
+              <div className="flex-1 flex flex-col gap-1.5 mt-2">
+                <h3 className="text-lg font-black text-gray-900 group-hover:text-blue-600 transition-colors">
+                  外部ミーティングを作成
+                </h3>
+                <p className="text-xs text-gray-400 leading-relaxed font-semibold">
+                  失効日時つきの招待URLを発行し、DBアカウントを持たない方とも共有できます
+                </p>
+              </div>
 
-            <div className="w-full flex justify-end pt-2 mt-auto">
-              <span className="text-xs font-bold text-blue-600 flex items-center gap-1 group-hover:translate-x-1.5 transition-transform duration-300">
-                作成
-                <span className="text-sm">→</span>
-              </span>
+              <div className="w-full flex justify-end pt-2 mt-auto">
+                <span className="text-xs font-bold text-blue-600 flex items-center gap-1 group-hover:translate-x-1.5 transition-transform duration-300">
+                  作成
+                  <span className="text-sm">→</span>
+                </span>
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {user && (
@@ -300,6 +450,61 @@ export default function SmiRingConnectPage() {
             currentUserId={user.id}
             roomId={modalMode !== 'closed' && modalMode !== 'create' ? modalMode : null}
           />
+        )}
+
+        {user && (
+          <CreateExternalMeetingModal
+            isOpen={externalModalMode !== 'closed'}
+            onClose={() => setExternalModalMode('closed')}
+            onSaved={fetchRooms}
+            onCreated={setJustCreatedExternal}
+            currentUserId={user.id}
+            roomId={externalModalMode !== 'closed' && externalModalMode !== 'create' ? externalModalMode : null}
+          />
+        )}
+
+        {justCreatedExternal && (
+          <ExternalMeetingLinkModal
+            roomTitle={justCreatedExternal.room_title}
+            inviteUrl={inviteUrlFor(justCreatedExternal.invite_token)}
+            onClose={() => setJustCreatedExternal(null)}
+          />
+        )}
+
+        {/* External Meetings List Section — 1件も無ければ丸ごと非表示（作成自体は上のCard 3から可能） */}
+        {!loadingRooms && externalRooms.length > 0 && (
+          <div className="space-y-4 pt-4 border-t border-slate-200/60">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-blue-50 border border-blue-100 text-blue-600">
+                  <Globe2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-black text-gray-900 tracking-tight">
+                    外部ミーティング一覧
+                  </h2>
+                  <p className="text-xs text-gray-400 font-semibold">
+                    招待URLで外部の方とも共有できる、失効日時つきのミーティング
+                  </p>
+                </div>
+              </div>
+
+              {canCreateFixedMeeting && (
+                <button
+                  type="button"
+                  onClick={() => setExternalModalMode('create')}
+                  title="外部ミーティングを作成"
+                  className="p-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white shadow-sm hover:shadow transition-all active:scale-95"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {externalRooms.map((room) => renderRoomCard(room))}
+            </div>
+          </div>
         )}
 
         {/* Fixed Meetings List Section */}
@@ -319,9 +524,16 @@ export default function SmiRingConnectPage() {
               </div>
             </div>
 
-            <span className="text-xs font-bold text-slate-500 bg-slate-100 border border-slate-200 px-3 py-1 rounded-full">
-              全 {rooms.length} 件
-            </span>
+            {canCreateFixedMeeting && (
+              <button
+                type="button"
+                onClick={() => setModalMode('create')}
+                title="固定ミーティングを作成"
+                className="p-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white shadow-sm hover:shadow transition-all active:scale-95"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+            )}
           </div>
 
           {loadingRooms ? (
@@ -329,7 +541,7 @@ export default function SmiRingConnectPage() {
               <Loader2 className="w-5 h-5 animate-spin text-sky-500" />
               <span>読み込み中...</span>
             </div>
-          ) : rooms.length === 0 ? (
+          ) : fixedRooms.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 bg-white rounded-3xl border border-slate-100 shadow-sm text-center px-4">
               <div className="p-4 rounded-2xl bg-sky-50 border border-sky-100 mb-3">
                 <Pin className="w-8 h-8 text-sky-400" />
@@ -343,78 +555,7 @@ export default function SmiRingConnectPage() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {rooms.map((room) => (
-                <div
-                  key={room.id}
-                  className="bg-white border border-slate-100 hover:border-sky-200 rounded-3xl p-5 shadow-sm hover:shadow-md transition-all duration-200 flex flex-col justify-between gap-4 group"
-                >
-                  <div className="space-y-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <h3 className="font-black text-gray-900 text-base group-hover:text-sky-600 transition-colors line-clamp-1">
-                        {room.room_title}
-                      </h3>
-                      <div className="flex items-center gap-0.5 shrink-0">
-                        <button
-                          onClick={() => togglePin(room)}
-                          className={`p-1.5 rounded-lg transition-colors ${
-                            room.is_pinned
-                              ? 'text-sky-600 hover:bg-sky-50'
-                              : 'text-gray-300 hover:text-sky-500 hover:bg-sky-50'
-                          }`}
-                          title={room.is_pinned ? 'ピン留めを解除' : 'ピン留めする'}
-                        >
-                          {room.is_pinned ? <Pin className="w-4 h-4 fill-current" /> : <PinOff className="w-4 h-4" />}
-                        </button>
-                        {room.is_host && (
-                          <button
-                            onClick={() => setModalMode(room.id)}
-                            className="text-gray-300 hover:text-sky-600 p-1.5 rounded-lg hover:bg-sky-50 transition-colors"
-                            title="固定ミーティングを編集"
-                          >
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={() => copyRoomUrl(room.room_id)}
-                        className="inline-flex items-center gap-1.5 text-[11px] font-mono text-gray-600 bg-slate-50 hover:bg-sky-50 hover:text-sky-700 border border-slate-200 hover:border-sky-200 px-2.5 py-1 rounded-lg transition-colors group cursor-pointer active:scale-95"
-                        title="ミーティングURLをコピー"
-                      >
-                        <span>ID: {room.room_id}</span>
-                        {copiedId === room.room_id ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                        ) : (
-                          <Copy className="w-3.5 h-3.5 text-gray-400 group-hover:text-sky-600 shrink-0" />
-                        )}
-                      </button>
-                      <span className="text-[10px] font-bold text-slate-500 bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg">
-                        {visibilityLabel(room)}
-                      </span>
-                      {room.is_host && (
-                        <span className="text-[10px] font-bold text-sky-700 bg-sky-50 border border-sky-100 px-2 py-1 rounded-lg">
-                          ホスト
-                        </span>
-                      )}
-                    </div>
-
-                    <p className="text-[10px] text-gray-400 font-medium">
-                      作成日: {new Date(room.created_at).toLocaleDateString('ja-JP')}
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => joinMeeting(room.room_id)}
-                    className="w-full py-2.5 bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs rounded-xl shadow-sm hover:shadow transition-all active:scale-95 flex items-center justify-center gap-1.5"
-                  >
-                    <Video className="w-3.5 h-3.5" />
-                    <span>ワンクリックで参加</span>
-                  </button>
-                </div>
-              ))}
+              {fixedRooms.map((room) => renderRoomCard(room))}
             </div>
           )}
         </div>

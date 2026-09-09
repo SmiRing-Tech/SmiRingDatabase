@@ -37,6 +37,12 @@ interface PreJoinScreenProps {
   defaultUsername: string;
   avatarUrl: string | null;
   joinLabel?: string;
+  /** アカウントを持たない参加者向け。trueの場合、表示名が空欄のまま参加しようとするとエラーを出し、'guest'等への暗黙のフォールバックはしない。 */
+  requireUsername?: boolean;
+  /** trueの場合、参加ボタンを押せなくする（例: 既に入室リクエスト送信済みで待機中）。カメラ・マイク・背景の調整は引き続き行える。 */
+  submitDisabled?: boolean;
+  /** submitDisabled=true のときにボタンへ表示する文言。 */
+  submitDisabledLabel?: string;
   /**
    * Fires once, when the user clicks join. Hands the already-created (and, if a
    * background effect is selected, already-processed) tracks up to the caller —
@@ -73,6 +79,9 @@ export default function PreJoinScreen({
   defaultUsername,
   avatarUrl,
   joinLabel = 'このルームに参加',
+  requireUsername = false,
+  submitDisabled = false,
+  submitDisabledLabel,
   onSubmit,
   onError,
 }: PreJoinScreenProps) {
@@ -169,6 +178,12 @@ export default function PreJoinScreen({
   const { state: backgroundState, isReady: isBackgroundReady } = usePreJoinBackground(videoTrack);
   const [backgroundPanelOpen, setBackgroundPanelOpen] = useState(false);
 
+  useEffect(() => {
+    console.log(
+      `[PreJoinScreen t=${performance.now().toFixed(0)}ms] isBackgroundReady -> ${isBackgroundReady}`,
+    );
+  }, [isBackgroundReady]);
+
   const micLevel = useMicLevel(audioTrack);
   const [testingSpeaker, setTestingSpeaker] = useState(false);
   const handleTestSpeaker = useCallback(async () => {
@@ -247,8 +262,11 @@ export default function PreJoinScreen({
     setIsCustomName(!!defaultUsername && next !== defaultUsername);
   }
 
+  const [nameError, setNameError] = useState('');
+
   const handleUsernameChange = (value: string) => {
     setUsername(value);
+    if (nameError) setNameError('');
     const trimmed = value.trim();
     const nextIsCustom = Boolean(defaultUsername && trimmed && trimmed !== defaultUsername);
     setIsCustomName(nextIsCustom);
@@ -271,10 +289,15 @@ export default function PreJoinScreen({
   };
 
   const handleJoin = useCallback(() => {
+    const trimmed = username.trim();
+    if (requireUsername && !trimmed) {
+      setNameError('表示名を入力してください');
+      return;
+    }
     hasSubmittedRef.current = true;
     onSubmit(
       {
-        username: username.trim() || defaultUsername || 'guest',
+        username: trimmed || defaultUsername || 'guest',
         videoEnabled,
         audioEnabled,
         videoDeviceId,
@@ -283,9 +306,22 @@ export default function PreJoinScreen({
       videoTrack,
       audioTrack,
     );
-  }, [onSubmit, username, defaultUsername, videoEnabled, audioEnabled, videoDeviceId, audioDeviceId, videoTrack, audioTrack]);
+  }, [
+    onSubmit,
+    username,
+    requireUsername,
+    defaultUsername,
+    videoEnabled,
+    audioEnabled,
+    videoDeviceId,
+    audioDeviceId,
+    videoTrack,
+    audioTrack,
+  ]);
 
-  // Block preview until videoTrack/audioTrack exist AND background effect processor is attached
+  // Block preview until videoTrack/audioTrack exist AND the background effect has
+  // proven itself internally (polarity confidently detected + matte stabilized —
+  // see MediapipeBackgroundProcessor.waitUntilReady()), not just "attached".
   const isVideoReady = !videoTrack || isBackgroundReady;
   const ready = (!!videoTrack || !!audioTrack) && isVideoReady;
 
@@ -366,9 +402,14 @@ export default function PreJoinScreen({
             spellCheck={false}
             value={username}
             onChange={(e) => handleUsernameChange(e.target.value)}
-            className="w-full box-border px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-gray-900 focus:outline-none focus:ring-2 focus:ring-sky-200 focus:border-sky-300"
+            className={`w-full box-border px-3.5 py-2.5 bg-slate-50 border rounded-xl text-sm font-semibold text-gray-900 focus:outline-none focus:ring-2 ${
+              nameError
+                ? 'border-rose-300 focus:ring-rose-100 focus:border-rose-400'
+                : 'border-slate-200 focus:ring-sky-200 focus:border-sky-300'
+            }`}
             placeholder="表示名を入力"
           />
+          {nameError && <p className="mt-1.5 text-xs font-bold text-rose-500">{nameError}</p>}
           {isCustomName && defaultUsername && (
             <button
               type="button"
@@ -460,10 +501,10 @@ export default function PreJoinScreen({
         <button
           type="button"
           onClick={handleJoin}
-          disabled={!ready}
+          disabled={!ready || submitDisabled}
           className="w-full py-3 bg-sky-600 hover:bg-sky-700 disabled:opacity-40 text-white font-bold text-sm rounded-xl shadow-sm transition-all active:scale-95"
         >
-          {joinLabel}
+          {submitDisabled ? (submitDisabledLabel ?? joinLabel) : joinLabel}
         </button>
       </div>
     </div>

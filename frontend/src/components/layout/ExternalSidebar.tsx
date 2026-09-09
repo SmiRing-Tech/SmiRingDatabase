@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
-import { Calendar, GraduationCap, ClipboardList, User, LogOut, X } from 'lucide-react';
+import { Calendar, GraduationCap, ClipboardList, User, Video, LogOut, X } from 'lucide-react';
 
 type Props = {
   isOpen: boolean;
@@ -11,6 +11,7 @@ const navItems = [
   { to: '/events', icon: Calendar, label: 'イベント' },
   { to: '/study-info', icon: GraduationCap, label: '留学情報' },
   { to: '/survey', icon: ClipboardList, label: 'アンケート' },
+  { to: '/connect', icon: Video, label: 'Connect（ビデオ通話）' },
   { to: '/profile', icon: User, label: 'プロフィール' },
 ];
 

@@ -37,6 +37,7 @@ interface DocumentPipContentProps {
   /** Tile ids pinned in the main call window — see `useCallLayout`. Same identity
    *  scheme (`tileId`), so pins carry straight over without re-deriving them here. */
   pinnedIds: string[];
+  isRecording?: boolean;
 }
 
 type PipLayoutMode = 'grid' | 'speaker';
@@ -167,6 +168,7 @@ export default function DocumentPipContent({
   onClose,
   chat,
   pinnedIds,
+  isRecording,
 }: DocumentPipContentProps) {
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled } = useLocalParticipant();
   const speakingParticipants = useSpeakingParticipants();
@@ -445,7 +447,14 @@ export default function DocumentPipContent({
       {/* Top Bar: Room info & Layout Controls */}
       <header className="h-9 shrink-0 bg-gray-950/90 border-b border-gray-800/80 px-2.5 flex items-center justify-between gap-1.5 z-20">
         <div className="flex items-center gap-1.5 min-w-0">
-          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+          {isRecording ? (
+            <div className="flex items-center gap-1 px-1.5 py-0.5 bg-rose-500/15 border border-rose-500/30 rounded-md text-[10px] font-bold text-rose-400 animate-pulse shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
+              <span>録画中</span>
+            </div>
+          ) : (
+            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+          )}
           <span className="font-bold text-xs text-gray-200 truncate max-w-[100px] sm:max-w-[150px]">
             {roomTitle || 'ミーティング'}
           </span>

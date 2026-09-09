@@ -307,30 +307,42 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
   // キーボード入力の一時バッファ
   const [inputBuffer, setInputBuffer] = useState<string>('');
 
-  // モーダルが開く時に、現在のプロップスの値を内部Stateに同期する
+  // ポップアップが開いている間、選択中のタイムゾーン(localTimezone)でvalueを解釈して
+  // 各フィールドの表示を再計算する。localTimezoneが変わるたびに再計算したいので依存配列に
+  // 含めるが、この中ではlocalTimezone自体は書き換えない（下のeffectとの役割分担）。
   useEffect(() => {
-    if (isOpen) {
-      const d = value || new Date();
-      const useUTC = !format.timezone;
-      if (useUTC) {
-        setYear(d.getUTCFullYear());
-        setMonth(d.getUTCMonth() + 1);
-        setDate(d.getUTCDate());
-        setHour(d.getUTCHours());
-        setMinute(d.getUTCMinutes());
-        setSecond(d.getUTCSeconds());
-      } else {
-        const partsInTz = getPartsInTimezone(d, localTimezone);
-        setYear(partsInTz.year);
-        setMonth(partsInTz.month);
-        setDate(partsInTz.date);
-        setHour(partsInTz.hour);
-        setMinute(partsInTz.minute);
-        setSecond(partsInTz.second);
-      }
-      if (timezone) setLocalTimezone(timezone);
+    if (!isOpen) return;
+    const d = value || new Date();
+    const useUTC = !format.timezone;
+    if (useUTC) {
+      setYear(d.getUTCFullYear());
+      setMonth(d.getUTCMonth() + 1);
+      setDate(d.getUTCDate());
+      setHour(d.getUTCHours());
+      setMinute(d.getUTCMinutes());
+      setSecond(d.getUTCSeconds());
+    } else {
+      const partsInTz = getPartsInTimezone(d, localTimezone);
+      setYear(partsInTz.year);
+      setMonth(partsInTz.month);
+      setDate(partsInTz.date);
+      setHour(partsInTz.hour);
+      setMinute(partsInTz.minute);
+      setSecond(partsInTz.second);
     }
-  }, [isOpen, value, timezone, format.timezone, localTimezone]);
+  }, [isOpen, value, format.timezone, localTimezone]);
+
+  // `timezone` propからlocalTimezoneへの同期は、開くたびに1回だけ行う。
+  // 上のeffectと同じ依存配列（isOpen込み）にしてしまうと、renderTimezoneUIでの選択が
+  // localTimezoneを変える → このeffectが再実行される → propの値（変わっていない）に
+  // 即座に戻される、という無限ループ状のリセットが起きてタイムゾーンを選べなくなる。
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    if (isOpen && !wasOpenRef.current && timezone) {
+      setLocalTimezone(timezone);
+    }
+    wasOpenRef.current = isOpen;
+  }, [isOpen, timezone]);
 
   // 存在するフィールドのリスト（Auto-advance用）
   const availableFields = useMemo(() => {
@@ -508,9 +520,9 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
       <div className="p-4 pb-2 flex flex-col items-center">
         <div className="w-full max-w-[320px]">
           <div className="flex justify-between items-center mb-3">
-            <button onClick={handlePrevMonth} className="p-1 hover:bg-gray-100 rounded-lg transition-colors"><ChevronLeft className="w-5 h-5" /></button>
+            <button type="button" onClick={handlePrevMonth} className="p-1 hover:bg-gray-100 rounded-lg transition-colors"><ChevronLeft className="w-5 h-5" /></button>
             <span className="font-bold text-gray-800">{year}年 {month}月</span>
-            <button onClick={handleNextMonth} className="p-1 hover:bg-gray-100 rounded-lg transition-colors"><ChevronRight className="w-5 h-5" /></button>
+            <button type="button" onClick={handleNextMonth} className="p-1 hover:bg-gray-100 rounded-lg transition-colors"><ChevronRight className="w-5 h-5" /></button>
           </div>
           <div className="grid grid-cols-7 gap-1 text-center text-xs font-bold text-gray-400 mb-2">
             {['日', '月', '火', '水', '木', '金', '土'].map(d => <div key={d}>{d}</div>)}
@@ -523,6 +535,7 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
               return (
                 <button
                   key={d}
+                  type="button"
                   onClick={() => { setDate(d); advanceToNextTab('date'); }}
                   className={`rounded-full aspect-square flex items-center justify-center text-sm transition-colors ${isSelected ? 'bg-blue-600 text-white shadow-md font-medium' :
                       isToday ? 'border-2 border-gray-200 bg-gray-100 text-gray-800 font-bold hover:bg-blue-50' :
@@ -546,14 +559,15 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
     return (
       <div className="p-6 flex flex-col h-[280px]">
         <div className="flex justify-between items-center mb-4">
-          <button onClick={() => setYear(year - 10)} className="p-2 hover:bg-gray-100 rounded-xl transition-colors"><ChevronLeft className="w-5 h-5" /></button>
+          <button type="button" onClick={() => setYear(year - 10)} className="p-2 hover:bg-gray-100 rounded-xl transition-colors"><ChevronLeft className="w-5 h-5" /></button>
           <span className="font-bold text-gray-800 text-lg">{startYear} - {startYear + 9}</span>
-          <button onClick={() => setYear(year + 10)} className="p-2 hover:bg-gray-100 rounded-xl transition-colors"><ChevronRight className="w-5 h-5" /></button>
+          <button type="button" onClick={() => setYear(year + 10)} className="p-2 hover:bg-gray-100 rounded-xl transition-colors"><ChevronRight className="w-5 h-5" /></button>
         </div>
         <div className="grid grid-cols-3 gap-3 flex-grow">
           {years.map(y => (
             <button
               key={y}
+              type="button"
               onClick={() => { setYear(y); advanceToNextTab('year'); }}
               className={`rounded-xl flex items-center justify-center font-bold text-sm transition-all ${
                 y === year ? 'bg-blue-600 text-white shadow-md' : 
@@ -575,6 +589,7 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
         {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
           <button
             key={m}
+            type="button"
             onClick={() => { setMonth(m); advanceToNextTab('month'); }}
             className={`aspect-[4/3] rounded-xl flex items-center justify-center font-bold text-sm transition-all ${
               m === month ? 'bg-blue-600 text-white shadow-md' : 'text-gray-700 hover:bg-blue-50'
@@ -693,6 +708,7 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
           {filteredLocations.map(loc => (
             <button
               key={loc.cityId}
+              type="button"
               onClick={() => {
                 setLocalTimezone(loc.cityId);
                 const nextTab = getBestDefaultTab();
@@ -791,6 +807,7 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
                 {format.timezone && (
                   <div className="mb-4">
                     <button
+                      type="button"
                       onClick={() => setActiveTab('timezone')}
                       className={`w-full flex items-center justify-between p-3 rounded-2xl border transition-all ${activeTab === 'timezone' ? 'border-blue-500 bg-blue-50/50' : 'border-gray-100 bg-gray-50'}`}
                     >
@@ -870,12 +887,14 @@ export const SmartDateTimePicker: React.FC<SmartDateTimePickerProps> = ({
 
               <div className="p-4 bg-gray-50 flex gap-3">
                 <button
+                  type="button"
                   onClick={() => setIsOpen(false)}
                   className="flex-1 py-3 text-sm font-bold text-gray-500 hover:bg-gray-100 rounded-2xl transition-all"
                 >
                   キャンセル
                 </button>
                 <button
+                  type="button"
                   onClick={handleConfirm}
                   className="flex-[1.5] py-3 bg-blue-600 text-white text-sm font-bold rounded-2xl shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all"
                 >

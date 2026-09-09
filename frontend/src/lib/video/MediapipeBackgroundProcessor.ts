@@ -154,7 +154,30 @@ type Programs = {
   >;
 };
 
+let instanceCounter = 0;
+
+/**
+ * Diagnostic logging for the prewarm/rewire/stabilize dance around processor
+ * swaps — the "black background right after switching to High" bug lives
+ * somewhere across process boundaries (two segmenter pipelines, a clone()d
+ * track, livekit's own setProcessor/stopProcessor sequencing) that don't show
+ * up in a single stack trace, so timestamped, per-instance logs are the way to
+ * actually see the order things happen in. Left in as plain console.debug
+ * (not behind a flag) until the bug is confirmed fixed — cheap enough to keep
+ * a little longer, and DevTools' console filter hides it in one search.
+ */
+function bgLog(id: number, msg: string, data?: Record<string, unknown>) {
+  const t = typeof performance !== 'undefined' ? performance.now().toFixed(0) : '?';
+  console.log(`[mediapipe-bg #${id} t=${t}ms] ${msg}`, data ?? '');
+}
+
 export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.Video> {
+  private readonly id = ++instanceCounter;
+
+  private log(msg: string, data?: Record<string, unknown>) {
+    bgLog(this.id, msg, data);
+  }
+
   /**
    * Includes the model, because LiveKit identifies a processor by this string
    * (it serialises `processor` down to `.name` when deciding whether preview
@@ -246,9 +269,107 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
   private stopped = false;
 
+  /**
+   * Frames composited *after* mask polarity was confidently resolved (not the
+   * `assumed` default — see `detectPolarity`) and with matte history already
+   * warmed up. Frames rendered before polarity is confident can show the person
+   * and background swapped; frames rendered before matte history exists skip
+   * temporal smoothing and look rougher. Neither is what "the effect is ready"
+   * should mean, but `init()`/`setBackground()` resolve as soon as the pipeline
+   * is wired, well before either condition holds — see `waitUntilReady`.
+   */
+  private stableFrameCount = 0;
+
+  private readonly requiredStableFrames = 5;
+
+  private readyResolved = false;
+
+  private readyWaiters: Array<() => void> = [];
+
+  private stabilityFrameLogCount = 0;
+
+  /** Marks this frame's contribution towards / away from "stable", from renderFrame(). */
+  private trackStability() {
+    const wasCounting = this.stableFrameCount > 0;
+    if (this.invert !== undefined && this.hasMatteHistory) {
+      this.stableFrameCount += 1;
+    } else {
+      // Not just "don't count it" — a still-unresolved or freshly reset matte
+      // means any earlier streak was against a stale assumption; start over.
+      if (wasCounting) {
+        this.log('stability reset', {
+          invertResolved: this.invert !== undefined,
+          hasMatteHistory: this.hasMatteHistory,
+          hadStreak: this.stableFrameCount,
+        });
+      }
+      this.stableFrameCount = 0;
+    }
+    // Log the first few frames of every streak toward readiness, not every
+    // frame after — this fires at 30fps otherwise and drowns everything else.
+    if (this.stableFrameCount > 0 && this.stableFrameCount <= this.requiredStableFrames) {
+      this.stabilityFrameLogCount += 1;
+      if (this.stabilityFrameLogCount <= this.requiredStableFrames + 1) {
+        this.log('stable frame', {
+          stableFrameCount: this.stableFrameCount,
+          invert: this.invert,
+          usingImage: this.usingImageBackground(),
+          mode: this.options.mode,
+        });
+      }
+    }
+    if (!this.readyResolved && this.stableFrameCount >= this.requiredStableFrames) {
+      this.resolveReady('stabilized');
+    }
+  }
+
+  private resolveReady(reason: 'stabilized' | 'timeout') {
+    if (this.readyResolved) return;
+    this.readyResolved = true;
+    this.log('waitUntilReady resolved', {
+      reason,
+      stableFrameCount: this.stableFrameCount,
+      invert: this.invert,
+    });
+    const waiters = this.readyWaiters;
+    this.readyWaiters = [];
+    waiters.forEach((resolve) => resolve());
+  }
+
+  /**
+   * Resolves once this processor's output has been internally verified —
+   * polarity confidently detected and the matte has stabilized over a handful
+   * of frames — rather than merely "the model loaded and the pipeline is
+   * wired". Callers should gate showing the preview to the user on this, not
+   * on `init()`/`setBackground()` resolving.
+   *
+   * Falls back to a timeout: a camera with nothing distinguishable between its
+   * border and centre (e.g. pointed at a blank wall) may never clear
+   * `MIN_POLARITY_GAP`, and an infinite spinner is worse than an unverified
+   * preview in that edge case.
+   */
+  waitUntilReady(timeoutMs = 4000): Promise<void> {
+    if (this.readyResolved) {
+      this.log('waitUntilReady called, already resolved');
+      return Promise.resolve();
+    }
+    this.log('waitUntilReady waiting', { timeoutMs, stableFrameCount: this.stableFrameCount });
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.log('waitUntilReady TIMED OUT', { stableFrameCount: this.stableFrameCount, invert: this.invert });
+        this.resolveReady('timeout');
+      }, timeoutMs);
+      this.readyWaiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
   constructor(options: MediapipeBackgroundOptions = {}) {
     this.options = { ...DEFAULTS, ...options };
     this.name = `mediapipe-background-${this.options.quality}`;
+    this.log('constructed', { name: this.name, mode: this.options.mode, imageUrl: this.options.imageUrl });
   }
 
   /** The model this processor was built with; changing it requires a new instance. */
@@ -361,7 +482,20 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     return this.options.mode === 'image' && !!this.imageTexture;
   }
 
+  /**
+   * There used to be a `prewarm()`/`rewireSource()` pair here meant to warm a
+   * second, higher-quality processor in the background against a clone of the
+   * camera track and hand off to it seamlessly. Dropped: MediaPipe's
+   * tasks-vision WASM build pools GPU buffers globally rather than scoping
+   * them per `ImageSegmenter` instance, so two segmenters alive at once
+   * corrupt each other's GL state — "object does not belong to this context"
+   * errors and the newer processor's output going solid black. See
+   * `detectSegmentationQuality()` in backgroundLibrary.ts: quality is now
+   * picked once, before the only processor this track will ever have is
+   * built, so only one segmenter is ever alive.
+   */
   async init(opts: VideoProcessorOptions) {
+    this.log('init() called', { trackId: opts.track.id, trackState: opts.track.readyState });
     this.stopped = false;
     this.sourceTrack = opts.track;
 
@@ -385,6 +519,16 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     });
     if (!gl) throw new Error('WebGL2 is not available');
     this.gl = gl;
+    // A second concurrent segmenter/GL context (prewarm's) is exactly the kind
+    // of thing that can push a browser over its concurrent-WebGL-context
+    // budget, which shows up as this firing and the canvas going solid black.
+    this.canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this.log('!!! webglcontextlost !!!', { frameCount: this.frameCount });
+    });
+    this.canvas.addEventListener('webglcontextrestored', () => {
+      this.log('webglcontextrestored', { frameCount: this.frameCount });
+    });
     // Lets us sample MediaPipe's float mask with linear filtering where supported.
     gl.getExtension('OES_texture_float_linear');
     // Our own VAO, so the vertex state we set never lands in whatever VAO
@@ -425,14 +569,20 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     await this.createSegmenter();
     if (this.options.mode === 'image' && this.options.imageUrl) {
       // A failed image must not stop the camera; blur is the fallback.
-      await this.loadImage(this.options.imageUrl).catch((err) =>
-        console.error('[mediapipe-bg]', err),
-      );
+      await this.loadImage(this.options.imageUrl).catch((err) => {
+        console.error('[mediapipe-bg]', err);
+        this.log('image load FAILED, falling back to blur', { imageUrl: this.options.imageUrl, err: String(err) });
+      });
     }
     this.startPipeline();
+    this.log('init() done', {
+      processedTrackId: this.processedTrack?.id,
+      usingImageBackground: this.usingImageBackground(),
+    });
   }
 
   async restart(opts: VideoProcessorOptions) {
+    this.log('restart() (device switch)', { trackId: opts.track.id });
     this.stopPipeline();
     this.sourceTrack = opts.track;
     const settings = opts.track.getSettings();
@@ -441,6 +591,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   }
 
   async destroy() {
+    this.log('destroy() called', { stableFrameCount: this.stableFrameCount, readyResolved: this.readyResolved });
     this.stopped = true;
     this.stopPipeline();
 
@@ -481,6 +632,8 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   // ---------------------------------------------------------------- MediaPipe
 
   private async createSegmenter() {
+    this.log('createSegmenter() start', { quality: this.options.quality, delegate: this.options.delegate });
+    const t0 = performance.now();
     const fileset = await FilesetResolver.forVisionTasks(
       this.options.assetPaths?.wasmFileSet ??
         `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`,
@@ -502,6 +655,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     // yet hands back a single mask scoring the *subject*, so trusting the labels
     // here inverted the whole effect on that model.
     this.labels = this.segmenter.getLabels();
+    this.log('createSegmenter() done', { ms: Math.round(performance.now() - t0), labels: this.labels });
   }
 
   /**
@@ -564,17 +718,30 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     // flip. Wait for a frame with an actual, meaningful gap instead.
     if (Math.abs(borderAvg - centreAvg) >= MIN_POLARITY_GAP) {
       this.invert = borderAvg > centreAvg ? 1 : 0;
+      this.log('detectPolarity() resolved', { invert: this.invert, borderAvg, centreAvg });
     }
   }
 
   // ----------------------------------------------------------------- Plumbing
 
   private startPipeline() {
-    if (!this.sourceTrack || !this.canvas) return;
+    if (!this.sourceTrack || !this.canvas) {
+      this.log('startPipeline() aborted, missing sourceTrack/canvas', {
+        hasSourceTrack: !!this.sourceTrack,
+        hasCanvas: !!this.canvas,
+      });
+      return;
+    }
 
     const canUseInsertableStreams =
       typeof MediaStreamTrackGenerator !== 'undefined' &&
       typeof MediaStreamTrackProcessor !== 'undefined';
+
+    this.log('startPipeline()', {
+      sourceTrackId: this.sourceTrack.id,
+      sourceTrackState: this.sourceTrack.readyState,
+      canUseInsertableStreams,
+    });
 
     if (canUseInsertableStreams) {
       this.streamProcessor = new MediaStreamTrackProcessor({
@@ -582,6 +749,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       });
       this.streamGenerator = new MediaStreamTrackGenerator({ kind: 'video' });
       this.abortController = new AbortController();
+      this.frameCount = 0;
 
       const transformer = new TransformStream<VideoFrame, VideoFrame>({
         transform: (frame, controller) => this.transform(frame, controller),
@@ -591,10 +759,14 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
         .pipeThrough(transformer, { signal: this.abortController.signal })
         .pipeTo(this.streamGenerator.writable, { signal: this.abortController.signal })
         .catch((err) => {
-          if (!this.stopped) console.error('[mediapipe-bg] pipeline error:', err);
+          if (!this.stopped) {
+            console.error('[mediapipe-bg] pipeline error:', err);
+            this.log('pipeline stream errored', { err: String(err) });
+          }
         });
 
       this.processedTrack = this.streamGenerator as unknown as MediaStreamTrack;
+      this.log('startPipeline() insertable-streams path wired', { processedTrackId: this.processedTrack.id });
       return;
     }
 
@@ -662,10 +834,21 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.fallbackStream = undefined;
   }
 
+  private frameCount = 0;
+
   private transform(frame: VideoFrame, controller: TransformStreamDefaultController<VideoFrame>) {
     let handedOff = false;
+    this.frameCount += 1;
+    const n = this.frameCount;
     try {
       if (frame.codedWidth === 0 || frame.codedHeight === 0 || this.stopped || !this.canvas) {
+        this.log('transform() PASSTHROUGH (raw frame, not composited)', {
+          frameNum: n,
+          codedWidth: frame.codedWidth,
+          codedHeight: frame.codedHeight,
+          stopped: this.stopped,
+          hasCanvas: !!this.canvas,
+        });
         controller.enqueue(frame);
         handedOff = true;
         return;
@@ -673,9 +856,23 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
       this.resize(frame.displayWidth, frame.displayHeight);
       this.renderFrame(frame);
+      if (n <= 3 || n % 60 === 0) {
+        this.log('transform() composited frame', {
+          frameNum: n,
+          canvasSize: `${this.canvas.width}x${this.canvas.height}`,
+          invert: this.invert,
+          usingImage: this.usingImageBackground(),
+          glContextLost: this.gl?.isContextLost?.(),
+        });
+      }
       controller.enqueue(new VideoFrame(this.canvas, { timestamp: frame.timestamp }));
     } catch (err) {
       console.error('[mediapipe-bg] frame failed, passing it through:', err);
+      this.log('transform() EXCEPTION, passing raw frame through', {
+        frameNum: n,
+        err: String(err),
+        glContextLost: this.gl?.isContextLost?.(),
+      });
       if (!handedOff) {
         controller.enqueue(frame);
         handedOff = true;
@@ -764,6 +961,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.resetGLState();
     if (!this.usingImageBackground()) this.blurBackground();
     this.composite();
+    this.trackStability();
   }
 
   private updateMatte(source: VideoFrame | HTMLVideoElement) {

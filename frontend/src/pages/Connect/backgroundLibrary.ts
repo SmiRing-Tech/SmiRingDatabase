@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiClient } from '../../lib/apiClient';
+import type { SegmentationQuality } from '../../lib/video/MediapipeBackgroundProcessor';
 
 /**
  * The parts of the background feature that have nothing to do with where the
@@ -36,6 +37,8 @@ const STORAGE_KEY = 'smiring.connect.background';
 export type StoredChoice = {
   mode: BackgroundMode;
   imageId?: string;
+  /** Manual override from the quality toggle; absent means "use detectSegmentationQuality()". */
+  quality?: SegmentationQuality;
 };
 
 /** First-ever join, before anyone has picked anything for themselves. */
@@ -53,6 +56,9 @@ export function readStoredChoice(): StoredChoice {
     const parsed = JSON.parse(raw) as StoredChoice;
     if (parsed.mode !== 'off' && parsed.mode !== 'blur' && parsed.mode !== 'image') {
       return FIRST_TIME_DEFAULT;
+    }
+    if (parsed.quality !== 'balanced' && parsed.quality !== 'high') {
+      parsed.quality = undefined;
     }
     return parsed;
   } catch {
@@ -80,6 +86,37 @@ export function isMobileDevice(): boolean {
   const uaData = (navigator as unknown as { userAgentData?: { mobile?: boolean } }).userAgentData;
   if (uaData && typeof uaData.mobile === 'boolean') return uaData.mobile;
   return /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+/**
+ * Picks a segmentation model quality once, up front — there used to be a
+ * runtime "start on balanced, silently upgrade to high" dance, but MediaPipe's
+ * tasks-vision WASM build does not support two `ImageSegmenter` instances
+ * running at once: their GPU buffers are pooled globally rather than scoped
+ * per instance, so the moment a second one spins up you get GL "object does
+ * not belong to this context" errors and the newer processor's output goes
+ * solid black. One quality, chosen before the only processor is ever built,
+ * sidesteps that entirely.
+ *
+ * Not just a mobile/desktop split — hardwareConcurrency (logical cores) and,
+ * where available, deviceMemory catch underpowered laptops too. Any signal
+ * that isn't available (deviceMemory is Chrome/Android-only) is simply
+ * skipped rather than treated as "bad", but the *absence* of a positive
+ * capability signal (no hardwareConcurrency reading, or too low) falls back
+ * to 'balanced' — a wrong "safe" guess costs some sharpness, a wrong
+ * "capable" guess costs stutter and a wasted 16MB download.
+ */
+export function detectSegmentationQuality(): SegmentationQuality {
+  if (isMobileDevice()) return 'balanced';
+  if (typeof navigator === 'undefined') return 'balanced';
+
+  const cores = navigator.hardwareConcurrency;
+  if (typeof cores !== 'number' || cores < 4) return 'balanced';
+
+  const memory = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
+  if (typeof memory === 'number' && memory < 4) return 'balanced';
+
+  return 'high';
 }
 
 /** Loads, uploads and deletes the user's saved backgrounds. */

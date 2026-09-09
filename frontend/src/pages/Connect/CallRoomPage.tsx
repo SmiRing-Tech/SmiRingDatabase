@@ -65,10 +65,13 @@ import {
   CircleDot,
   StopCircle,
   Image as ImageIcon,
+  Users,
 } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import PreJoinScreen, { type PreJoinChoices } from '../../components/Connect/PreJoinScreen';
 import MiniRoomPanel from '../../components/Connect/MiniRoomPanel';
+import ParticipantsPanel from '../../components/Connect/ParticipantsPanel';
+import { useConnectWaitlist } from '../../hooks/useConnectWaitlist';
 import MiniRoomMoveToast from '../../components/Connect/MiniRoomMoveToast';
 import { useAuth } from '../../context/AuthContext';
 import { useRecording } from './useRecording';
@@ -951,6 +954,56 @@ function ChatMenuItem({
   );
 }
 
+/** Toggles the Participants panel. `pendingCount` (host-only — always 0 for non-hosts, see
+ *  useConnectWaitlist) drives the same red-dot badge style as ChatToggleButton's unread count. */
+function ParticipantsButton({
+  isOpen,
+  pendingCount,
+  onClick,
+}: {
+  isOpen: boolean;
+  pendingCount: number;
+  onClick: () => void;
+}) {
+  return (
+    <button onClick={onClick} title="参加者" className={`relative ${controlButtonClass(isOpen)}`}>
+      <Users className="w-5 h-5" />
+      <ControlButtonLabel>参加者</ControlButtonLabel>
+      {pendingCount > 0 && (
+        <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 bg-rose-500 text-white text-[9px] font-bold rounded-full border-2 border-gray-950 flex items-center justify-center animate-pulse">
+          {pendingCount}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** Same participants toggle, styled as a row inside `MoreMenu` for when the bar is too narrow. */
+function ParticipantsMenuItem({
+  isOpen,
+  pendingCount,
+  onClick,
+}: {
+  isOpen: boolean;
+  pendingCount: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
+    >
+      <Users className="w-4 h-4 text-sky-400" />
+      <span>{isOpen ? '参加者一覧を閉じる' : '参加者'}</span>
+      {pendingCount > 0 && (
+        <span className="ml-auto min-w-4 h-4 px-1 bg-rose-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+          {pendingCount}
+        </span>
+      )}
+    </button>
+  );
+}
+
 /** Opens the mini-room (breakout room) creation dialog. */
 function MiniRoomButton({ onClick }: { onClick: () => void }) {
   return (
@@ -1220,9 +1273,12 @@ function CustomVideoConference({
   chat,
   showChat,
   setShowChat,
+  showParticipants,
+  setShowParticipants,
   isMiniRoomHost,
   mainRoomId,
   miniRooms,
+  recording,
 }: {
   layout: CallLayout;
   onOpenPip: () => void;
@@ -1232,12 +1288,21 @@ function CustomVideoConference({
   chat: ReturnType<typeof useAdvancedChat>;
   showChat: boolean;
   setShowChat: (val: boolean | ((prev: boolean) => boolean)) => void;
+  showParticipants: boolean;
+  setShowParticipants: (val: boolean | ((prev: boolean) => boolean)) => void;
   isMiniRoomHost: boolean;
   mainRoomId: string;
   miniRooms: UseMiniRoomsResult;
+  recording: ReturnType<typeof useRecording>;
 }) {
   const { localParticipant } = useLocalParticipant();
   const mediaEnhancements = useMediaEnhancementsState(localParticipant);
+  // Prefer the authenticated user id (matches useAdvancedChat's selfIdentity and the
+  // backend's LiveKit identity for logged-in joiners; localParticipant.identity is empty
+  // until the connection completes — see useAdvancedChat's comment). Anonymous guests have
+  // no user.id, so they fall back to localParticipant.identity (their guest_* identity).
+  const { user } = useAuth();
+  const selfIdentity = user?.id || localParticipant.identity;
 
   // Forces exactly one remount of the grid/stage layout the moment the local
   // camera's publication first appears. Under investigation: the local camera
@@ -1266,7 +1331,30 @@ function CustomVideoConference({
   // Starting/stopping is host-only, but the recording *state* is read by everyone:
   // participants who can't touch the controls still need to see that they're being recorded.
   const canRecord = isMiniRoomHost;
-  const recording = useRecording(mainRoomId);
+
+  // Host-only pending waiting-room requests — see the DB flag design: waitlist.pending is
+  // always empty for non-hosts (the backend 403s these routes for them, this just skips
+  // firing the requests), so the badge/panel below need no extra isMiniRoomHost checks.
+  const waitlist = useConnectWaitlist(mainRoomId, isMiniRoomHost);
+
+  // Chat and Participants are docked on opposite sides but only one makes sense open at a
+  // time on mobile (each goes full-screen there — see the "hidden below sm" comment further
+  // down), so opening one closes the other.
+  const handleToggleChat = useCallback(() => {
+    setShowChat((prev) => {
+      const next = !prev;
+      if (next) setShowParticipants(false);
+      return next;
+    });
+  }, [setShowChat, setShowParticipants]);
+
+  const handleToggleParticipants = useCallback(() => {
+    setShowParticipants((prev) => {
+      const next = !prev;
+      if (next) setShowChat(false);
+      return next;
+    });
+  }, [setShowChat, setShowParticipants]);
 
   // Center control-bar items (Screen Share, Chat, and any future additions) fold into
   // the "..." menu once they don't fit. `centerWidth` is the actual box width flexbox
@@ -1276,6 +1364,29 @@ function CustomVideoConference({
   const { ref: centerRef, width: centerWidth } = useElementWidth<HTMLDivElement>();
 
   const overflowItems: OverflowBarItem[] = [
+    // 左端（共有の左側）— 参加者一覧・待機室の承認/拒否
+    {
+      key: 'participants',
+      priority: 1,
+      badgeCount: waitlist.pending.length,
+      renderBar: () => (
+        <ParticipantsButton
+          isOpen={showParticipants}
+          pendingCount={waitlist.pending.length}
+          onClick={handleToggleParticipants}
+        />
+      ),
+      renderMenuItem: (close) => (
+        <ParticipantsMenuItem
+          isOpen={showParticipants}
+          pendingCount={waitlist.pending.length}
+          onClick={() => {
+            handleToggleParticipants();
+            close();
+          }}
+        />
+      ),
+    },
     {
       key: 'screenshare',
       priority: 1,
@@ -1287,18 +1398,14 @@ function CustomVideoConference({
       priority: 2,
       badgeCount: chat.totalUnreadCount,
       renderBar: () => (
-        <ChatToggleButton
-          isOpen={showChat}
-          unreadCount={chat.totalUnreadCount}
-          onClick={() => setShowChat((prev) => !prev)}
-        />
+        <ChatToggleButton isOpen={showChat} unreadCount={chat.totalUnreadCount} onClick={handleToggleChat} />
       ),
       renderMenuItem: (close) => (
         <ChatMenuItem
           isOpen={showChat}
           unreadCount={chat.totalUnreadCount}
           onClick={() => {
-            setShowChat((prev) => !prev);
+            handleToggleChat();
             close();
           }}
         />
@@ -1402,16 +1509,7 @@ function CustomVideoConference({
 
   return (
     <div className="lk-video-conference relative flex flex-row h-full w-full overflow-hidden">
-      {/* Shown to everyone in the call, not just whoever started it — people have a right
-          to know they're on the record. */}
-      {recording.isRecording && (
-        <div className="absolute top-4 left-4 z-40 animate-in fade-in slide-in-from-top-2 duration-300">
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-rose-950/90 border border-rose-500/50 backdrop-blur-md rounded-xl shadow-2xl text-white">
-            <Circle className="w-3 h-3 text-rose-400 fill-current animate-pulse" />
-            <span className="text-xs font-semibold">録画中</span>
-          </div>
-        </div>
-      )}
+
 
       {recording.error && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50">
@@ -1440,13 +1538,30 @@ function CustomVideoConference({
         </div>
       )}
 
-      {/* Main Conference Area — hidden below `sm` while chat is open (phones can't fit a
-          320px+ chat sidebar next to the video grid without squeezing the control bar off
-          screen), so chat becomes a full-screen page you switch to and back from instead,
+      {/* Participants: docked sidebar on sm+ screens, full-screen page (with a back-to-video
+          button) below `sm` — mirrors Chat below, but docked left since it renders before
+          the main conference area in this flex row instead of after. Chat/Participants are
+          mutually exclusive (see handleToggleChat/handleToggleParticipants) so only one of
+          this and the chat aside is ever showing. */}
+      {showParticipants && (
+        <aside className="w-full sm:w-80 md:w-96 h-full shrink-0 z-30 shadow-2xl animate-in slide-in-from-left duration-200">
+          <ParticipantsPanel
+            isHost={isMiniRoomHost}
+            selfIdentity={selfIdentity}
+            getParticipantInfo={chat.getParticipantInfo}
+            waitlist={waitlist}
+            onBackToVideo={() => setShowParticipants(false)}
+          />
+        </aside>
+      )}
+
+      {/* Main Conference Area — hidden below `sm` while chat or participants is open (phones
+          can't fit a 320px+ sidebar next to the video grid without squeezing the control bar
+          off screen), so it becomes a full-screen page you switch to and back from instead,
           matching the PiP window's video/chat tab behavior. */}
       <div
         className={`flex-1 h-full min-w-0 relative overflow-hidden ${
-          showChat ? 'hidden sm:flex sm:flex-col' : 'flex flex-col'
+          showChat || showParticipants ? 'hidden sm:flex sm:flex-col' : 'flex flex-col'
         }`}
       >
         {/* `lk-video-conference-inner` supplies the flex column. The old
@@ -1557,6 +1672,7 @@ function CallRoomInner({
 }) {
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const [showParticipants, setShowParticipants] = useState(false);
   const { user } = useAuth();
 
   const isMiniRoomHost = isHost;
@@ -1568,6 +1684,8 @@ function CallRoomInner({
     onReconnect,
     onBeforeReconnectDisconnect,
   });
+
+  const recording = useRecording(roomId);
 
   // Safe to call inside <LiveKitRoom>. selfIdentity comes from the authenticated user id
   // (same value the backend issues as the LiveKit participant identity) rather than
@@ -1711,7 +1829,14 @@ function CallRoomInner({
       {/* Custom Slim In-Room Header */}
       <header className="h-11 shrink-0 bg-gray-950/90 border-b border-gray-800/80 backdrop-blur-md px-4 md:px-6 flex items-center justify-between z-30">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+          {recording.isRecording ? (
+            <div className="flex items-center gap-1.5 px-2 py-0.5 bg-rose-500/15 border border-rose-500/30 rounded-md text-xs font-bold text-rose-400 animate-pulse shrink-0">
+              <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
+              <span>録画中</span>
+            </div>
+          ) : (
+            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+          )}
           <h2 className="font-bold text-sm text-gray-100 truncate max-w-[180px] sm:max-w-xs md:max-w-md">
             {roomTitle || 'ミーティング'}
           </h2>
@@ -1756,9 +1881,12 @@ function CallRoomInner({
           chat={chat}
           showChat={showChat}
           setShowChat={setShowChat}
+          showParticipants={showParticipants}
+          setShowParticipants={setShowParticipants}
           isMiniRoomHost={isMiniRoomHost}
           mainRoomId={roomId}
           miniRooms={miniRooms}
+          recording={recording}
         />
 
         <MiniRoomMoveToast pendingMove={miniRooms.pendingMove} />
@@ -1772,6 +1900,7 @@ function CallRoomInner({
               onClose={closeDocumentPip}
               chat={chat}
               pinnedIds={layout.pinned}
+              isRecording={recording.isRecording}
             />,
             pipWindow.document.body,
           )}
@@ -1791,6 +1920,12 @@ function PreJoinStage({
   roomId,
   onJoin,
   onError,
+  onBack,
+  anonymous = false,
+  roomTitleOverride,
+  statusMessage,
+  submitDisabled = false,
+  submitDisabledLabel,
 }: {
   roomId: string;
   onJoin: (
@@ -1799,18 +1934,34 @@ function PreJoinStage({
     audioTrack: LocalAudioTrack | null,
   ) => void;
   onError: (message: string) => void;
+  /** 「戻る」ボタンの遷移先を呼び出し元に委ねたいとき（例: 待機室では実際には遷移させず、
+   *  カメラ/マイクを解放してPreJoin状態に戻すだけにしたい）。未指定なら anonymous=false の
+   *  ときだけデフォルトの /connect に戻るボタンを出す。 */
+  onBack?: () => void;
+  /** 招待URL経由の完全外部ユーザー（DBアカウントなし）向け。表示名を必須にし、
+   *  ログイン前提のプロフィール/ルーム一覧取得をスキップする。 */
+  anonymous?: boolean;
+  /** anonymous=true のとき、認証必須の /api/connect/rooms が使えない代わりに呼び出し元から渡すルーム名。 */
+  roomTitleOverride?: string;
+  /** カード上部に出すステータス文言（例: 入室リクエスト送信中・ホストの承認待ち）。 */
+  statusMessage?: string;
+  /** 参加ボタンを無効化する（入室リクエスト送信済みで結果待ちのとき）。カメラ・マイク・
+   *  背景の調整はこの画面のまま引き続き行える。 */
+  submitDisabled?: boolean;
+  submitDisabledLabel?: string;
 }) {
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  const [roomTitle, setRoomTitle] = useState('');
+  const [roomTitle, setRoomTitle] = useState(roomTitleOverride ?? '');
   const [copied, setCopied] = useState(false);
   const [defaultDisplayName, setDefaultDisplayName] = useState('');
   const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
-  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileLoading, setProfileLoading] = useState(!anonymous);
 
   const userEmail = user?.email;
   useEffect(() => {
+    if (anonymous) return; // 完全外部ユーザーはプロフィールを持たない・表示名は自分で入力する
     let isMounted = true;
     apiClient
       .get('/api/basic_profile_info/me')
@@ -1837,9 +1988,10 @@ function PreJoinStage({
     return () => {
       isMounted = false;
     };
-  }, [user?.id, userEmail]);
+  }, [user?.id, userEmail, anonymous]);
 
   useEffect(() => {
+    if (anonymous) return; // ルーム名は呼び出し元(招待URLの解決結果)から渡される
     apiClient
       .get('/api/connect/rooms')
       .then(async (res) => {
@@ -1850,7 +2002,7 @@ function PreJoinStage({
         }
       })
       .catch(() => {});
-  }, [roomId]);
+  }, [roomId, anonymous]);
 
   const copyRoomUrl = async () => {
     try {
@@ -1878,31 +2030,41 @@ function PreJoinStage({
             <h1 className="text-2xl md:text-3xl font-black text-gray-900 tracking-tight">
               {roomTitle ? roomTitle : 'ミーティングに参加'}
             </h1>
-            <button
-              onClick={copyRoomUrl}
-              className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 hover:border-sky-300 rounded-lg text-sm font-bold text-gray-600 transition-all active:scale-95"
-              title="招待URLをコピー"
-            >
-              <span className="text-sky-600">ルームコード:</span>
-              <span className="font-mono">{roomId}</span>
-              {copied ? (
-                <Check className="w-4 h-4 text-emerald-500" />
-              ) : (
-                <Copy className="w-4 h-4 text-slate-400" />
-              )}
-            </button>
+            {!anonymous && (
+              <button
+                onClick={copyRoomUrl}
+                className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 hover:border-sky-300 rounded-lg text-sm font-bold text-gray-600 transition-all active:scale-95"
+                title="招待URLをコピー"
+              >
+                <span className="text-sky-600">ルームコード:</span>
+                <span className="font-mono">{roomId}</span>
+                {copied ? (
+                  <Check className="w-4 h-4 text-emerald-500" />
+                ) : (
+                  <Copy className="w-4 h-4 text-slate-400" />
+                )}
+              </button>
+            )}
           </div>
 
-          <button
-            onClick={() => navigate('/connect')}
-            className="self-start flex items-center gap-2 px-4 py-2.5 bg-white border border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-gray-600 font-bold text-sm rounded-xl shadow-sm hover:shadow transition-all duration-200 active:scale-95"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>戻る</span>
-          </button>
+          {(onBack || !anonymous) && (
+            <button
+              onClick={onBack ?? (() => navigate('/connect'))}
+              className="self-start flex items-center gap-2 px-4 py-2.5 bg-white border border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-gray-600 font-bold text-sm rounded-xl shadow-sm hover:shadow transition-all duration-200 active:scale-95"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>戻る</span>
+            </button>
+          )}
         </div>
 
         <div className="bg-white border border-slate-100 rounded-3xl p-4 md:p-6 shadow-sm">
+          {statusMessage && (
+            <div className="mb-4 flex items-center gap-2.5 px-4 py-3 bg-sky-50 border border-sky-100 rounded-2xl text-sky-700">
+              <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+              <p className="text-xs font-bold">{statusMessage}</p>
+            </div>
+          )}
           {profileLoading ? (
             <div className="flex flex-col items-center justify-center py-20 text-gray-400 gap-3">
               <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
@@ -1913,6 +2075,9 @@ function PreJoinStage({
               defaultUsername={defaultDisplayName}
               avatarUrl={myAvatarUrl}
               joinLabel="このルームに参加"
+              requireUsername={anonymous}
+              submitDisabled={submitDisabled}
+              submitDisabledLabel={submitDisabledLabel}
               onSubmit={onJoin}
               onError={(e) => onError(e.message)}
             />
@@ -1923,19 +2088,36 @@ function PreJoinStage({
   );
 }
 
-export default function CallRoomPage() {
+/** DBアカウントを持たない招待URL経由の参加者向け情報。渡された場合、CallRoomPageは
+ *  ログイン前提のAPI呼び出し（プロフィール取得・/api/connect/token）を避け、代わりに
+ *  invite_tokenで認可された匿名向けエンドポイント（join-request → 待機室 → anonymous-token）
+ *  を使う。待機室は外部ミーティングで常にON（切り替えUIは未実装）なので、admitted になる
+ *  手段が無い今のバックエンド実装では 'waiting' で止まり続ける想定。 */
+export interface AnonymousInvite {
+  token: string;
+  roomId: string;
+  roomTitle: string;
+}
+
+export default function CallRoomPage({
+  anonymousInvite,
+}: {
+  anonymousInvite?: AnonymousInvite;
+} = {}) {
   const navigate = useNavigate();
-  const { roomId } = useParams<{ roomId: string }>();
+  const { roomId: routeRoomId } = useParams<{ roomId: string }>();
+  const roomId = anonymousInvite?.roomId ?? routeRoomId;
   const { user } = useAuth();
 
-  const [stage, setStage] = useState<'prejoin' | 'connecting' | 'in-call'>('prejoin');
+  const [stage, setStage] = useState<'prejoin' | 'connecting' | 'waiting' | 'in-call'>('prejoin');
   const [token, setToken] = useState('');
   const [serverUrl, setServerUrl] = useState('');
-  const [roomTitle, setRoomTitle] = useState('');
+  const [roomTitle, setRoomTitle] = useState(anonymousInvite?.roomTitle ?? '');
   const [isHost, setIsHost] = useState(false);
   const [choices, setChoices] = useState<PreJoinChoices | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [isDisconnected, setIsDisconnected] = useState(false);
+  const [waitlistId, setWaitlistId] = useState<string | null>(null);
 
   // Warn user with native browser dialog when trying to close the tab or leave during active call
   useEffect(() => {
@@ -1973,6 +2155,67 @@ export default function CallRoomPage() {
     setErrorMsg(message);
   }, []);
 
+  // "戻る" from the connecting/waiting status banner: just resets the join-request
+  // bookkeeping and steps back to 'prejoin' — NOT a navigation, and deliberately does
+  // NOT touch pendingVideoTrack/pendingAudioTrack. Those are the exact same live tracks
+  // the still-mounted PreJoinScreen preview is displaying (see the merged
+  // prejoin/connecting/waiting render below — PreJoinStage never unmounts across those
+  // three stages), so stopping them here would black out the camera the user is looking
+  // at. PreJoinScreen keeps owning/stopping them for its own lifetime; if the user
+  // resubmits, handlePreJoinSubmit re-adopts the same track objects, not fresh ones.
+  const handleCancelJoin = useCallback(() => {
+    // Best-effort: withdraw the pending waitlist row so it doesn't sit there forever with
+    // no admission UI (yet) to ever resolve it. Not awaited — this is cleanup, not something
+    // that should delay stepping back to prejoin.
+    if (waitlistId && roomId) {
+      void apiClient.delete(`/api/connect/rooms/${roomId}/join-request/${waitlistId}`).catch(() => {});
+    }
+    setPendingVideoTrack(null);
+    setPendingAudioTrack(null);
+    setWaitlistId(null);
+    setErrorMsg('');
+    setStage('prejoin');
+  }, [waitlistId, roomId]);
+
+  // Claims a LiveKit token for an admitted (or waiting-room-exempt) anonymous invite-link
+  // visitor. Shared by the immediate "no wait needed" path and the waiting-room poll below.
+  const claimAnonymousToken = useCallback(
+    async (waitlistIdForClaim: string | null) => {
+      if (!anonymousInvite || !roomId) return;
+      try {
+        const res = await apiClient.post(`/api/connect/rooms/${roomId}/anonymous-token`, {
+          invite_token: anonymousInvite.token,
+          username: choices?.username || 'guest',
+          waitlist_id: waitlistIdForClaim,
+        });
+
+        if (res.status === 503) {
+          const body = await res.json().catch(() => ({}));
+          setErrorMsg(
+            body.detail ||
+              '通話サーバー（LiveKit）がまだ準備中です。カメラ・マイクの確認まではできています。',
+          );
+          return;
+        }
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          setErrorMsg(body.error || `トークンの取得に失敗しました (${res.status})`);
+          return;
+        }
+
+        const data = await res.json();
+        setToken(data.token);
+        setServerUrl(data.url);
+        if (data.roomTitle) setRoomTitle(data.roomTitle);
+        setIsHost(!!data.is_host);
+        setStage('in-call');
+      } catch (e: any) {
+        setErrorMsg(e?.message || '接続中にエラーが発生しました');
+      }
+    },
+    [anonymousInvite, roomId, choices?.username],
+  );
+
   // Fetch token and connect to room, once the pre-join stage has been completed.
   useEffect(() => {
     if (!roomId || stage !== 'connecting') return;
@@ -1981,6 +2224,25 @@ export default function CallRoomPage() {
     const initConnection = async () => {
       try {
         const displayName = choices?.username || user?.email?.split('@')[0] || 'guest';
+
+        // 招待URL経由の完全外部ユーザー: いきなりトークンは発行せず、まず入室リクエストを
+        // 登録して待機室へ（外部ミーティングは待機室が常にONのため）。
+        if (anonymousInvite) {
+          const res = await apiClient.post(`/api/connect/rooms/${roomId}/join-request`, {
+            invite_token: anonymousInvite.token,
+            username: displayName,
+          });
+          if (!isMounted) return;
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            setErrorMsg(body.error || `入室リクエストに失敗しました (${res.status})`);
+            return;
+          }
+          const data = await res.json();
+          setWaitlistId(data.waitlist_id ?? null);
+          setStage('waiting');
+          return;
+        }
 
         const res = await apiClient.post('/api/connect/token', {
           room: roomId,
@@ -2024,7 +2286,86 @@ export default function CallRoomPage() {
     return () => {
       isMounted = false;
     };
-  }, [roomId, stage, user?.id, choices?.username]);
+  }, [roomId, stage, user?.id, choices?.username, anonymousInvite]);
+
+  // Waiting-room heartbeat: pings every 5s while sitting in the waitlist so the host's
+  // Participants panel can tell "still actually waiting" apart from "closed the tab /
+  // lost network without saying so" — see the 20s staleness check in the backend's
+  // GET .../waitlist (connectRoutes.ts), which is what actually flips a quiet row to
+  // 'left'. Best-effort, not awaited: a missed beat or two just means a slightly late
+  // flip, not a broken poll loop.
+  useEffect(() => {
+    if (stage !== 'waiting' || !waitlistId || !roomId) return;
+
+    const beat = () => {
+      void apiClient
+        .post(`/api/connect/rooms/${roomId}/join-request/${waitlistId}/heartbeat`)
+        .catch(() => {});
+    };
+
+    beat();
+    const interval = setInterval(beat, 5000);
+    return () => clearInterval(interval);
+  }, [stage, waitlistId, roomId]);
+
+  // Fast-path cancel: closing the tab (or navigating away entirely) while waiting should
+  // withdraw the waitlist row roughly immediately rather than waiting out the heartbeat
+  // timeout above. `beforeunload`/`pagehide` are the only events guaranteed to still fire
+  // in that moment, and a plain fetch gets killed mid-flight when the page actually
+  // unloads — `keepalive: true` is what lets it survive long enough to land. Same DELETE
+  // endpoint handleCancelJoin's "戻る" button uses; harmless if it ends up firing twice
+  // (deleting an already-gone row is a no-op) or if the row was never created.
+  useEffect(() => {
+    if (stage !== 'waiting' || !waitlistId || !roomId) return;
+
+    const cancelBeacon = () => {
+      void apiClient
+        .delete(`/api/connect/rooms/${roomId}/join-request/${waitlistId}`, { keepalive: true })
+        .catch(() => {});
+    };
+
+    window.addEventListener('pagehide', cancelBeacon);
+    window.addEventListener('beforeunload', cancelBeacon);
+    return () => {
+      window.removeEventListener('pagehide', cancelBeacon);
+      window.removeEventListener('beforeunload', cancelBeacon);
+    };
+  }, [stage, waitlistId, roomId]);
+
+  // Waiting-room poll: waits for a 'connect_room_waitlist' row to be flipped out of
+  // 'pending' by a host action (admit/deny) or by the heartbeat-staleness check above.
+  useEffect(() => {
+    if (stage !== 'waiting' || !anonymousInvite || !waitlistId || !roomId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const poll = async () => {
+      try {
+        const res = await apiClient.get(`/api/connect/rooms/${roomId}/join-request/${waitlistId}`);
+        if (cancelled) return;
+        if (res.ok) {
+          const data = await res.json();
+          if (data.status === 'admitted') {
+            await claimAnonymousToken(waitlistId);
+            return;
+          }
+          if (data.status === 'denied') {
+            setErrorMsg('入室が許可されませんでした');
+            return;
+          }
+        }
+      } catch {
+        // Keep polling through transient network errors.
+      }
+      if (!cancelled) timer = setTimeout(poll, 3000);
+    };
+
+    timer = setTimeout(poll, 3000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [stage, anonymousInvite, waitlistId, roomId, claimAnonymousToken]);
 
   // No videoCaptureDefaults/audioCaptureDefaults here any more: <LiveKitRoom>
   // below no longer auto-captures (video/audio are false) — the camera/mic are
@@ -2097,9 +2438,11 @@ export default function CallRoomPage() {
     setChoices((prev) => (prev ? { ...prev, audioEnabled: target.audio, videoEnabled: target.video } : prev));
   }, []);
 
+  const postCallPath = anonymousInvite ? '/' : '/connect';
+
   const handleCloseWindow = () => {
     window.close();
-    navigate('/connect');
+    navigate(postCallPath);
   };
 
   if (isDisconnected) {
@@ -2120,7 +2463,7 @@ export default function CallRoomPage() {
             タブを閉じる
           </button>
           <button
-            onClick={() => navigate('/connect')}
+            onClick={() => navigate(postCallPath)}
             className="px-6 py-3 bg-gray-800 hover:bg-gray-700 text-gray-200 font-bold text-sm rounded-xl border border-gray-700 transition-all active:scale-95"
           >
             ルーム一覧に戻る
@@ -2146,7 +2489,7 @@ export default function CallRoomPage() {
             再試行
           </button>
           <button
-            onClick={() => navigate('/connect')}
+            onClick={() => navigate(postCallPath)}
             className="px-6 py-3 bg-gray-800 hover:bg-gray-700 text-gray-200 font-bold text-sm rounded-xl border border-gray-700 transition-all active:scale-95"
           >
             戻る
@@ -2156,8 +2499,33 @@ export default function CallRoomPage() {
     );
   }
 
-  if (stage === 'prejoin') {
-    return <PreJoinStage roomId={roomId!} onJoin={handlePreJoinSubmit} onError={handlePreJoinError} />;
+  // 招待URL経由の匿名参加は、prejoin → connecting(入室リクエスト送信) → waiting(承認待ち) の
+  // 間ずっと同じ PreJoinStage インスタンスを表示し続ける（カメラ・マイク・背景の調整をそのまま
+  // 続けられるようにするため、途中で画面を切り替えたり getUserMedia を撮り直したりしない）。
+  // 通常の内部ログイン経由の参加は待機室を通らないので、'connecting' は一瞬で終わる想定の
+  // ままシンプルなスピナーで十分。
+  if (stage === 'prejoin' || (anonymousInvite && (stage === 'connecting' || stage === 'waiting'))) {
+    const statusMessage = !anonymousInvite
+      ? undefined
+      : stage === 'connecting'
+        ? '入室をリクエストしています...'
+        : stage === 'waiting'
+          ? 'ホストの承認をお待ちください。この画面でカメラ・マイク・背景を調整できます。'
+          : undefined;
+
+    return (
+      <PreJoinStage
+        roomId={roomId!}
+        onJoin={handlePreJoinSubmit}
+        onError={handlePreJoinError}
+        onBack={stage !== 'prejoin' ? handleCancelJoin : undefined}
+        anonymous={!!anonymousInvite}
+        roomTitleOverride={anonymousInvite?.roomTitle}
+        statusMessage={statusMessage}
+        submitDisabled={stage !== 'prejoin'}
+        submitDisabledLabel={stage === 'connecting' ? 'リクエスト送信中...' : '承認待ち...'}
+      />
+    );
   }
 
   if (stage === 'connecting' || !token || !serverUrl) {
