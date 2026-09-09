@@ -1,4 +1,4 @@
-import { FilesetResolver, ImageSegmenter, type ImageSegmenterResult } from '@mediapipe/tasks-vision';
+import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 import type { Track, TrackProcessor, VideoProcessorOptions } from 'livekit-client';
 import {
   bindTextureUnit,
@@ -59,6 +59,34 @@ const MODELS: Record<SegmentationQuality, string> = {
   high: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite',
 };
 
+/**
+ * Which way each bundled model's confidence mask reads — 1 when it scores
+ * *background* (so the shader needs to invert it to get subject alpha), 0 when
+ * it already scores the *subject* directly. This is a fixed property of a
+ * specific model file, not something that varies frame to frame, so there is
+ * nothing to detect at runtime.
+ *
+ * There used to be a `detectPolarity()` that guessed this per-session from
+ * live frames (outer border of a webcam shot = background, centre = subject).
+ * That heuristic's assumption breaks exactly when nobody is framed centre yet
+ * — the first second after the camera opens, or anyone sitting off to one
+ * side — which is precisely when getting it right matters most, and got it
+ * backwards often enough to be the actual bug (see the "反転" reports).
+ * `balanced`'s value here comes from commit c32f217, which found this
+ * empirically (its single category, despite being labelled "background",
+ * scores the subject); `high` was already correct under the old heuristic's
+ * default guess, which is consistent with it being a true per-class softmax
+ * confidence (see the label-matched mask selection in createSegmenter/
+ * updateMatte) rather than an arbitrary binary convention.
+ *
+ * Re-verify (or re-measure and update this table) if either model file is
+ * ever swapped for a different version/architecture.
+ */
+const MODEL_INVERT: Record<SegmentationQuality, number> = {
+  balanced: 0,
+  high: 1,
+};
+
 export type BackgroundMode = 'blur' | 'image';
 
 /** Which side of the matte the effect lands on. */
@@ -96,9 +124,10 @@ export type MediapipeBackgroundOptions = {
   delegate?: 'GPU' | 'CPU';
   /**
    * Forces how the confidence mask is read: `true` = it scores background,
-   * `false` = it scores the subject. Leave undefined to auto-detect. This is a
-   * debugging escape hatch, not the way to swap the effect around — that is
-   * what `target` is for.
+   * `false` = it scores the subject. Leave undefined to use the known-correct
+   * value for `quality` (see `MODEL_INVERT`). This is a debugging escape
+   * hatch, not the way to swap the effect around — that is what `target` is
+   * for.
    */
   invertMask?: boolean;
   /** Cutoff below which mask values are clamped to 0 (background). Default: 0.30 */
@@ -106,10 +135,6 @@ export type MediapipeBackgroundOptions = {
   /** Cutoff above which mask values are saturated to 1 (subject). Default: 0.75 */
   matteHi?: number;
 };
-
-// Below this, two confidence averages are indistinguishable from rounding noise
-// on a dead (all-zero) warm-up frame — not evidence of which side is which.
-const MIN_POLARITY_GAP = 0.05;
 
 const DEFAULTS = {
   mode: 'blur' as BackgroundMode,
@@ -253,9 +278,6 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
   private hasMatteHistory = false;
 
-  /** 1 when confidenceMasks[maskIndex] is *background* confidence, 0 when it is foreground. */
-  private invert?: number;
-
   private maskIndex = 0;
 
   /** Label map from the model, if it ships one. Used to pick the mask, never the polarity. */
@@ -270,13 +292,12 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   private stopped = false;
 
   /**
-   * Frames composited *after* mask polarity was confidently resolved (not the
-   * `assumed` default — see `detectPolarity`) and with matte history already
-   * warmed up. Frames rendered before polarity is confident can show the person
-   * and background swapped; frames rendered before matte history exists skip
-   * temporal smoothing and look rougher. Neither is what "the effect is ready"
-   * should mean, but `init()`/`setBackground()` resolve as soon as the pipeline
-   * is wired, well before either condition holds — see `waitUntilReady`.
+   * Frames composited after matte history has warmed up. Polarity is fixed and
+   * known from construction (see `MODEL_INVERT`), so the only thing left to
+   * warm up is temporal smoothing — frames rendered before matte history
+   * exists skip it and look rougher. That's not what "the effect is ready"
+   * should mean, but `init()`/`setBackground()` resolve as soon as the
+   * pipeline is wired, well before it holds — see `waitUntilReady`.
    */
   private stableFrameCount = 0;
 
@@ -291,17 +312,13 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   /** Marks this frame's contribution towards / away from "stable", from renderFrame(). */
   private trackStability() {
     const wasCounting = this.stableFrameCount > 0;
-    if (this.invert !== undefined && this.hasMatteHistory) {
+    if (this.hasMatteHistory) {
       this.stableFrameCount += 1;
     } else {
-      // Not just "don't count it" — a still-unresolved or freshly reset matte
-      // means any earlier streak was against a stale assumption; start over.
+      // Not just "don't count it" — a freshly reset matte (resize, restart)
+      // means any earlier streak no longer reflects the live pipeline.
       if (wasCounting) {
-        this.log('stability reset', {
-          invertResolved: this.invert !== undefined,
-          hasMatteHistory: this.hasMatteHistory,
-          hadStreak: this.stableFrameCount,
-        });
+        this.log('stability reset', { hadStreak: this.stableFrameCount });
       }
       this.stableFrameCount = 0;
     }
@@ -312,7 +329,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       if (this.stabilityFrameLogCount <= this.requiredStableFrames + 1) {
         this.log('stable frame', {
           stableFrameCount: this.stableFrameCount,
-          invert: this.invert,
+          invert: this.resolvedInvert,
           usingImage: this.usingImageBackground(),
           mode: this.options.mode,
         });
@@ -329,7 +346,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.log('waitUntilReady resolved', {
       reason,
       stableFrameCount: this.stableFrameCount,
-      invert: this.invert,
+      invert: this.resolvedInvert,
     });
     const waiters = this.readyWaiters;
     this.readyWaiters = [];
@@ -356,7 +373,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.log('waitUntilReady waiting', { timeoutMs, stableFrameCount: this.stableFrameCount });
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        this.log('waitUntilReady TIMED OUT', { stableFrameCount: this.stableFrameCount, invert: this.invert });
+        this.log('waitUntilReady TIMED OUT', { stableFrameCount: this.stableFrameCount });
         this.resolveReady('timeout');
       }, timeoutMs);
       this.readyWaiters.push(() => {
@@ -455,26 +472,22 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   }
 
   /**
-   * How to read the confidence mask, as a 0/1 shader uniform.
-   *
-   * An explicit `invertMask` wins. Otherwise use what detectPolarity measured;
-   * until it has measured anything (typically just the first frame or two)
-   * assume the mask scores background, an arbitrary starting guess — which
-   * model puts what at which index turned out not to be a reliable way to
-   * settle this, see detectPolarity.
+   * How to read the confidence mask, as a 0/1 shader uniform. An explicit
+   * `invertMask` wins; otherwise the known-correct value for this model, from
+   * `MODEL_INVERT` — see its doc comment for why this is a fixed table rather
+   * than something detected from live frames.
    */
   private get resolvedInvert(): number {
     if (this.options.invertMask !== undefined) return this.options.invertMask ? 1 : 0;
-    return this.invert ?? 1;
+    return MODEL_INVERT[this.options.quality];
   }
 
-  /** What the processor currently believes about mask polarity — for debug UIs. */
-  get maskPolarity(): { inverted: boolean; source: 'override' | 'detected' | 'assumed' } {
+  /** What the processor believes about mask polarity — for debug UIs. */
+  get maskPolarity(): { inverted: boolean; source: 'override' | 'fixed' } {
     if (this.options.invertMask !== undefined) {
       return { inverted: this.options.invertMask, source: 'override' };
     }
-    if (this.invert !== undefined) return { inverted: this.invert === 1, source: 'detected' };
-    return { inverted: true, source: 'assumed' };
+    return { inverted: this.resolvedInvert === 1, source: 'fixed' };
   }
 
   /** False whenever image mode is requested but no image is actually loaded. */
@@ -658,70 +671,6 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.log('createSegmenter() done', { ms: Math.round(performance.now() - t0), labels: this.labels });
   }
 
-  /**
-   * Works out whether the confidence mask scores "background" or "subject".
-   *
-   * This deliberately does not trust the categoryMask's numbering (category 0
-   * is not consistently "background" across models — the multiclass model's own
-   * label list puts "background" at 0, but the binary selfie model's single
-   * category 0 turned out empirically to be the *subject*) or the model's label
-   * list (same problem: a label named "background" does not guarantee which
-   * confidence channel or category id it lines up with). Both are guesses about
-   * a per-model convention.
-   *
-   * What does hold across framings: in a webcam shot the outer border of the
-   * frame is background and the centre band is the subject. That is a fact
-   * about the shot, not about the model, so it is what settles polarity here —
-   * whichever region has the higher average confidence tells us what "high
-   * confidence" means for this mask.
-   */
-  private detectPolarity(result: ImageSegmenterResult) {
-    const confidenceMask = result.confidenceMasks?.[this.maskIndex];
-    if (!confidenceMask) return;
-
-    const confidences = confidenceMask.getAsFloat32Array();
-    const width = confidenceMask.width;
-    const height = confidenceMask.height;
-    if (!confidences.length || width < 8 || height < 8) return;
-
-    let borderSum = 0;
-    let borderCount = 0;
-    let centreSum = 0;
-    let centreCount = 0;
-    const borderX = Math.max(1, Math.floor(width * 0.08));
-    const borderY = Math.max(1, Math.floor(height * 0.08));
-    const centreX0 = Math.floor(width * 0.35);
-    const centreX1 = Math.floor(width * 0.65);
-    const centreY0 = Math.floor(height * 0.35);
-    const centreY1 = Math.floor(height * 0.65);
-
-    for (let y = 0; y < height; y += 2) {
-      for (let x = 0; x < width; x += 2) {
-        const value = confidences[y * width + x];
-        if (x < borderX || x >= width - borderX || y < borderY || y >= height - borderY) {
-          borderSum += value;
-          borderCount += 1;
-        } else if (x >= centreX0 && x < centreX1 && y >= centreY0 && y < centreY1) {
-          centreSum += value;
-          centreCount += 1;
-        }
-      }
-    }
-
-    if (borderCount === 0 || centreCount === 0) return;
-
-    const borderAvg = borderSum / borderCount;
-    const centreAvg = centreSum / centreCount;
-    // A warm-up frame (segmenter not settled yet, or camera still black) can
-    // report near-zero confidence everywhere; the two averages then differ only
-    // by rounding noise, and locking onto whichever is a hair larger is a coin
-    // flip. Wait for a frame with an actual, meaningful gap instead.
-    if (Math.abs(borderAvg - centreAvg) >= MIN_POLARITY_GAP) {
-      this.invert = borderAvg > centreAvg ? 1 : 0;
-      this.log('detectPolarity() resolved', { invert: this.invert, borderAvg, centreAvg });
-    }
-  }
-
   // ----------------------------------------------------------------- Plumbing
 
   private startPipeline() {
@@ -860,7 +809,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
         this.log('transform() composited frame', {
           frameNum: n,
           canvasSize: `${this.canvas.width}x${this.canvas.height}`,
-          invert: this.invert,
+          invert: this.resolvedInvert,
           usingImage: this.usingImageBackground(),
           glContextLost: this.gl?.isContextLost?.(),
         });
@@ -1000,11 +949,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
         const mask = masks[this.maskIndex];
         if (!mask) return;
-        // Take the GPU texture before anything else: detectPolarity pulls the
-        // masks down to CPU arrays, and we would rather not depend on MPMask
-        // still being able to hand back a texture afterwards.
         this.composeMatte(mask.getAsWebGLTexture());
-        if (this.invert === undefined) this.detectPolarity(result);
       } finally {
         result.close();
       }
