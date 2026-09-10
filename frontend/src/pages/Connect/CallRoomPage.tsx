@@ -28,6 +28,7 @@ import {
   Track,
   ParticipantEvent,
   RoomEvent,
+  TrackEvent,
   type RoomOptions,
   type LocalAudioTrack,
   type LocalVideoTrack,
@@ -149,6 +150,74 @@ function useElementWidth<T extends HTMLElement>() {
   return { ref, width };
 }
 
+// Silero's own frame-processor (see @ricky0123/vad-web/dist/frame-processor.js) calls
+// onSpeechStart the instant a frame's isSpeech crosses positiveSpeechThreshold — there's no
+// extra multi-frame confirmation delay before that callback fires. So the ~200-300ms of lag
+// that made word-onsets sound clipped comes from frame quantization, not from waiting on the
+// callback: the "legacy" Silero model only makes one decision per 1536-sample (96ms) frame, so
+// speech can be underway for the better part of a frame before the model even gets to look at
+// it. The "v5" model decides every 512 samples (32ms) instead — same detection logic, ~3x finer
+// time resolution — which is the actual lever here. positiveSpeechThreshold is the other one:
+// lower it and onSpeechStart fires with less confidence required, at the cost of triggering on
+// weaker/more ambiguous sounds. Tune both together while listening to real audio.
+//
+// onFrameProcessed deliberately isn't used to open the gate any earlier than onSpeechStart:
+// it fires on the exact same tick, one line earlier in the same function, so gating from it
+// with the *same* threshold buys nothing. Gating from it with a *lower* threshold reproduces
+// the bug this file already went through and out the other side of — Silero's onSpeechEnd/
+// onVADMisfire only fire for a segment its own state machine decided to start (isSpeech >=
+// positiveSpeechThreshold), so opening on anything below that threshold opens a gate nothing
+// will ever close. It's used here purely to log the raw probability stream for tuning the two
+// values above against real recordings — never to drive the gate.
+// Measured from real "silero frame" logs: typing alone tops out around isSpeech=0.02, but
+// typing *while talking* pulls the model's confidence for the speech itself way down too
+// (the keyboard noise degrades the signal, not just adds a separate one) — peaks around
+// 0.16-0.73 with lots of dips in between, well under the previous 0.25 threshold, so most of
+// those utterances opened briefly then immediately misfired shut instead of staying open.
+// 0.12/0.08 sits comfortably above the typing-only floor while catching that degraded range.
+const VAD_MODEL: 'v5' | 'legacy' = 'v5';
+const VAD_POSITIVE_SPEECH_THRESHOLD = 0.12;
+const VAD_NEGATIVE_SPEECH_THRESHOLD = 0.08;
+// onVADMisfire fires whenever a segment's *total* qualifying-frame count over its whole
+// duration never reached minSpeechMs (400ms) worth — which real speech easily fails if its
+// confidence dips below threshold even briefly mid-word, since Silero discards the entire
+// segment rather than just the low-confidence dip. Closing the gate the instant that happens
+// chops speech into stuttering fragments. Instead of closing immediately on misfire, hold the
+// gate open for a short grace window: another onSpeechStart within it (very likely, if the
+// speaker is mid-sentence) refreshes the window with no audible gap; only genuine silence lets
+// it run out.
+const VAD_HOLD_OPEN_AFTER_MISFIRE_MS = 600;
+// Every Nth frame's probabilities get logged (32ms/frame on v5, so 15 ≈ every 480ms).
+const VAD_LOG_FRAME_EVERY = 15;
+
+// Thresholds and the misfire hold-timer only ever shrink *how much* of an onset gets clipped —
+// a confidence-based decision can't be made before there's enough signal to be confident about,
+// so some amount of lag before onSpeechStart fires is unavoidable no matter how it's tuned.
+// This is the structural fix instead: route the mic through a DelayNode before it ever reaches
+// the gate, and let the VAD analyze the *undelayed* signal to decide as fast as it already does.
+// When onSpeechStart fires at real-clock time T, the audio actually reaching the delay line's
+// output at T is still whatever was captured D ms earlier — i.e. the moment speech actually
+// started, not the moment Silero became confident about it — so opening the gate at T (instead
+// of trying to open it earlier) is enough to let that already-buffered onset through. As long as
+// D covers the worst-case detection lag, the clipping goes away entirely, at the cost of a fixed
+// D-ms delay on the whole call, always — not just at speech onset. 800ms matches Silero's own
+// preSpeechPadMs default (its authors picked that for exactly this kind of lookback); tune it
+// down from there once this is confirmed to actually fix the clipping.
+const GATE_DELAY_MS = 200;
+// Gain is ramped rather than stepped: an instant 0<->1 jump on a live signal is an audible click.
+const GATE_RAMP_MS = 15;
+
+// Whatever stage currently feeds the sender: Krisp's output when it's attached, the raw
+// capture otherwise. Deliberately NOT sender.track — once the gate graph below is installed
+// that *is* the gate's own output, and feeding it back in would loop the graph into itself.
+function resolveUpstreamTrack(track: LocalAudioTrack): MediaStreamTrack {
+  return track.getProcessor()?.processedTrack ?? track.mediaStreamTrack;
+}
+
+function vadLog(msg: string, data?: Record<string, unknown>) {
+  console.log(`[Connect VAD] ${msg}`, data ?? '');
+}
+
 /**
  * Silences outgoing audio whenever the local participant isn't actually speaking.
  */
@@ -157,22 +226,16 @@ function useVadAutoGate(enabled: boolean) {
   const [loading, setLoading] = useState(false);
   const [trackEpoch, setTrackEpoch] = useState(0);
 
-  // Manual mute must always win. LiveKit's own setMicrophoneEnabled() toggles this
-  // exact same mediaStreamTrack.enabled flag, so without this ref, VAD hearing
-  // speech while manually muted would flip the flag back to enabled — that's what
-  // made a "muted" tile still light up as speaking.
+  // Manual mute must always win: LiveKit mutes by stopping the capture track outright, so it
+  // silences things on its own, but the gate still has to stay shut so an unmute doesn't
+  // resume mid-"open" and leak whatever the VAD last decided.
   const isMicrophoneEnabledRef = useRef(isMicrophoneEnabled);
-  const gatedTrackRef = useRef<MediaStreamTrack | null>(null);
+  const setGateRef = useRef<((open: boolean, reason: string) => void) | null>(null);
 
   useEffect(() => {
     isMicrophoneEnabledRef.current = isMicrophoneEnabled;
-    // Close the gate the instant a manual mute happens, instead of waiting for
-    // VAD to notice silence on its own.
     if (!isMicrophoneEnabled) {
-      const track = gatedTrackRef.current;
-      if (track && track.readyState === 'live') {
-        track.enabled = false;
-      }
+      setGateRef.current?.(false, 'manual mute');
     }
   }, [isMicrophoneEnabled]);
 
@@ -198,27 +261,138 @@ function useVadAutoGate(enabled: boolean) {
     let cancelled = false;
     let vad: MicVAD | null = null;
     let vadTrack: MediaStreamTrack | null = null;
+    let misfireHoldTimer: ReturnType<typeof setTimeout> | null = null;
+    let gateCtx: AudioContext | null = null;
+    let delayNode: DelayNode | null = null;
+    let gainNode: GainNode | null = null;
+    let gateOpen = true;
+    let gatedOutputTrack: MediaStreamTrack | null = null;
+    let currentSourceNode: MediaStreamAudioSourceNode | null = null;
+    let currentSourceTrack: MediaStreamTrack | null = null;
+    let micTrack: LocalAudioTrack | null = null;
+    let detachTrackListeners: (() => void) | null = null;
 
-    const setGate = (open: boolean) => {
-      const track = gatedTrackRef.current;
-      if (!track || track.readyState !== 'live') return;
+    // Gates by ramping a GainNode the mic is routed through (downstream of the delay line
+    // below), not by toggling MediaStreamTrack.enabled — this file went through a whole saga
+    // establishing that .enabled doesn't reliably silence what a remote listener hears once
+    // Krisp/other processing is in the chain (see git history), whereas a zeroed gain is
+    // literal zeroed samples with nothing downstream left to disagree about.
+    const setGate = (open: boolean, reason: string) => {
+      if (!gainNode || !gateCtx) return;
       // Never let VAD re-open a mic the user has manually muted.
       if (open && !isMicrophoneEnabledRef.current) return;
-      track.enabled = open;
+      if (gateOpen === open) return;
+      gateOpen = open;
+      vadLog(`gate ${open ? 'OPEN' : 'CLOSE'}`, { reason });
+      const now = gateCtx.currentTime;
+      gainNode.gain.cancelScheduledValues(now);
+      gainNode.gain.setValueAtTime(gainNode.gain.value, now);
+      gainNode.gain.linearRampToValueAtTime(open ? 1 : 0, now + GATE_RAMP_MS / 1000);
+    };
+    setGateRef.current = setGate;
+
+    const clearMisfireHoldTimer = () => {
+      if (misfireHoldTimer !== null) {
+        clearTimeout(misfireHoldTimer);
+        misfireHoldTimer = null;
+      }
+    };
+
+    // Krisp's own setProcessor() (async — it loads WASM) can finish well after this graph is
+    // already installed, and it silently calls sender.replaceTrack() with *its* processedTrack
+    // when it does — measured via "silero frame"'s senderTrackMatchesGate: this was landing
+    // 100% of the time, meaning every gate decision was operating on a track nobody was
+    // listening to. Reacting to that via React state (setTrackEpoch) was too slow — the
+    // rebuild happened on the next render, well after Krisp had already won the sender. Both
+    // fixes below run synchronously instead, no React round-trip:
+    //  1. reattachUpstream swaps the graph's *input* to whatever Krisp (or the raw capture) is
+    //     currently producing, without tearing down the delay/gain/destination chain.
+    //  2. reassertSenderTrack points the sender back at our output if anything else has since
+    //     replaced it. Called both directly from the track's own events (same tick, after
+    //     Krisp's own replaceTrack has already resolved) and every VAD frame (~32ms) as a
+    //     self-healing net that doesn't depend on correctly anticipating every event that could
+    //     cause a hijack.
+    const reattachUpstream = (track: LocalAudioTrack) => {
+      if (!gateCtx || !delayNode) return;
+      const upstream = resolveUpstreamTrack(track);
+      if (currentSourceTrack && currentSourceTrack.id === upstream.id) return;
+      currentSourceNode?.disconnect();
+      currentSourceTrack?.stop();
+      const clonedUpstream = upstream.clone();
+      currentSourceTrack = clonedUpstream;
+      currentSourceNode = gateCtx.createMediaStreamSource(new MediaStream([clonedUpstream]));
+      currentSourceNode.connect(delayNode);
+      vadLog('gate graph source reattached', { upstreamTrackId: upstream.id });
+    };
+
+    const reassertSenderTrack = (track: LocalAudioTrack) => {
+      if (!gatedOutputTrack) return;
+      if (track.sender && track.sender.track?.id !== gatedOutputTrack.id) {
+        void track.sender.replaceTrack(gatedOutputTrack);
+        vadLog('gate reasserted onto sender (was hijacked)', {
+          hijackedByTrackId: track.sender.track?.id ?? '(none)',
+        });
+      }
+    };
+
+    // Builds the persistent delay+gain+destination chain once; reattachUpstream feeds it and
+    // can be called again later without rebuilding this part.
+    const buildGateGraph = async (track: LocalAudioTrack) => {
+      gateCtx = new AudioContext();
+      delayNode = gateCtx.createDelay(GATE_DELAY_MS / 1000 + 0.1);
+      delayNode.delayTime.value = GATE_DELAY_MS / 1000;
+      gainNode = gateCtx.createGain();
+      gainNode.gain.value = gateOpen ? 1 : 0;
+      const destination = gateCtx.createMediaStreamDestination();
+      delayNode.connect(gainNode);
+      gainNode.connect(destination);
+      gatedOutputTrack = destination.stream.getAudioTracks()[0];
+      reattachUpstream(track);
+      await track.sender?.replaceTrack(gatedOutputTrack);
+      vadLog('gate graph installed', {
+        delayMs: GATE_DELAY_MS,
+        gatedOutputTrackId: gatedOutputTrack.id,
+        senderTrackId: track.sender?.track?.id ?? '(no sender)',
+      });
     };
 
     const start = async () => {
       const pub = localParticipant.getTrackPublication(Track.Source.Microphone);
       const track = pub?.track as LocalAudioTrack | undefined;
       if (!track) return;
+      micTrack = track;
 
-      gatedTrackRef.current = track.mediaStreamTrack;
-      vadTrack = gatedTrackRef.current.clone();
+      // Only a genuine device switch (a new LocalAudioTrack object, via LocalTrackPublished —
+      // handled by the effect above) needs a full restart. Krisp attaching/detaching and a
+      // manual mute/unmute cycle just change what feeds the *same* track's sender, which
+      // reattachUpstream + reassertSenderTrack handle immediately without tearing anything down.
+      const onUpstreamChange = () => {
+        reattachUpstream(track);
+        reassertSenderTrack(track);
+      };
+      track.on(TrackEvent.TrackProcessorUpdate, onUpstreamChange);
+      track.on(TrackEvent.Restarted, onUpstreamChange);
+      track.on(TrackEvent.Unmuted, onUpstreamChange);
+      detachTrackListeners = () => {
+        track.off(TrackEvent.TrackProcessorUpdate, onUpstreamChange);
+        track.off(TrackEvent.Restarted, onUpstreamChange);
+        track.off(TrackEvent.Unmuted, onUpstreamChange);
+      };
+
+      // VAD listens on the raw capture — undelayed, pre-Krisp, pre-gate — so its decision
+      // timing is exactly what it already was; only the *output* is delayed, not the analysis.
+      vadTrack = track.mediaStreamTrack.clone();
       const vadStream = new MediaStream([vadTrack]);
+      await buildGateGraph(track);
+      if (cancelled) return;
 
       setLoading(true);
+      let frameCount = 0;
       try {
         vad = await MicVAD.new({
+          model: VAD_MODEL,
+          positiveSpeechThreshold: VAD_POSITIVE_SPEECH_THRESHOLD,
+          negativeSpeechThreshold: VAD_NEGATIVE_SPEECH_THRESHOLD,
           baseAssetPath: '/vad/',
           onnxWASMBasePath: '/vad/',
           ortConfig: (ort) => {
@@ -228,16 +402,62 @@ function useVadAutoGate(enabled: boolean) {
           getStream: async () => vadStream,
           pauseStream: async () => {},
           resumeStream: async () => vadStream,
-          onSpeechStart: () => setGate(true),
-          onSpeechEnd: () => setGate(false),
-          onVADMisfire: () => setGate(false),
+          // Diagnostics only — never gates. See the comment above this hook for why gating
+          // from this callback (rather than onSpeechStart) would be a bad idea.
+          onFrameProcessed: (probabilities, frame) => {
+            frameCount += 1;
+            // Self-healing net independent of the track event listeners above: runs every
+            // frame (~32ms) regardless of which specific event caused a hijack, or whether one
+            // fired at all.
+            if (micTrack) reassertSenderTrack(micTrack);
+            if (frameCount % VAD_LOG_FRAME_EVERY === 0) {
+              // peakAmplitude is the raw signal Silero actually saw for this frame (post-
+              // resample, pre-model), independent of what the model made of it. If this stays
+              // ~0 during clear speech, nothing's reaching the model at all — a capture/
+              // plumbing problem, not a threshold one. Typical speech peaks land >0.1-0.3.
+              let peakAmplitude = 0;
+              for (let i = 0; i < frame.length; i++) {
+                const abs = Math.abs(frame[i]);
+                if (abs > peakAmplitude) peakAmplitude = abs;
+              }
+              const liveSenderTrackId = micTrack?.sender?.track?.id ?? '(no sender)';
+              const hijacked = liveSenderTrackId !== (gatedOutputTrack?.id ?? null);
+              vadLog('silero frame', {
+                isSpeech: probabilities.isSpeech.toFixed(3),
+                notSpeech: probabilities.notSpeech.toFixed(3),
+                peakAmplitude: peakAmplitude.toFixed(4),
+                gateOpen,
+                senderTrackMatchesGate: !hijacked,
+                ...(hijacked ? { liveSenderTrackId, expectedGatedTrackId: gatedOutputTrack?.id } : {}),
+              });
+            }
+          },
+          onSpeechStart: () => {
+            clearMisfireHoldTimer();
+            setGate(true, 'silero onSpeechStart');
+          },
+          onSpeechEnd: () => {
+            // A real, confirmed end of speech — no reason to wait any further.
+            clearMisfireHoldTimer();
+            setGate(false, 'silero onSpeechEnd');
+          },
+          onVADMisfire: () => {
+            // Don't slam the gate shut here — see VAD_HOLD_OPEN_AFTER_MISFIRE_MS above. If
+            // speech resumes before the timer fires, onSpeechStart above clears it and the
+            // gate never audibly closed at all.
+            clearMisfireHoldTimer();
+            misfireHoldTimer = setTimeout(() => {
+              misfireHoldTimer = null;
+              setGate(false, `hold-open timeout after misfire (${VAD_HOLD_OPEN_AFTER_MISFIRE_MS}ms)`);
+            }, VAD_HOLD_OPEN_AFTER_MISFIRE_MS);
+          },
         });
         if (cancelled) {
           await vad.destroy();
           vad = null;
           return;
         }
-        setGate(false);
+        setGate(false, 'vad ready, initial close');
       } catch (e) {
         console.error('[Connect] failed to start VAD auto-gate:', e);
       } finally {
@@ -250,6 +470,9 @@ function useVadAutoGate(enabled: boolean) {
     return () => {
       cancelled = true;
       setLoading(false);
+      clearMisfireHoldTimer();
+      setGateRef.current = null;
+      detachTrackListeners?.();
       void (async () => {
         try {
           await vad?.destroy();
@@ -257,7 +480,18 @@ function useVadAutoGate(enabled: boolean) {
           console.error('[Connect] failed to destroy VAD:', e);
         }
         vadTrack?.stop();
-        setGate(true);
+        // Hand the sender back the track it would have had without the gate, or the mic goes
+        // permanently silent the moment auto-gate is switched off.
+        if (micTrack) {
+          try {
+            await micTrack.sender?.replaceTrack(resolveUpstreamTrack(micTrack));
+          } catch (e) {
+            console.error('[Connect] failed to restore ungated mic track:', e);
+          }
+        }
+        currentSourceTrack?.stop();
+        gatedOutputTrack?.stop();
+        void gateCtx?.close().catch(() => {});
       })();
     };
   }, [enabled, localParticipant, trackEpoch]);
