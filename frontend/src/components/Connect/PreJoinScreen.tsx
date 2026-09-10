@@ -3,6 +3,7 @@ import { createLocalTracks, Track, type LocalAudioTrack, type LocalVideoTrack } 
 import { Mic, MicOff, Video, VideoOff, Loader2, RotateCcw, Volume2 } from 'lucide-react';
 import PreJoinBackgroundPanel from './PreJoinBackgroundPanel';
 import { usePreJoinBackground } from '../../pages/Connect/usePreJoinBackground';
+import { isMobileDevice } from '../../pages/Connect/backgroundLibrary';
 import { useMicLevel, playSpeakerTestTone } from './audioTest';
 
 const CUSTOM_USERNAME_KEY = 'smiring_connect_custom_username';
@@ -17,13 +18,26 @@ const CUSTOM_USERNAME_KEY = 'smiring_connect_custom_username';
  * the camera/driver's state at that point — when it isn't, the browser has fallen
  * back to some other mode the device offers (observed as the preview clipping to a
  * square). `ideal` asks for the same thing without a hard failure mode.
+ *
+ * Mobile captures at 360p rather than 720p, matching the single, un-simulcast
+ * publishEncoding CallRoomPage gives phones (see roomOptions there) — capturing
+ * 720p just to immediately encode it down to 360p wastes exactly the CPU/battery
+ * budget this is meant to save. See MOBILE_VIDEO_ENCODING's comment for the rest
+ * of the reasoning.
  */
-const VIDEO_CAPTURE_CONSTRAINTS: MediaTrackConstraints = {
-  width: { ideal: 1280 },
-  height: { ideal: 720 },
-  aspectRatio: { ideal: 16 / 9 },
-  frameRate: { ideal: 30 },
-};
+const VIDEO_CAPTURE_CONSTRAINTS: MediaTrackConstraints = isMobileDevice()
+  ? {
+      width: { ideal: 640 },
+      height: { ideal: 360 },
+      aspectRatio: { ideal: 16 / 9 },
+      frameRate: { ideal: 30 },
+    }
+  : {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      aspectRatio: { ideal: 16 / 9 },
+      frameRate: { ideal: 30 },
+    };
 
 export interface PreJoinChoices {
   username: string;

@@ -89,6 +89,8 @@ import { ReactionPicker } from '../../components/Connect/ReactionPicker';
 import { FloatingReactionsStream } from '../../components/Connect/FloatingReactionsStream';
 import DocumentPipContent from './DocumentPipContent';
 import { useBackgroundEffect, PRESETS } from './useBackgroundEffect';
+import { isMobileDevice } from './backgroundLibrary';
+import { VideoDelayPipeline, isVideoDelaySupported } from '../../lib/video/VideoDelayPipeline';
 import BackgroundEffectModal from '../../components/Connect/BackgroundEffectModal';
 import AdvancedChat from '../../components/Connect/AdvancedChat';
 import ProfileSidebarPanel from '../../components/Connect/ProfileSidebarPanel';
@@ -174,10 +176,22 @@ function useElementWidth<T extends HTMLElement>() {
 // (the keyboard noise degrades the signal, not just adds a separate one) — peaks around
 // 0.16-0.73 with lots of dips in between, well under the previous 0.25 threshold, so most of
 // those utterances opened briefly then immediately misfired shut instead of staying open.
-// 0.12/0.08 sits comfortably above the typing-only floor while catching that degraded range.
+// 0.12/0.08 sits comfortably above the typing-only floor while catching that degraded range —
+// for a quiet room. A noisy one needs a stricter threshold, and there's no fixed value that's
+// right for both: this is a property of tonight's environment, not of the app, so it's a user
+// setting (the "ノイズキャンセリングレベル" slider in the mic menu) rather than a constant.
+// VAD_POSITIVE_SPEECH_THRESHOLD is that setting's default; VAD_NEGATIVE_SPEECH_THRESHOLD tracks
+// whatever the user picks at a fixed gap below it — see vadNegativeThresholdFor.
 const VAD_MODEL: 'v5' | 'legacy' = 'v5';
 const VAD_POSITIVE_SPEECH_THRESHOLD = 0.12;
-const VAD_NEGATIVE_SPEECH_THRESHOLD = 0.08;
+const VAD_SENSITIVITY_MIN = 0.05;
+const VAD_SENSITIVITY_MAX = 0.5;
+// Matches Silero's own default gap (positiveSpeechThreshold 0.3, negativeSpeechThreshold 0.25).
+const VAD_NEGATIVE_THRESHOLD_GAP = 0.05;
+
+function vadNegativeThresholdFor(positiveThreshold: number): number {
+  return Math.max(0.01, positiveThreshold - VAD_NEGATIVE_THRESHOLD_GAP);
+}
 // onVADMisfire fires whenever a segment's *total* qualifying-frame count over its whole
 // duration never reached minSpeechMs (400ms) worth — which real speech easily fails if its
 // confidence dips below threshold even briefly mid-word, since Silero discards the entire
@@ -207,10 +221,11 @@ const GATE_DELAY_MS = 200;
 // Gain is ramped rather than stepped: an instant 0<->1 jump on a live signal is an audible click.
 const GATE_RAMP_MS = 15;
 
-// Whatever stage currently feeds the sender: Krisp's output when it's attached, the raw
-// capture otherwise. Deliberately NOT sender.track — once the gate graph below is installed
-// that *is* the gate's own output, and feeding it back in would loop the graph into itself.
-function resolveUpstreamTrack(track: LocalAudioTrack): MediaStreamTrack {
+// Whatever stage currently feeds the sender: a processor's output when one is attached (Krisp
+// for audio, the background effect for video), the raw capture otherwise. Deliberately NOT
+// sender.track — once the gate graph below is installed that *is* our own output, and feeding
+// it back in would loop the pipeline into itself.
+function resolveUpstreamTrack(track: LocalAudioTrack | LocalVideoTrack): MediaStreamTrack {
   return track.getProcessor()?.processedTrack ?? track.mediaStreamTrack;
 }
 
@@ -220,8 +235,14 @@ function vadLog(msg: string, data?: Record<string, unknown>) {
 
 /**
  * Silences outgoing audio whenever the local participant isn't actually speaking.
+ *
+ * @param sensitivity positiveSpeechThreshold — how loud/clear speech has to be before the gate
+ *   opens. Lower catches quieter speech but lets more background noise through; higher rejects
+ *   more noise but can clip quiet speech. The right value is a property of the room the user is
+ *   currently in, not something the app can know in advance, hence a live-adjustable setting
+ *   rather than a constant — see the comment above VAD_POSITIVE_SPEECH_THRESHOLD.
  */
-function useVadAutoGate(enabled: boolean) {
+function useVadAutoGate(enabled: boolean, sensitivity: number) {
   const { localParticipant, isMicrophoneEnabled } = useLocalParticipant();
   const [loading, setLoading] = useState(false);
   const [trackEpoch, setTrackEpoch] = useState(0);
@@ -231,6 +252,9 @@ function useVadAutoGate(enabled: boolean) {
   // resume mid-"open" and leak whatever the VAD last decided.
   const isMicrophoneEnabledRef = useRef(isMicrophoneEnabled);
   const setGateRef = useRef<((open: boolean, reason: string) => void) | null>(null);
+  // Live-updated via vad.setOptions() (see the effect below) rather than rebuilding the whole
+  // pipeline on every slider move — that would reload the ONNX model each time.
+  const vadRef = useRef<MicVAD | null>(null);
 
   useEffect(() => {
     isMicrophoneEnabledRef.current = isMicrophoneEnabled;
@@ -238,6 +262,13 @@ function useVadAutoGate(enabled: boolean) {
       setGateRef.current?.(false, 'manual mute');
     }
   }, [isMicrophoneEnabled]);
+
+  useEffect(() => {
+    vadRef.current?.setOptions({
+      positiveSpeechThreshold: sensitivity,
+      negativeSpeechThreshold: vadNegativeThresholdFor(sensitivity),
+    });
+  }, [sensitivity]);
 
   useEffect(() => {
     // Only restart the VAD when the microphone track itself changes (e.g. device
@@ -270,6 +301,7 @@ function useVadAutoGate(enabled: boolean) {
     let currentSourceNode: MediaStreamAudioSourceNode | null = null;
     let currentSourceTrack: MediaStreamTrack | null = null;
     let micTrack: LocalAudioTrack | null = null;
+    let unusableSender: RTCRtpSender | null = null;
     let detachTrackListeners: (() => void) | null = null;
 
     // Gates by ramping a GainNode the mic is routed through (downstream of the delay line
@@ -327,12 +359,22 @@ function useVadAutoGate(enabled: boolean) {
 
     const reassertSenderTrack = (track: LocalAudioTrack) => {
       if (!gatedOutputTrack) return;
-      if (track.sender && track.sender.track?.id !== gatedOutputTrack.id) {
-        void track.sender.replaceTrack(gatedOutputTrack);
-        vadLog('gate reasserted onto sender (was hijacked)', {
-          hijackedByTrackId: track.sender.track?.id ?? '(none)',
-        });
+      const sender = track.sender;
+      if (!sender || sender === unusableSender || sender.track?.id === gatedOutputTrack.id) return;
+      // Leaving the room closes the peer connection while this per-frame loop is still running,
+      // and replaceTrack() throws once it is. Latched per sender object rather than outright, so
+      // a reconnect (which brings a new sender) starts clean.
+      if (sender.transport?.state === 'closed') {
+        unusableSender = sender;
+        return;
       }
+      vadLog('gate reasserted onto sender (was hijacked)', {
+        hijackedByTrackId: sender.track?.id ?? '(none)',
+      });
+      sender.replaceTrack(gatedOutputTrack).catch((e) => {
+        unusableSender = sender;
+        console.error('[Connect] failed to reassert audio gate onto sender:', e);
+      });
     };
 
     // Builds the persistent delay+gain+destination chain once; reattachUpstream feeds it and
@@ -391,8 +433,10 @@ function useVadAutoGate(enabled: boolean) {
       try {
         vad = await MicVAD.new({
           model: VAD_MODEL,
-          positiveSpeechThreshold: VAD_POSITIVE_SPEECH_THRESHOLD,
-          negativeSpeechThreshold: VAD_NEGATIVE_SPEECH_THRESHOLD,
+          // Initial value only — the effect above pushes changes live via setOptions() once
+          // vadRef.current is set below, so the slider doesn't rebuild this whole pipeline.
+          positiveSpeechThreshold: sensitivity,
+          negativeSpeechThreshold: vadNegativeThresholdFor(sensitivity),
           baseAssetPath: '/vad/',
           onnxWASMBasePath: '/vad/',
           ortConfig: (ort) => {
@@ -457,6 +501,7 @@ function useVadAutoGate(enabled: boolean) {
           vad = null;
           return;
         }
+        vadRef.current = vad;
         setGate(false, 'vad ready, initial close');
       } catch (e) {
         console.error('[Connect] failed to start VAD auto-gate:', e);
@@ -465,13 +510,16 @@ function useVadAutoGate(enabled: boolean) {
       }
     };
 
-    void start();
+    // start()'s own try/catch only covers VAD startup; the gate graph is built before it, and
+    // its replaceTrack throws outright if the peer connection went away mid-setup.
+    void start().catch((e) => console.error('[Connect] failed to set up audio gate:', e));
 
     return () => {
       cancelled = true;
       setLoading(false);
       clearMisfireHoldTimer();
       setGateRef.current = null;
+      vadRef.current = null;
       detachTrackListeners?.();
       void (async () => {
         try {
@@ -481,10 +529,13 @@ function useVadAutoGate(enabled: boolean) {
         }
         vadTrack?.stop();
         // Hand the sender back the track it would have had without the gate, or the mic goes
-        // permanently silent the moment auto-gate is switched off.
-        if (micTrack) {
+        // permanently silent the moment auto-gate is switched off. Skipped once the peer
+        // connection is gone — there's nothing to restore onto, and that's the normal case
+        // here, since leaving the room is what tore this down.
+        const micSender = micTrack?.sender;
+        if (micTrack && micSender && micSender.transport?.state !== 'closed') {
           try {
-            await micTrack.sender?.replaceTrack(resolveUpstreamTrack(micTrack));
+            await micSender.replaceTrack(resolveUpstreamTrack(micTrack));
           } catch (e) {
             console.error('[Connect] failed to restore ungated mic track:', e);
           }
@@ -497,6 +548,135 @@ function useVadAutoGate(enabled: boolean) {
   }, [enabled, localParticipant, trackEpoch]);
 
   return loading;
+}
+
+/**
+ * Delays outgoing camera video by the same GATE_DELAY_MS the audio gate delays audio, so a
+ * remote viewer gets both on one timeline instead of hearing a voice trail its own lips (and
+ * so composited recordings don't bake that offset in). Driven by the same toggle as the gate:
+ * the delay only exists to match it, and is pure added latency without it.
+ *
+ * Structured deliberately like useVadAutoGate: the delay is spliced in at the *sender*, not
+ * through LiveKit's single processor slot, because the background effect owns that slot and
+ * its swap sequencing is load-bearing (see useBackgroundEffect.applyEffect). That means
+ * competing with the background processor's own replaceTrack() calls exactly the way the audio
+ * gate competes with Krisp's — same fix, same reasons: re-derive from the current upstream and
+ * take the sender back, synchronously on the track's events plus a per-frame self-heal.
+ */
+function useVideoDelay(enabled: boolean) {
+  const { localParticipant } = useLocalParticipant();
+  const [trackEpoch, setTrackEpoch] = useState(0);
+
+  useEffect(() => {
+    const bump = (publication: { source?: Track.Source }) => {
+      if (publication?.source !== Track.Source.Camera) return;
+      setTrackEpoch((n) => n + 1);
+    };
+    localParticipant.on(ParticipantEvent.LocalTrackPublished, bump);
+    return () => {
+      localParticipant.off(ParticipantEvent.LocalTrackPublished, bump);
+    };
+  }, [localParticipant]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    // Safari and Firefox have no insertable streams. Video just stays undelayed there — the
+    // audio gate still works, it's only lip-sync that goes back to being GATE_DELAY_MS off.
+    if (!isVideoDelaySupported()) {
+      vadLog('video delay unsupported on this browser, leaving video undelayed');
+      return;
+    }
+    // Buffering ~10 full video frames plus, when the background effect is on, running that
+    // *in addition to* Mediapipe's own segmentation pipeline is real, untested extra load on
+    // top of an already CPU/battery-constrained device. The audio gate's ONNX inference is
+    // comparatively cheap and stays on everywhere — this is specifically the video half.
+    // Lip-sync just goes back to being GATE_DELAY_MS off, same as the unsupported-browser case.
+    if (isMobileDevice()) {
+      vadLog('video delay skipped on mobile, leaving video undelayed');
+      return;
+    }
+
+    let pipeline: VideoDelayPipeline | null = null;
+    let currentUpstreamId: string | null = null;
+    let unusableSender: RTCRtpSender | null = null;
+
+    const reassertSenderTrack = (track: LocalVideoTrack) => {
+      const delayedTrack = pipeline?.track;
+      if (!delayedTrack) return;
+      const sender = track.sender;
+      if (!sender || sender === unusableSender || sender.track?.id === delayedTrack.id) return;
+      // Leaving the room closes the peer connection while this per-frame loop is still running,
+      // and replaceTrack() throws once it is. Latched per sender object rather than outright, so
+      // a reconnect (which brings a new sender) starts clean.
+      if (sender.transport?.state === 'closed') {
+        unusableSender = sender;
+        return;
+      }
+      vadLog('video delay reasserted onto sender (was hijacked)', {
+        hijackedByTrackId: sender.track?.id ?? '(none)',
+      });
+      sender.replaceTrack(delayedTrack).catch((e) => {
+        unusableSender = sender;
+        console.error('[Connect] failed to reassert video delay onto sender:', e);
+      });
+    };
+
+    // A new upstream track means a whole new pipeline: MediaStreamTrackProcessor is bound to
+    // the track it was constructed with, and its readable is already piped, so there's nothing
+    // to re-point the way the audio graph re-points its source node.
+    const syncToUpstream = (track: LocalVideoTrack) => {
+      const upstream = resolveUpstreamTrack(track);
+      if (currentUpstreamId === upstream.id) {
+        reassertSenderTrack(track);
+        return;
+      }
+      currentUpstreamId = upstream.id;
+      // Build and hand over the replacement before retiring the old pipeline: stopping it
+      // first would leave the sender holding an ended track for the length of a round trip.
+      const previous = pipeline;
+      pipeline = new VideoDelayPipeline(upstream, GATE_DELAY_MS, () => reassertSenderTrack(track));
+      const installed = pipeline;
+      vadLog('video delay pipeline installed', {
+        delayMs: GATE_DELAY_MS,
+        upstreamTrackId: upstream.id,
+        delayedTrackId: installed.track.id,
+      });
+      void Promise.resolve(track.sender?.replaceTrack(installed.track))
+        .catch((e) => console.error('[Connect] failed to install video delay onto sender:', e))
+        .finally(() => previous?.stop());
+    };
+
+    const pub = localParticipant.getTrackPublication(Track.Source.Camera);
+    const track = pub?.track as LocalVideoTrack | undefined;
+    if (!track) return;
+
+    const onUpstreamChange = () => syncToUpstream(track);
+    track.on(TrackEvent.TrackProcessorUpdate, onUpstreamChange);
+    track.on(TrackEvent.Restarted, onUpstreamChange);
+    track.on(TrackEvent.Unmuted, onUpstreamChange);
+
+    syncToUpstream(track);
+
+    return () => {
+      track.off(TrackEvent.TrackProcessorUpdate, onUpstreamChange);
+      track.off(TrackEvent.Restarted, onUpstreamChange);
+      track.off(TrackEvent.Unmuted, onUpstreamChange);
+      void (async () => {
+        // Hand the sender back what it would have carried without the delay, before tearing
+        // the pipeline down — otherwise outgoing video freezes on the last delayed frame.
+        // Skipped once the peer connection is gone, same as the audio gate's teardown.
+        const sender = track.sender;
+        if (sender && sender.transport?.state !== 'closed') {
+          try {
+            await sender.replaceTrack(resolveUpstreamTrack(track));
+          } catch (e) {
+            console.error('[Connect] failed to restore undelayed camera track:', e);
+          }
+        }
+        pipeline?.stop();
+      })();
+    };
+  }, [enabled, localParticipant, trackEpoch]);
 }
 
 /**
@@ -573,7 +753,10 @@ function useMediaEnhancementsState(localParticipant: ReturnType<typeof useLocalP
   const [krispEnabled, setKrispEnabled] = useState(true);
   const [krispLoading, setKrispLoading] = useState(false);
   const [autoGateEnabled, setAutoGateEnabled] = useState(true);
-  const autoGateLoading = useVadAutoGate(autoGateEnabled);
+  const [vadSensitivity, setVadSensitivity] = useState(VAD_POSITIVE_SPEECH_THRESHOLD);
+  const autoGateLoading = useVadAutoGate(autoGateEnabled, vadSensitivity);
+  // Same toggle: video is only delayed to stay level with the audio the gate delays.
+  useVideoDelay(autoGateEnabled);
 
   const isKrispSupported = isKrispNoiseFilterSupported();
 
@@ -659,6 +842,8 @@ function useMediaEnhancementsState(localParticipant: ReturnType<typeof useLocalP
     autoGateEnabled,
     setAutoGateEnabled,
     autoGateLoading,
+    vadSensitivity,
+    setVadSensitivity,
     isKrispSupported,
     toggleKrisp,
   };
@@ -696,6 +881,8 @@ function MicMenuDropdown({
     autoGateEnabled,
     setAutoGateEnabled,
     autoGateLoading,
+    vadSensitivity,
+    setVadSensitivity,
     isKrispSupported,
     toggleKrisp,
   } = mediaEnhancements;
@@ -837,6 +1024,33 @@ function MicMenuDropdown({
               </span>
             </button>
           </div>
+
+          {autoGateEnabled && (
+            <div className="pl-6 pt-1 space-y-1">
+              <div className="flex items-center justify-between text-[10px] text-gray-400">
+                <span>ノイズキャンセリングレベル</span>
+                <span className="text-gray-300 tabular-nums">
+                  {Math.round(
+                    ((vadSensitivity - VAD_SENSITIVITY_MIN) / (VAD_SENSITIVITY_MAX - VAD_SENSITIVITY_MIN)) * 100,
+                  )}
+                  %
+                </span>
+              </div>
+              <input
+                type="range"
+                min={VAD_SENSITIVITY_MIN}
+                max={VAD_SENSITIVITY_MAX}
+                step={0.01}
+                value={vadSensitivity}
+                onChange={(e) => setVadSensitivity(Number(e.target.value))}
+                className="w-full accent-sky-500"
+              />
+              <div className="flex items-center justify-between text-[9px] text-gray-500">
+                <span>小さい声も拾う</span>
+                <span>うるさい環境向け</span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </DropdownPortal>
@@ -2916,7 +3130,16 @@ export default function CallRoomPage({
       },
       dynacast: true,
       publishDefaults: {
-        videoEncoding: VideoPresets.h720.encoding,
+        // Simulcast means encoding the *same* camera frame at multiple resolutions
+        // simultaneously — real, well-documented CPU/battery cost on top of whatever the
+        // resolution itself costs. Desktop keeps three layers so a grid view of many
+        // participants isn't decoding full 720p per tile; a phone gets one layer at the
+        // resolution PreJoinScreen already captures it at (see VIDEO_CAPTURE_CONSTRAINTS)
+        // — encoding 720p there just to immediately encode it back down to 360p would waste
+        // exactly the budget this is meant to save. The tradeoff: anyone who pins or
+        // fullscreens a phone participant sees 360p blown up, not switchable-to-720p.
+        videoEncoding: isMobileDevice() ? VideoPresets.h360.encoding : VideoPresets.h720.encoding,
+        simulcast: !isMobileDevice(),
         videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360],
         screenShareEncoding: {
           // 4 Mbps over a 1080p-capped capture is a little over twice the bits per pixel the
