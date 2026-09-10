@@ -71,6 +71,7 @@ import PreJoinScreen, { type PreJoinChoices } from '../../components/Connect/Pre
 import MiniRoomPanel from '../../components/Connect/MiniRoomPanel';
 import ParticipantsPanel from '../../components/Connect/ParticipantsPanel';
 import { useConnectWaitlist } from '../../hooks/useConnectWaitlist';
+import { useRoomHosts } from '../../hooks/useRoomHosts';
 import MiniRoomMoveToast from '../../components/Connect/MiniRoomMoveToast';
 import MiniRoomAssignDialog from '../../components/Connect/MiniRoomAssignDialog';
 import { useAuth } from '../../context/AuthContext';
@@ -84,7 +85,10 @@ import DocumentPipContent from './DocumentPipContent';
 import { useBackgroundEffect, PRESETS } from './useBackgroundEffect';
 import BackgroundEffectModal from '../../components/Connect/BackgroundEffectModal';
 import AdvancedChat from '../../components/Connect/AdvancedChat';
+import ProfileSidebarPanel from '../../components/Connect/ProfileSidebarPanel';
 import LeaveConfirmModal from '../../components/Connect/LeaveConfirmModal';
+import HostLeaveWarningModal from '../../components/Connect/HostLeaveWarningModal';
+import ClaimHostModal from '../../components/Connect/ClaimHostModal';
 import GridLayoutView from '../../components/Connect/callLayout/GridLayoutView';
 import StageLayoutView from '../../components/Connect/callLayout/StageLayoutView';
 import {
@@ -325,6 +329,7 @@ function DropdownPortal({
  * Owns the Krisp/background/VAD toggle state and track-processor wiring.
  */
 function useMediaEnhancementsState(localParticipant: ReturnType<typeof useLocalParticipant>['localParticipant']) {
+  const room = useRoomContext();
   const background = useBackgroundEffect();
   const [krispEnabled, setKrispEnabled] = useState(true);
   const [krispLoading, setKrispLoading] = useState(false);
@@ -341,6 +346,16 @@ function useMediaEnhancementsState(localParticipant: ReturnType<typeof useLocalP
   const applyKrisp = useCallback(async (enabled: boolean, track: LocalAudioTrack) => {
     if (enabled) {
       if (!track.getProcessor()) {
+        // setProcessor() throws "Audio context needs to be set on LocalAudioTrack"
+        // if the track has no AudioContext yet. Room.connect() acquires one early,
+        // but a track built before connect (the pre-join mic preview, published
+        // once the room is up) can still reach setProcessor() before that context
+        // was propagated onto it. startAudio() is safe to call repeatedly, and
+        // even where autoplay is blocked it still assigns the context
+        // synchronously (see Room.acquireAudioContext) — that assignment, not
+        // actual playback, is the half setProcessor needs, so the rejection from
+        // a blocked play() is fine to swallow here.
+        await room.startAudio().catch(() => {});
         // TEMP DIAGNOSTIC: useBVC (Krisp's "Background Voice Cancellation") talks to
         // Krisp's own cloud service, not our self-hosted LiveKit server — no API key
         // is configured for it anywhere in this repo. It's the likely source of the
@@ -353,7 +368,7 @@ function useMediaEnhancementsState(localParticipant: ReturnType<typeof useLocalP
     } else if (track.getProcessor()) {
       await track.stopProcessor();
     }
-  }, []);
+  }, [room]);
 
   useEffect(() => {
     if (!isKrispSupported) return;
@@ -868,11 +883,40 @@ function ScreenShareMenuItem({ onSelect }: { onSelect: () => void }) {
   );
 }
 
-function LeaveButton() {
+function LeaveButton({ isHost, mainRoomId }: { isHost?: boolean; mainRoomId?: string }) {
   const room = useRoomContext();
   const [showConfirm, setShowConfirm] = useState(false);
+  const [showHostLeaveWarning, setShowHostLeaveWarning] = useState(false);
+  const [isChecking, setIsChecking] = useState(false);
 
-  const handleConfirmLeave = () => {
+  const handleConfirmLeave = async () => {
+    // ホストであり、かつ自分以外の参加者が通話内にいる場合、ホスト不在警告APIでチェック
+    const otherParticipantsCount = room.remoteParticipants?.size ?? 0;
+    if (isHost && otherParticipantsCount > 0 && mainRoomId) {
+      setIsChecking(true);
+      try {
+        const res = await apiClient.post(`/api/connect/rooms/${encodeURIComponent(mainRoomId)}/check-host-leave`, {});
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (data.shouldWarn) {
+            setShowConfirm(false);
+            setShowHostLeaveWarning(true);
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn('[CallRoomPage] check-host-leave failed:', e);
+      } finally {
+        setIsChecking(false);
+      }
+    }
+
+    setShowConfirm(false);
+    room.disconnect();
+  };
+
+  const handleForceLeave = () => {
+    setShowHostLeaveWarning(false);
     room.disconnect();
   };
 
@@ -889,8 +933,17 @@ function LeaveButton() {
 
       <LeaveConfirmModal
         isOpen={showConfirm}
-        onClose={() => setShowConfirm(false)}
+        loading={isChecking}
+        onClose={() => {
+          if (!isChecking) setShowConfirm(false);
+        }}
         onConfirm={handleConfirmLeave}
+      />
+
+      <HostLeaveWarningModal
+        isOpen={showHostLeaveWarning}
+        onClose={() => setShowHostLeaveWarning(false)}
+        onConfirm={handleForceLeave}
       />
     </>
   );
@@ -1276,9 +1329,15 @@ function CustomVideoConference({
   showParticipants,
   setShowParticipants,
   isMiniRoomHost,
+  onRequestClaimHost,
+  onRequestGrantHost,
   mainRoomId,
   miniRooms,
   recording,
+  isInternalMeeting,
+  selectedProfileUserId,
+  setSelectedProfileUserId,
+  onOpenProfile,
 }: {
   layout: CallLayout;
   onOpenPip: () => void;
@@ -1291,9 +1350,15 @@ function CustomVideoConference({
   showParticipants: boolean;
   setShowParticipants: (val: boolean | ((prev: boolean) => boolean)) => void;
   isMiniRoomHost: boolean;
+  onRequestClaimHost?: () => void;
+  onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
   mainRoomId: string;
   miniRooms: UseMiniRoomsResult;
   recording: ReturnType<typeof useRecording>;
+  isInternalMeeting?: boolean;
+  selectedProfileUserId?: string | null;
+  setSelectedProfileUserId?: (val: string | null) => void;
+  onOpenProfile?: (userId: string) => void;
 }) {
   const { localParticipant } = useLocalParticipant();
   const mediaEnhancements = useMediaEnhancementsState(localParticipant);
@@ -1337,24 +1402,33 @@ function CustomVideoConference({
   // firing the requests), so the badge/panel below need no extra isMiniRoomHost checks.
   const waitlist = useConnectWaitlist(mainRoomId, isMiniRoomHost);
 
+  // Who to badge as host in the Participants panel — see useRoomHosts.
+  const hostUserIds = useRoomHosts(mainRoomId);
+
   // Chat and Participants are docked on opposite sides but only one makes sense open at a
   // time on mobile (each goes full-screen there — see the "hidden below sm" comment further
   // down), so opening one closes the other.
   const handleToggleChat = useCallback(() => {
     setShowChat((prev) => {
       const next = !prev;
-      if (next) setShowParticipants(false);
+      if (next) {
+        setShowParticipants(false);
+        setSelectedProfileUserId?.(null);
+      }
       return next;
     });
-  }, [setShowChat, setShowParticipants]);
+  }, [setShowChat, setShowParticipants, setSelectedProfileUserId]);
 
   const handleToggleParticipants = useCallback(() => {
     setShowParticipants((prev) => {
       const next = !prev;
-      if (next) setShowChat(false);
+      if (next) {
+        setShowChat(false);
+        setSelectedProfileUserId?.(null);
+      }
       return next;
     });
-  }, [setShowChat, setShowParticipants]);
+  }, [setShowChat, setShowParticipants, setSelectedProfileUserId]);
 
   // Center control-bar items (Screen Share, Chat, and any future additions) fold into
   // the "..." menu once they don't fit. `centerWidth` is the actual box width flexbox
@@ -1538,30 +1612,13 @@ function CustomVideoConference({
         </div>
       )}
 
-      {/* Participants: docked sidebar on sm+ screens, full-screen page (with a back-to-video
-          button) below `sm` — mirrors Chat below, but docked left since it renders before
-          the main conference area in this flex row instead of after. Chat/Participants are
-          mutually exclusive (see handleToggleChat/handleToggleParticipants) so only one of
-          this and the chat aside is ever showing. */}
-      {showParticipants && (
-        <aside className="w-full sm:w-80 md:w-96 h-full shrink-0 z-30 shadow-2xl animate-in slide-in-from-left duration-200">
-          <ParticipantsPanel
-            isHost={isMiniRoomHost}
-            selfIdentity={selfIdentity}
-            getParticipantInfo={chat.getParticipantInfo}
-            waitlist={waitlist}
-            onBackToVideo={() => setShowParticipants(false)}
-          />
-        </aside>
-      )}
-
       {/* Main Conference Area — hidden below `sm` while chat or participants is open (phones
           can't fit a 320px+ sidebar next to the video grid without squeezing the control bar
           off screen), so it becomes a full-screen page you switch to and back from instead,
           matching the PiP window's video/chat tab behavior. */}
       <div
         className={`flex-1 h-full min-w-0 relative overflow-hidden ${
-          showChat || showParticipants ? 'hidden sm:flex sm:flex-col' : 'flex flex-col'
+          showChat || showParticipants || !!selectedProfileUserId ? 'hidden sm:flex sm:flex-col' : 'flex flex-col'
         }`}
       >
         {/* `lk-video-conference-inner` supplies the flex column. The old
@@ -1576,6 +1633,11 @@ function CustomVideoConference({
                 tracks={layout.gridTracks}
                 pinned={layout.pinned}
                 onTogglePin={layout.togglePin}
+                isHost={isMiniRoomHost}
+                onRequestClaimHost={onRequestClaimHost}
+                onRequestGrantHost={onRequestGrantHost}
+                isInternalMeeting={isInternalMeeting}
+                onOpenProfile={onOpenProfile}
               />
             ) : (
               <StageLayoutView
@@ -1584,6 +1646,11 @@ function CustomVideoConference({
                 stripTracks={layout.stripTracks}
                 pinned={layout.pinned}
                 onTogglePin={layout.togglePin}
+                isHost={isMiniRoomHost}
+                onRequestClaimHost={onRequestClaimHost}
+                onRequestGrantHost={onRequestGrantHost}
+                isInternalMeeting={isInternalMeeting}
+                onOpenProfile={onOpenProfile}
               />
             )}
           </div>
@@ -1613,18 +1680,51 @@ function CustomVideoConference({
 
               {/* Right: Leave */}
               <div className="flex items-center gap-2 shrink-0">
-                <LeaveButton />
+                <LeaveButton isHost={isMiniRoomHost} mainRoomId={mainRoomId} />
               </div>
             </div>
           </div>
         </div>
       </div>
 
+      {/* Participants: docked sidebar on sm+ screens, full-screen page (with a back-to-video
+          button) below `sm` — same right-hand dock as Chat below (Chat/Participants/Profile are
+          mutually exclusive, so only one of the three asides here is ever showing at once). */}
+      {showParticipants && (
+        <aside className="w-full sm:w-80 md:w-96 h-full shrink-0 z-30 shadow-2xl animate-in slide-in-from-right duration-200">
+          <ParticipantsPanel
+            isHost={isMiniRoomHost}
+            selfIdentity={selfIdentity}
+            getParticipantInfo={chat.getParticipantInfo}
+            waitlist={waitlist}
+            miniRooms={miniRooms}
+            hostUserIds={hostUserIds}
+            onBackToVideo={() => setShowParticipants(false)}
+            isInternalMeeting={isInternalMeeting}
+            onOpenProfile={onOpenProfile}
+            onRequestClaimHost={onRequestClaimHost}
+            onRequestGrantHost={onRequestGrantHost}
+            onTogglePin={layout.togglePin}
+            pinnedIds={layout.pinned}
+          />
+        </aside>
+      )}
+
       {/* Chat: docked sidebar on sm+ screens, full-screen page (with a back-to-video
           button) below `sm` — see the comment on the main conference area above. */}
       {showChat && (
         <aside className="w-full sm:w-80 md:w-96 h-full shrink-0 z-30 shadow-2xl animate-in slide-in-from-right duration-200">
           <AdvancedChat chat={chat} onBackToVideo={() => setShowChat(false)} />
+        </aside>
+      )}
+
+      {/* Profile: docked sidebar on sm+ screens, full-screen page below `sm` */}
+      {selectedProfileUserId && (
+        <aside className="w-full sm:w-80 md:w-96 h-full shrink-0 z-30 shadow-2xl animate-in slide-in-from-right duration-200">
+          <ProfileSidebarPanel
+            userId={selectedProfileUserId}
+            onClose={() => setSelectedProfileUserId?.(null)}
+          />
         </aside>
       )}
 
@@ -1650,11 +1750,13 @@ function CallRoomInner({
   roomId,
   roomTitle,
   isHost,
+  onClaimHostSuccess,
   onReconnect,
   onBeforeReconnectDisconnect,
   pendingVideoTrack,
   pendingAudioTrack,
   initialMediaChoices,
+  isInternalMeeting,
 }: {
   roomId: string;
   roomTitle: string;
@@ -1662,6 +1764,7 @@ function CallRoomInner({
    *  host/creator, or first joiner of an instant room) — decided server-side at token
    *  issuance. Gates mini-room creation and screen recording. */
   isHost: boolean;
+  onClaimHostSuccess?: () => void;
   onReconnect: (target: ReconnectTarget) => void;
   onBeforeReconnectDisconnect: () => void;
   /** The pre-join camera/mic tracks (background processor already attached, if
@@ -1671,13 +1774,22 @@ function CallRoomInner({
   pendingVideoTrack: LocalVideoTrack | null;
   pendingAudioTrack: LocalAudioTrack | null;
   initialMediaChoices?: PreJoinChoices | null;
+  isInternalMeeting?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showParticipants, setShowParticipants] = useState(false);
+  const [selectedProfileUserId, setSelectedProfileUserId] = useState<string | null>(null);
+  const [showClaimHostModal, setShowClaimHostModal] = useState(false);
   const { user } = useAuth();
 
   const isMiniRoomHost = isHost;
+
+  const handleOpenProfile = useCallback((targetUserId: string) => {
+    setShowChat(false);
+    setShowParticipants(false);
+    setSelectedProfileUserId(targetUserId);
+  }, []);
 
   const miniRooms = useMiniRooms({
     mainRoomId: roomId,
@@ -1686,6 +1798,38 @@ function CallRoomInner({
     onReconnect,
     onBeforeReconnectDisconnect,
   });
+
+  const handleClaimHost = async (code: string) => {
+    const res = await apiClient.post(`/api/connect/rooms/${encodeURIComponent(roomId)}/claim-host`, {
+      host_code: code,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'ホスト権限の取得に失敗しました');
+    }
+    onClaimHostSuccess?.();
+  };
+
+  const handleGrantHost = useCallback(
+    async (targetUserId: string, targetName: string) => {
+      const ok = window.confirm(`${targetName} さんに一時ホスト権限を付与しますか？`);
+      if (!ok) return;
+
+      try {
+        const res = await apiClient.post(`/api/connect/rooms/${encodeURIComponent(roomId)}/grant-host`, {
+          targetUserId,
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || 'ホスト権限の付与に失敗しました');
+        }
+        alert(`${targetName} さんに一時ホスト権限を付与しました`);
+      } catch (e: any) {
+        alert(e.message || 'ホスト権限の付与に失敗しました');
+      }
+    },
+    [roomId],
+  );
 
   const recording = useRecording(roomId);
 
@@ -1698,6 +1842,28 @@ function CallRoomInner({
 
   const { localParticipant } = useLocalParticipant();
   const room = useRoomContext();
+
+  // Listen for host_granted message via LiveKit data channel
+  useEffect(() => {
+    const handleDataReceived = (payload: Uint8Array, _participant?: unknown, _kind?: unknown, topic?: string) => {
+      if (topic !== 'host_granted') return;
+      try {
+        const str = new TextDecoder().decode(payload);
+        const data = JSON.parse(str);
+        if (data.type === 'host_granted' && data.targetUserId === user?.id) {
+          onClaimHostSuccess?.();
+          alert('ホストから一時ホスト権限が付与されました');
+        }
+      } catch (e) {
+        console.warn('[CallRoomPage] Failed to parse host_granted message:', e);
+      }
+    };
+
+    room.on(RoomEvent.DataReceived, handleDataReceived);
+    return () => {
+      room.off(RoomEvent.DataReceived, handleDataReceived);
+    };
+  }, [room, user?.id, onClaimHostSuccess]);
 
   const mediaChoicesRef = useRef(initialMediaChoices);
   useEffect(() => {
@@ -1916,9 +2082,15 @@ function CallRoomInner({
           showParticipants={showParticipants}
           setShowParticipants={setShowParticipants}
           isMiniRoomHost={isMiniRoomHost}
+          onRequestClaimHost={() => setShowClaimHostModal(true)}
+          onRequestGrantHost={handleGrantHost}
           mainRoomId={roomId}
           miniRooms={miniRooms}
           recording={recording}
+          isInternalMeeting={isInternalMeeting}
+          selectedProfileUserId={selectedProfileUserId}
+          setSelectedProfileUserId={setSelectedProfileUserId}
+          onOpenProfile={handleOpenProfile}
         />
 
         <MiniRoomMoveToast pendingMove={miniRooms.pendingMove} />
@@ -1927,6 +2099,13 @@ function CallRoomInner({
           invite={miniRooms.assignedInvite}
           onAccept={miniRooms.acceptAssignedInvite}
           onDismiss={miniRooms.dismissAssignedInvite}
+        />
+
+        <ClaimHostModal
+          isOpen={showClaimHostModal}
+          onClose={() => setShowClaimHostModal(false)}
+          onSubmit={handleClaimHost}
+          roomTitle={roomTitle}
         />
 
         {/* Render Document PiP Portal when active */}
@@ -2151,6 +2330,7 @@ export default function CallRoomPage({
   const [token, setToken] = useState('');
   const [serverUrl, setServerUrl] = useState('');
   const [roomTitle, setRoomTitle] = useState(anonymousInvite?.roomTitle ?? '');
+  const [meetingType, setMeetingType] = useState<'fixed' | 'external'>(anonymousInvite ? 'external' : 'fixed');
   const [isHost, setIsHost] = useState(false);
   const [choices, setChoices] = useState<PreJoinChoices | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
@@ -2246,6 +2426,7 @@ export default function CallRoomPage({
         setServerUrl(data.url);
         if (data.roomTitle) setRoomTitle(data.roomTitle);
         setIsHost(!!data.is_host);
+        setMeetingType('external');
         setStage('in-call');
       } catch (e: any) {
         setErrorMsg(e?.message || '接続中にエラーが発生しました');
@@ -2311,6 +2492,9 @@ export default function CallRoomPage({
           setRoomTitle(data.roomTitle);
         }
         setIsHost(!!data.is_host);
+        if (data.meeting_type) {
+          setMeetingType(data.meeting_type);
+        }
         setStage('in-call');
       } catch (e: any) {
         if (isMounted) {
@@ -2608,11 +2792,13 @@ export default function CallRoomPage({
           roomId={roomId!}
           roomTitle={roomTitle}
           isHost={isHost}
+          onClaimHostSuccess={() => setIsHost(true)}
           onReconnect={handleReconnect}
           onBeforeReconnectDisconnect={handleBeforeReconnectDisconnect}
           pendingVideoTrack={pendingVideoTrack}
           pendingAudioTrack={pendingAudioTrack}
           initialMediaChoices={choices}
+          isInternalMeeting={meetingType !== 'external' && !anonymousInvite}
         />
       </LiveKitRoom>
     </div>

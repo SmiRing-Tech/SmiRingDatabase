@@ -41,8 +41,19 @@ export type StoredChoice = {
   quality?: SegmentationQuality;
 };
 
-/** First-ever join, before anyone has picked anything for themselves. */
-const FIRST_TIME_DEFAULT: StoredChoice = { mode: 'image', imageId: 'preset:smiring-brand' };
+/**
+ * First-ever join, before anyone has picked anything for themselves. Phones
+ * already run the lightest model and a lower segmentation fps (see
+ * detectSegmentationQuality / detectSegmentationFps below), but a still-image
+ * background still means "segment every frame, indefinitely" on hardware and
+ * a battery budget that can't really absorb it — so unlike desktop, a phone's
+ * first join opts out rather than in. Anyone who wants it can still turn it
+ * on from the panel, and that choice is what gets remembered from then on.
+ */
+function firstTimeDefault(): StoredChoice {
+  if (isMobileDevice()) return { mode: 'off' };
+  return { mode: 'image', imageId: 'preset:smiring-brand' };
+}
 
 /**
  * The choice lives in localStorage rather than on the server: it is a property
@@ -52,17 +63,17 @@ const FIRST_TIME_DEFAULT: StoredChoice = { mode: 'image', imageId: 'preset:smiri
 export function readStoredChoice(): StoredChoice {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return FIRST_TIME_DEFAULT;
+    if (!raw) return firstTimeDefault();
     const parsed = JSON.parse(raw) as StoredChoice;
     if (parsed.mode !== 'off' && parsed.mode !== 'blur' && parsed.mode !== 'image') {
-      return FIRST_TIME_DEFAULT;
+      return firstTimeDefault();
     }
     if (parsed.quality !== 'balanced' && parsed.quality !== 'high') {
       parsed.quality = undefined;
     }
     return parsed;
   } catch {
-    return FIRST_TIME_DEFAULT;
+    return firstTimeDefault();
   }
 }
 
@@ -117,6 +128,19 @@ export function detectSegmentationQuality(): SegmentationQuality {
   if (typeof memory === 'number' && memory < 4) return 'balanced';
 
   return 'high';
+}
+
+/**
+ * Segmentation inferences per second to cap the processor at. `segmentForVideo`
+ * is by far the most expensive thing this pipeline does per frame — far more
+ * than the GL compositing passes — so on top of always picking the lightest
+ * model (see `detectSegmentationQuality`), phones also run it less often. 10Hz
+ * still tracks a moving subject closely enough (the temporal smoothing and
+ * edge feather cover the gap between inferences); the desktop default of 30Hz
+ * is unchanged.
+ */
+export function detectSegmentationFps(): number {
+  return isMobileDevice() ? 10 : 30;
 }
 
 /** Loads, uploads and deletes the user's saved backgrounds. */

@@ -170,11 +170,52 @@ async function getDisplayProfile(userId: string, fallback: string) {
   return { displayName, avatarUrl };
 }
 
+/** Temporary hosts claimed via host code for the current active call session.
+ *  Cleared when the room becomes empty and closes (see cleanupStaleRoomData).
+ *  Key format: `${roomId}:${userId}` */
+const temporaryRoomHosts = new Set<string>();
+
+function addTemporaryHost(roomId: string, userId: string): void {
+  temporaryRoomHosts.add(`${roomId}:${userId}`);
+}
+
+function isTemporaryHost(userId: string, roomId: string): boolean {
+  return temporaryRoomHosts.has(`${roomId}:${userId}`);
+}
+
+function clearTemporaryHostsForRoom(roomId: string): void {
+  for (const key of temporaryRoomHosts) {
+    if (key.startsWith(`${roomId}:`)) {
+      temporaryRoomHosts.delete(key);
+    }
+  }
+}
+
 /** True if userId holds host privileges for LiveKit room `roomId`. For a registered
  *  fixed meeting this is its creator or anyone in connect_room_hosts; for an instant
  *  (unregistered) room it's whoever connect_instant_hosts recorded for that room_id
- *  (see POST /api/connect/token, which auto-registers the first joiner). */
+ *  (see POST /api/connect/token, which auto-registers the first joiner).
+ *  Also returns true for any session-scoped temporary hosts claimed via host code. */
 async function isRoomHost(userId: string, roomId: string): Promise<boolean> {
+  // Check session-scoped temporary host first
+  if (isTemporaryHost(userId, roomId)) return true;
+
+  // If this is a mini room (starts with 'mr_'), check against its parent main room
+  if (roomId.startsWith('mr_')) {
+    try {
+      const { data: mr } = await supabase
+        .from('connect_miniroom_rooms')
+        .select('main_room_id')
+        .eq('id', roomId)
+        .maybeSingle();
+      if (mr?.main_room_id && (isTemporaryHost(userId, mr.main_room_id) || await isRoomHost(userId, mr.main_room_id))) {
+        return true;
+      }
+    } catch (e) {
+      console.warn('[Connect] isRoomHost miniroom parent lookup warning:', e);
+    }
+  }
+
   const { data: room } = await supabase
     .from('connect_rooms')
     .select('id, created_by')
@@ -182,6 +223,7 @@ async function isRoomHost(userId: string, roomId: string): Promise<boolean> {
     .maybeSingle();
 
   if (room) {
+    if (isTemporaryHost(userId, room.id)) return true;
     if (room.created_by === userId) return true;
     const { data } = await supabase
       .from('connect_room_hosts')
@@ -192,13 +234,63 @@ async function isRoomHost(userId: string, roomId: string): Promise<boolean> {
     return !!data;
   }
 
-  const { data: instantHost } = await supabase
+  const { data: instantHost, error: instantErr } = await supabase
     .from('connect_instant_hosts')
     .select('room_id')
     .eq('room_id', roomId)
     .eq('user_id', userId)
     .maybeSingle();
+  if (instantErr) {
+    console.error('[Connect] isRoomHost instant host lookup error:', instantErr);
+  }
   return !!instantHost;
+}
+
+/** Every user id that currently holds host privileges for the room group rooted at
+ *  `mainRoomId` — the batched counterpart to isRoomHost() above, for badging hosts in
+ *  a participant list rather than checking one candidate at a time. Only makes sense
+ *  called with a *main* room id: claim-host/grant-host always register temporary hosts
+ *  against that id (see addTemporaryHost's call sites), so unlike isRoomHost() there is
+ *  no need to walk from a mini room up to its parent here.
+ *
+ *  This is a display aid, not an authorization check — every host-only route still
+ *  re-verifies via isRoomHost() regardless of what this returns. */
+async function getRoomHostUserIds(mainRoomId: string): Promise<Set<string>> {
+  const hostIds = new Set<string>();
+
+  const { data: room } = await supabase
+    .from('connect_rooms')
+    .select('id, created_by')
+    .eq('room_id', mainRoomId)
+    .maybeSingle();
+
+  if (room) {
+    if (room.created_by) hostIds.add(room.created_by);
+    const { data: registeredHosts } = await supabase
+      .from('connect_room_hosts')
+      .select('user_id')
+      .eq('room_id', room.id);
+    for (const row of registeredHosts ?? []) hostIds.add(row.user_id);
+  } else {
+    const { data: instantHosts, error: instantErr } = await supabase
+      .from('connect_instant_hosts')
+      .select('user_id')
+      .eq('room_id', mainRoomId);
+    if (instantErr) {
+      console.error('[Connect] getRoomHostUserIds instant host lookup error:', instantErr);
+    }
+    for (const row of instantHosts ?? []) hostIds.add(row.user_id);
+  }
+
+  // Session-scoped temporary hosts (claim-host / grant-host) — registered under both
+  // the LiveKit room_id and, for a registered meeting, its table UUID.
+  const prefixes = [`${mainRoomId}:`, ...(room ? [`${room.id}:`] : [])];
+  for (const key of temporaryRoomHosts) {
+    const prefix = prefixes.find((p) => key.startsWith(p));
+    if (prefix) hostIds.add(key.slice(prefix.length));
+  }
+
+  return hostIds;
 }
 
 /** Of the given user ids, which hold one of the internal roles (member/partner/admin) —
@@ -409,6 +501,22 @@ async function isRoomEmpty(roomId: string): Promise<boolean> {
 async function isMainRoomSessionEmpty(mainRoomId: string): Promise<boolean> {
   if (!(await isRoomEmpty(mainRoomId))) return false;
 
+  // 直近（2分以内）に登録されたインスタントホストが存在する場合は、
+  // ユーザーが入室してLiveKit接続処理中のため、空（stale）と判定しない。
+  try {
+    const { data: instantHosts } = await supabase
+      .from('connect_instant_hosts')
+      .select('created_at')
+      .eq('room_id', mainRoomId);
+    const hasRecentInstantHost = (instantHosts ?? []).some((h) => {
+      const createdAt = h.created_at ? new Date(h.created_at).getTime() : 0;
+      return Date.now() - createdAt < 120_000;
+    });
+    if (hasRecentInstantHost) return false;
+  } catch (e) {
+    console.warn('[Connect] Failed to check instant host recency:', e);
+  }
+
   const miniRooms = await getActiveMiniRooms(mainRoomId).catch((e) => {
     console.error('[Connect] Failed to check mini rooms for session-emptiness:', e);
     return null;
@@ -452,9 +560,29 @@ async function cleanupStaleRoomData(mainRoomId: string): Promise<void> {
 
   // Instant-room host claim is only valid for the session it was made in; clear it so a
   // reused room name lets the next joiner become its host again.
-  const { error: instantHostError } = await supabase.from('connect_instant_hosts').delete().eq('room_id', mainRoomId);
+  // 直近2分以内に作られたホスト（入室中）は削除しない。
+  const { error: instantHostError } = await supabase
+    .from('connect_instant_hosts')
+    .delete()
+    .eq('room_id', mainRoomId)
+    .lt('created_at', new Date(Date.now() - 120_000).toISOString());
   if (instantHostError) {
     console.error('[Connect] Failed to delete stale instant host row:', instantHostError);
+  }
+
+  // Clear any session-scoped temporary hosts claimed via host code for this room
+  clearTemporaryHostsForRoom(mainRoomId);
+  try {
+    const { data: fixedRoom } = await supabase
+      .from('connect_rooms')
+      .select('id')
+      .eq('room_id', mainRoomId)
+      .maybeSingle();
+    if (fixedRoom?.id) {
+      clearTemporaryHostsForRoom(fixedRoom.id);
+    }
+  } catch (e) {
+    // Best-effort cleanup
   }
 
   const miniRooms = await getActiveMiniRooms(mainRoomId).catch((e) => {
@@ -516,16 +644,22 @@ router.post('/api/connect/token', authenticate, async (req: Request, res: Respon
     // as its first joiner below).
     let roomTitle: string | null = null;
     let isHost = false;
+    let meetingType: string = 'fixed';
     try {
       const { data: roomData } = await supabase
         .from('connect_rooms')
-        .select('id, room_title, created_by')
+        .select('id, room_title, created_by, meeting_type')
         .eq('room_id', room)
         .maybeSingle();
 
       if (roomData) {
         roomTitle = roomData.room_title ?? null;
+        if (roomData.meeting_type) {
+          meetingType = roomData.meeting_type;
+        }
         if (roomData.created_by === userId) {
+          isHost = true;
+        } else if (isTemporaryHost(userId, room) || isTemporaryHost(userId, roomData.id)) {
           isHost = true;
         } else {
           const { data: hostRow } = await supabase
@@ -537,24 +671,42 @@ router.post('/api/connect/token', authenticate, async (req: Request, res: Respon
           isHost = !!hostRow;
         }
       } else {
-        const { data: instantHosts } = await supabase
-          .from('connect_instant_hosts')
-          .select('user_id')
-          .eq('room_id', room);
-
-        if (!instantHosts || instantHosts.length === 0) {
-          // Nobody registered yet for this instant room — this joiner claims it.
-          await supabase.from('connect_instant_hosts').insert({ room_id: room, user_id: userId });
+        if (isTemporaryHost(userId, room)) {
           isHost = true;
         } else {
-          isHost = instantHosts.some((h) => h.user_id === userId);
+          const { data: instantHosts } = await supabase
+            .from('connect_instant_hosts')
+            .select('user_id')
+            .eq('room_id', room);
+
+          if (!instantHosts || instantHosts.length === 0) {
+            // Nobody registered yet for this instant room — this joiner claims it.
+            const { error: insErr } = await supabase
+              .from('connect_instant_hosts')
+              .insert({ room_id: room, user_id: userId });
+            if (insErr) {
+              console.error('[Connect] Failed to insert instant host:', insErr);
+              isHost = false;
+            } else {
+              isHost = true;
+            }
+          } else {
+            isHost = instantHosts.some((h) => h.user_id === userId);
+          }
         }
       }
     } catch (e) {
-      // Ignore DB lookup error — worst case, this joiner just isn't treated as host.
+      console.warn('[Connect] Host lookup/registration warning for room:', room, e);
     }
 
-    return res.status(200).json({ token, url: LIVEKIT_URL, identity: userId, roomTitle, is_host: isHost });
+    return res.status(200).json({
+      token,
+      url: LIVEKIT_URL,
+      identity: userId,
+      roomTitle,
+      is_host: isHost,
+      meeting_type: meetingType,
+    });
   } catch (error: any) {
     console.error('[Connect] token issue failed:', error);
     return res.status(500).json({ error: error.message });
@@ -1047,6 +1199,251 @@ router.delete('/api/connect/rooms/:id/pin', authenticate, async (req: Request, r
   }
 });
 
+// POST /api/connect/rooms/:roomId/claim-host - Claim host privileges using host code
+router.post('/api/connect/rooms/:roomId/claim-host', authenticate, async (req: Request, res: Response) => {
+  try {
+    const roomId = req.params.roomId as string;
+    const userId = req.user!.id;
+    const { host_code } = req.body ?? {};
+
+    if (!host_code || typeof host_code !== 'string' || !host_code.trim()) {
+      return res.status(400).json({ error: 'ホストコードを入力してください' });
+    }
+
+    // Lookup room by LiveKit room_id (or table id if UUID)
+    let query = supabase
+      .from('connect_rooms')
+      .select('id, room_id, room_title, host_code');
+
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomId);
+    if (isUuid) {
+      query = query.or(`room_id.eq.${roomId},id.eq.${roomId}`);
+    } else {
+      query = query.eq('room_id', roomId);
+    }
+
+    const { data: room, error: roomError } = await query.maybeSingle();
+
+    if (roomError) {
+      console.error('[Connect] claim-host room lookup failed:', roomError);
+      return res.status(500).json({ error: roomError.message });
+    }
+
+    if (!room) {
+      return res.status(404).json({ error: 'ミーティングが見つかりません。このミーティングにはホストコードが設定されていない可能性があります。' });
+    }
+
+    if (!room.host_code || !room.host_code.trim()) {
+      return res.status(400).json({ error: 'このミーティングにはホストコードが設定されていません' });
+    }
+
+    if (room.host_code.trim() !== host_code.trim()) {
+      return res.status(403).json({ error: 'ホストコードが正しくありません' });
+    }
+
+    // Clean up any legacy connect_room_hosts entry for this user added by earlier implementation
+    try {
+      await supabase
+        .from('connect_room_hosts')
+        .delete()
+        .eq('room_id', room.id)
+        .eq('user_id', userId);
+    } catch {
+      // ignore
+    }
+
+    // Register as session-scoped temporary host
+    addTemporaryHost(roomId, userId);
+    if (room.room_id) {
+      addTemporaryHost(room.room_id, userId);
+    }
+    if (room.id) {
+      addTemporaryHost(room.id, userId);
+    }
+
+    return res.status(200).json({ success: true, is_host: true });
+  } catch (error: any) {
+    console.error('[Connect] POST /api/connect/rooms/:roomId/claim-host failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/rooms/:roomId/grant-host - Host grants temporary host privileges to another participant
+router.post(
+  '/api/connect/rooms/:roomId/grant-host',
+  authenticate,
+  requireRoomHost,
+  async (req: Request, res: Response) => {
+    try {
+      const roomId = req.params.roomId as string;
+      const { targetUserId } = req.body ?? {};
+
+      if (!targetUserId || typeof targetUserId !== 'string' || !targetUserId.trim()) {
+        return res.status(400).json({ error: '付与対象のユーザーが指定されていません' });
+      }
+
+      const trimmedTarget = targetUserId.trim();
+
+      // Lookup room in connect_rooms (if fixed meeting) to register both LiveKit room_id and table UUID
+      let query = supabase
+        .from('connect_rooms')
+        .select('id, room_id');
+
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomId);
+      if (isUuid) {
+        query = query.or(`room_id.eq.${roomId},id.eq.${roomId}`);
+      } else {
+        query = query.eq('room_id', roomId);
+      }
+
+      const { data: room } = await query.maybeSingle();
+
+      // Register as session-scoped temporary host
+      addTemporaryHost(roomId, trimmedTarget);
+      if (room?.room_id) {
+        addTemporaryHost(room.room_id, trimmedTarget);
+      }
+      if (room?.id) {
+        addTemporaryHost(room.id, trimmedTarget);
+      }
+
+      // Broadcast 'host_granted' via LiveKit data packet so target user immediately gets host privileges
+      if (roomService) {
+        const payload = Buffer.from(
+          JSON.stringify({
+            type: 'host_granted',
+            targetUserId: trimmedTarget,
+            roomId,
+          }),
+          'utf8',
+        );
+
+        const targetRooms = [roomId];
+        if (room?.room_id && room.room_id !== roomId) {
+          targetRooms.push(room.room_id);
+        }
+
+        // Also broadcast to any active mini rooms
+        try {
+          const miniRooms = await getActiveMiniRooms(roomId);
+          miniRooms.forEach((mr) => targetRooms.push(mr.id));
+        } catch {
+          // ignore
+        }
+
+        await Promise.all(
+          Array.from(new Set(targetRooms)).map((rId) =>
+            roomService!
+              .sendData(rId, payload, DataPacket_Kind.RELIABLE, { topic: 'host_granted' })
+              .catch((e) => console.warn(`[Connect] host_granted broadcast to ${rId} warning:`, e?.message)),
+          ),
+        );
+      }
+
+      return res.status(200).json({ success: true, target_user_id: trimmedTarget });
+    } catch (error: any) {
+      console.error('[Connect] POST /api/connect/rooms/:roomId/grant-host failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// POST /api/connect/rooms/:roomId/check-host-leave - Checks whether a leaving host should be warned about orphaned room
+router.post(
+  '/api/connect/rooms/:roomId/check-host-leave',
+  authenticate,
+  async (req: Request, res: Response) => {
+    try {
+      const roomId = req.params.roomId as string;
+      const userId = req.user!.id;
+
+      // 1. Is this user actually a host?
+      const userIsHost = await isRoomHost(userId, roomId);
+      if (!userIsHost) {
+        return res.status(200).json({ shouldWarn: false, reason: 'not_host' });
+      }
+
+      // 2. Does this room have a host_code configured?
+      let query = supabase
+        .from('connect_rooms')
+        .select('id, room_id, host_code');
+
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomId);
+      if (isUuid) {
+        query = query.or(`room_id.eq.${roomId},id.eq.${roomId}`);
+      } else {
+        query = query.eq('room_id', roomId);
+      }
+
+      const { data: room } = await query.maybeSingle();
+
+      // If a valid host_code exists, other members can claim host with the code, so no warning needed
+      if (room?.host_code && room.host_code.trim()) {
+        return res.status(200).json({ shouldWarn: false, reason: 'has_host_code' });
+      }
+
+      // 3. Are there other participants in the call, and does any of them have host privileges?
+      if (!roomService) {
+        return res.status(200).json({ shouldWarn: false, reason: 'no_room_service' });
+      }
+
+      const roomNamesToCheck = [roomId];
+      if (room?.room_id && room.room_id !== roomId) {
+        roomNamesToCheck.push(room.room_id);
+      }
+
+      // Also check any active mini rooms for this main room
+      try {
+        const miniRooms = await getActiveMiniRooms(roomId);
+        miniRooms.forEach((mr) => roomNamesToCheck.push(mr.id));
+      } catch {
+        // ignore
+      }
+
+      const uniqueRoomNames = Array.from(new Set(roomNamesToCheck));
+      const participantLists = await Promise.all(
+        uniqueRoomNames.map(async (rName) => {
+          try {
+            return await roomService!.listParticipants(rName);
+          } catch {
+            return [];
+          }
+        }),
+      );
+
+      const participantIdentities = new Set<string>();
+      for (const list of participantLists) {
+        for (const p of list) {
+          if (p.identity && p.identity !== userId) {
+            participantIdentities.add(p.identity);
+          }
+        }
+      }
+
+      // If no other members are in the room, no warning needed
+      if (participantIdentities.size === 0) {
+        return res.status(200).json({ shouldWarn: false, reason: 'no_other_participants' });
+      }
+
+      // Check if any other participant has host privileges (run checks in parallel)
+      const hostChecks = await Promise.all(
+        Array.from(participantIdentities).map((otherUserId) => isRoomHost(otherUserId, roomId)),
+      );
+      const otherHostExists = hostChecks.some(Boolean);
+
+      if (otherHostExists) {
+        return res.status(200).json({ shouldWarn: false, reason: 'other_host_exists' });
+      }
+
+      // All conditions met: user is host, other participants remain, no other host, no host code
+      return res.status(200).json({ shouldWarn: true });
+    } catch (error: any) {
+      console.error('[Connect] POST .../check-host-leave failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
 // GET /api/connect/rooms/:id/detail - Full editable detail for the edit modal (host only)
 router.get('/api/connect/rooms/:id/detail', authenticate, async (req: Request, res: Response) => {
   try {
@@ -1072,6 +1469,7 @@ router.get('/api/connect/rooms/:id/detail', authenticate, async (req: Request, r
       id: loaded.room.id,
       room_title: loaded.room.room_title,
       room_id: loaded.room.room_id,
+      created_by: loaded.room.created_by,
       meeting_type: loaded.room.meeting_type,
       access_mode: loaded.room.access_mode,
       public_all: loaded.room.public_all,
@@ -1156,7 +1554,8 @@ router.patch('/api/connect/rooms/:id', authenticate, async (req: Request, res: R
     const viewerRows = isPublic
       ? Array.from(new Set(Array.isArray(excluded_user_ids) ? excluded_user_ids : []))
       : Array.from(new Set(Array.isArray(viewer_user_ids) ? viewer_user_ids : []));
-    const hostIds = Array.from(new Set([userId, ...(Array.isArray(host_user_ids) ? host_user_ids : [])]));
+    const creatorId = loaded.room.created_by;
+    const hostIds = Array.from(new Set([creatorId, ...(Array.isArray(host_user_ids) ? host_user_ids : [])]));
 
     const { data: room, error } = await supabase
       .from('connect_rooms')
@@ -1213,20 +1612,6 @@ router.get('/api/connect/rooms/:roomId/messages', authenticate, async (req: Requ
     const { roomId } = req.params;
     if (!isValidRoomName(roomId)) {
       return res.status(400).json({ error: 'ルーム名が不正です' });
-    }
-
-    // If this room's session has nobody left in it, wipe leftover messages. Uses the
-    // session-aware check (not plain isRoomEmpty) because `roomId` here can be a main
-    // room that still has active mini rooms under it — see isMainRoomSessionEmpty.
-    if (roomService) {
-      try {
-        if (await isMainRoomSessionEmpty(roomId)) {
-          await cleanupStaleRoomData(roomId);
-          return res.status(200).json({ messages: [] });
-        }
-      } catch (e) {
-        console.warn('[Connect] Room check on GET messages failed:', e);
-      }
     }
 
     const { data, error } = await supabase
@@ -1586,6 +1971,77 @@ router.get(
     }
   },
 );
+
+// GET /api/connect/rooms/:roomId/miniroom/other-participants - Who else is in this
+// room group (main room + its mini rooms), for the plain Participants panel. Unlike
+// .../participants above (host-only, feeds the host's move UI with per-room labels),
+// this is open to any authenticated caller and deliberately strips which room each
+// person is in — the caller only learns "how many, and who" for everyone outside the
+// room they say they're currently in (excludeRoomId), never a room id or name.
+router.get(
+  '/api/connect/rooms/:roomId/miniroom/other-participants',
+  authenticate,
+  async (req: Request, res: Response) => {
+    try {
+      const { roomId } = req.params;
+      if (!isValidRoomName(roomId)) {
+        return res.status(400).json({ error: 'ルーム名が不正です' });
+      }
+      if (!roomService) {
+        return res.status(503).json({ error: 'LiveKitが設定されていません' });
+      }
+
+      const excludeRoomId = typeof req.query.excludeRoomId === 'string' ? req.query.excludeRoomId : roomId;
+
+      const miniRooms = await getActiveMiniRooms(roomId);
+      const roomIds = [roomId, ...miniRooms.map((r) => r.id)].filter((id) => id !== excludeRoomId);
+
+      const results = await Promise.all(
+        roomIds.map(async (id) => {
+          try {
+            return await roomService!.listParticipants(id);
+          } catch {
+            return [];
+          }
+        }),
+      );
+
+      const participants = results.flat().map((p) => {
+        let avatarUrl: string | null = null;
+        try {
+          const meta = p.metadata ? JSON.parse(p.metadata) : {};
+          avatarUrl = meta.avatar_url ?? null;
+        } catch {
+          // Ignore malformed metadata.
+        }
+        return { identity: p.identity, name: p.name || p.identity, avatarUrl };
+      });
+
+      return res.status(200).json({ count: participants.length, participants });
+    } catch (error: any) {
+      console.error('[Connect] GET .../miniroom/other-participants failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// GET /api/connect/rooms/:roomId/hosts - Who currently holds host privileges for this
+// room group, for badging hosts in the Participants panel. Open to any authenticated
+// caller (not just the host) — same trust level as the mini-room roster endpoints
+// above, and this only ever echoes back user ids that are hosts, not anything private.
+router.get('/api/connect/rooms/:roomId/hosts', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { roomId } = req.params;
+    if (!isValidRoomName(roomId)) {
+      return res.status(400).json({ error: 'ルーム名が不正です' });
+    }
+    const hostUserIds = await getRoomHostUserIds(roomId);
+    return res.status(200).json({ hostUserIds: [...hostUserIds] });
+  } catch (error: any) {
+    console.error('[Connect] GET .../hosts failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
 
 // POST /api/connect/rooms/:roomId/miniroom/move - Unified self-move / host-move-other.
 //

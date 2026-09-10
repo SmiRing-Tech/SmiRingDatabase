@@ -5,11 +5,14 @@ import {
   supportsMediapipeBackground,
   type SegmentationQuality,
 } from '../../lib/video/MediapipeBackgroundProcessor';
+import { BlankFrameProcessor } from '../../lib/video/BlankFrameProcessor';
 import {
   useBackgroundLibrary,
   readStoredChoice,
   writeStoredChoice,
   detectSegmentationQuality,
+  detectSegmentationFps,
+  isMobileDevice,
   type BackgroundMode,
 } from './backgroundLibrary';
 import type { BackgroundEffectState } from './useBackgroundEffect';
@@ -59,9 +62,34 @@ export function usePreJoinBackground(track: LocalVideoTrack | null) {
   });
 
   const processorRef = useRef<MediapipeBackgroundProcessor | null>(null);
+  // See useBackgroundEffect.ts for why these exist — this hook mirrors its automatic
+  // high <-> balanced adjustment in both directions.
+  const autoDowngradedRef = useRef(false);
+  const autoUpgradedRef = useRef(false);
+  const setQualityRef = useRef<((q: SegmentationQuality) => Promise<boolean>) | undefined>(undefined);
 
   const { uploads, imageUrlFor, uploadBackground, deleteBackground } =
     useBackgroundLibrary(supported);
+
+  /** See useBackgroundEffect.ts's handlePerfDowngrade — same idea, pre-join track. */
+  const handlePerfDowngrade = useCallback(() => {
+    if (autoDowngradedRef.current) return;
+    autoDowngradedRef.current = true;
+    console.warn('[PreJoin] background effect running slow, falling back to balanced quality');
+    void setQualityRef.current?.('balanced').then((ok) => {
+      if (ok) setError('処理が重かったため、背景エフェクトを標準画質に切り替えました。');
+    });
+  }, []);
+
+  /** See useBackgroundEffect.ts's handlePerfUpgrade — same idea, pre-join track. */
+  const handlePerfUpgrade = useCallback(() => {
+    if (autoUpgradedRef.current || isMobileDevice()) return;
+    autoUpgradedRef.current = true;
+    console.info('[PreJoin] background effect has headroom, trying high quality');
+    void setQualityRef.current?.('high').then((ok) => {
+      if (ok) setError('処理に余裕があるため、背景エフェクトを高精細画質に切り替えました。');
+    });
+  }, []);
 
   /**
    * Brings the track in line with the requested effect. Reuses the running
@@ -127,6 +155,14 @@ export function usePreJoinBackground(track: LocalVideoTrack | null) {
       setIsReady(false);
       if (track.getProcessor()) await track.stopProcessor();
 
+      // With nothing attached, the track would fall straight back to raw camera video
+      // for as long as the new model takes to load — bridge through a blank
+      // placeholder instead. Nobody but this browser sees the pre-join track, but
+      // isReady already hides it from *this* screen's own preview too, so this just
+      // keeps that hidden gap from ever carrying raw video either. See
+      // BlankFrameProcessor's doc comment.
+      await track.setProcessor(new BlankFrameProcessor());
+
       const processor = new MediapipeBackgroundProcessor({
         quality: nextQuality,
         mode: nextMode === 'image' ? 'image' : 'blur',
@@ -136,6 +172,11 @@ export function usePreJoinBackground(track: LocalVideoTrack | null) {
         edgeFeather: 1.5,
         matteLo: 0.3,
         matteHi: 0.75,
+        segmentationFps: detectSegmentationFps(),
+        // Only 'high' has anywhere lighter to fall back to, and only 'balanced' has
+        // anywhere heavier to try — never both on the same processor.
+        onSustainedSlowFrames: nextQuality === 'high' ? handlePerfDowngrade : undefined,
+        onSustainedFastFrames: nextQuality === 'balanced' ? handlePerfUpgrade : undefined,
       });
       hookLog('applyEffect() calling track.setProcessor()');
       const tSetProcessor = performance.now();
@@ -153,7 +194,7 @@ export function usePreJoinBackground(track: LocalVideoTrack | null) {
       });
       setIsReady(true);
     },
-    [track, imageUrlFor],
+    [track, imageUrlFor, handlePerfDowngrade, handlePerfUpgrade],
   );
 
   const commit = useCallback(
@@ -180,24 +221,36 @@ export function usePreJoinBackground(track: LocalVideoTrack | null) {
     [applyEffect, imageId, mode, quality],
   );
 
-  /** The manual Balanced/High toggle — see BackgroundControls. */
+  /**
+   * The manual Balanced/High toggle — see BackgroundControls. Also the path
+   * handlePerfDowngrade uses to fall back automatically; returns whether it
+   * succeeded so the caller can decide whether to surface a message.
+   */
   const setQuality = useCallback(
     async (nextQuality: SegmentationQuality) => {
+      if (nextQuality === 'high') autoDowngradedRef.current = false;
+      if (nextQuality === 'balanced') autoUpgradedRef.current = false;
       setBusy(true);
       setError('');
       try {
         writeStoredChoice({ mode, imageId, quality: nextQuality });
         setQualityState(nextQuality);
         await applyEffect(mode, imageId, nextQuality);
+        return true;
       } catch (e) {
         console.error('[PreJoin] failed to change segmentation quality:', e);
         setError(e instanceof Error ? e.message : '画質の変更に失敗しました');
+        return false;
       } finally {
         setBusy(false);
       }
     },
     [applyEffect, mode, imageId],
   );
+
+  useEffect(() => {
+    setQualityRef.current = setQuality;
+  }, [setQuality]);
 
   // The track may not exist yet on first render (still being created), or may be
   // replaced (device switch) — (re-)apply the stored effect whenever it shows up.

@@ -20,6 +20,11 @@ interface StripProps {
   orientation: 'right' | 'bottom';
   pinnedSet: Set<string>;
   onTogglePin: (id: string) => void;
+  isHost?: boolean;
+  onRequestClaimHost?: () => void;
+  onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
+  isInternalMeeting?: boolean;
+  onOpenProfile?: (userId: string) => void;
 }
 
 /**
@@ -30,7 +35,17 @@ interface StripProps {
  * Scrolling rather than swapping people in and out means the strip never rearranges
  * itself under the user, and everyone stays reachable.
  */
-function FilmStrip({ tracks, orientation, pinnedSet, onTogglePin }: StripProps) {
+function FilmStrip({
+  tracks,
+  orientation,
+  pinnedSet,
+  onTogglePin,
+  isHost,
+  onRequestClaimHost,
+  onRequestGrantHost,
+  isInternalMeeting,
+  onOpenProfile,
+}: StripProps) {
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
   const { width, height } = useElementSize(scrollEl);
   const isVertical = orientation === 'right';
@@ -88,6 +103,11 @@ function FilmStrip({ tracks, orientation, pinnedSet, onTogglePin }: StripProps) 
                 renderVideo={liveIds.has(id)}
                 isPinned={pinnedSet.has(id)}
                 onTogglePin={onTogglePin}
+                isHost={isHost}
+                onRequestClaimHost={onRequestClaimHost}
+                onRequestGrantHost={onRequestGrantHost}
+                isInternalMeeting={isInternalMeeting}
+                onOpenProfile={onOpenProfile}
                 density="compact"
                 className="w-full h-full"
               />
@@ -103,13 +123,27 @@ interface StageTileProps {
   track: TrackReferenceOrPlaceholder;
   isPinned: boolean;
   onTogglePin: (id: string) => void;
+  isHost?: boolean;
+  onRequestClaimHost?: () => void;
+  onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
+  isInternalMeeting?: boolean;
+  onOpenProfile?: (userId: string) => void;
 }
 
 /**
  * One large tile. Screen shares additionally get local zoom/pan, so a viewer can
  * magnify small text in a shared window without the presenter changing anything.
  */
-function StageTile({ track, isPinned, onTogglePin }: StageTileProps) {
+function StageTile({
+  track,
+  isPinned,
+  onTogglePin,
+  isHost,
+  onRequestClaimHost,
+  onRequestGrantHost,
+  isInternalMeeting,
+  onOpenProfile,
+}: StageTileProps) {
   const zoomEnabled = isTrackReference(track) && track.source === Track.Source.ScreenShare;
   // Destructured rather than held as an object: passing a member of it straight
   // into `ref=` makes the lint rule treat every other member access as a ref read.
@@ -134,6 +168,11 @@ function StageTile({ track, isPinned, onTogglePin }: StageTileProps) {
           revisionKey={trackRevisionKey(track)}
           isPinned={isPinned}
           onTogglePin={onTogglePin}
+          isHost={isHost}
+          onRequestClaimHost={onRequestClaimHost}
+          onRequestGrantHost={onRequestGrantHost}
+          isInternalMeeting={isInternalMeeting}
+          onOpenProfile={onOpenProfile}
           zoom={zoom}
           onFitChange={zoomEnabled ? onFitChange : undefined}
           className="w-full h-full"
@@ -182,6 +221,11 @@ export interface StageLayoutViewProps {
   stripTracks: TrackReferenceOrPlaceholder[];
   pinned: string[];
   onTogglePin: (id: string) => void;
+  isHost?: boolean;
+  onRequestClaimHost?: () => void;
+  onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
+  isInternalMeeting?: boolean;
+  onOpenProfile?: (userId: string) => void;
 }
 
 /**
@@ -198,6 +242,11 @@ export default function StageLayoutView({
   stripTracks,
   pinned,
   onTogglePin,
+  isHost,
+  onRequestClaimHost,
+  onRequestGrantHost,
+  isInternalMeeting,
+  onOpenProfile,
 }: StageLayoutViewProps) {
   const [rootEl, setRootEl] = useState<HTMLDivElement | null>(null);
   const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
@@ -252,6 +301,11 @@ export default function StageLayoutView({
               track={track}
               isPinned={pinnedSet.has(tileId(track))}
               onTogglePin={onTogglePin}
+              isHost={isHost}
+              onRequestClaimHost={onRequestClaimHost}
+              onRequestGrantHost={onRequestGrantHost}
+              isInternalMeeting={isInternalMeeting}
+              onOpenProfile={onOpenProfile}
             />
           ))}
         </div>
@@ -262,6 +316,11 @@ export default function StageLayoutView({
         orientation={orientation}
         pinnedSet={pinnedSet}
         onTogglePin={onTogglePin}
+        isHost={isHost}
+        onRequestClaimHost={onRequestClaimHost}
+        onRequestGrantHost={onRequestGrantHost}
+        isInternalMeeting={isInternalMeeting}
+        onOpenProfile={onOpenProfile}
       />
     </div>
   );

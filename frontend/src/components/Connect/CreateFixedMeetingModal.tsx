@@ -61,6 +61,7 @@ interface RoomDetail {
   excluded_user_ids: string[];
   viewer_user_ids: string[];
   host_user_ids: string[];
+  created_by?: string;
 }
 
 interface CreateFixedMeetingModalProps {
@@ -100,6 +101,7 @@ export default function CreateFixedMeetingModal({
   const [excludedUserIds, setExcludedUserIds] = useState<string[]>([]);
   const [showExcludePanel, setShowExcludePanel] = useState(false);
   const [showHostHelp, setShowHostHelp] = useState(false);
+  const [creatorUserId, setCreatorUserId] = useState<string>(currentUserId);
   const [hostUserIds, setHostUserIds] = useState<string[]>([]);
   const [hostCode, setHostCode] = useState('');
   const [members, setMembers] = useState<ConnectMember[]>([]);
@@ -146,6 +148,7 @@ export default function CreateFixedMeetingModal({
       setExcludedUserIds([]);
       setShowExcludePanel(false);
       setShowHostHelp(false);
+      setCreatorUserId(currentUserId);
       setHostUserIds([currentUserId]);
       setHostCode('');
       return;
@@ -156,10 +159,12 @@ export default function CreateFixedMeetingModal({
       .get(`/api/connect/rooms/${roomId}/detail`)
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error('取得に失敗しました'))))
       .then((detail: RoomDetail) => {
+        const creatorId = detail.created_by || currentUserId;
+        setCreatorUserId(creatorId);
         setRoomTitle(detail.room_title);
         setCustomRoomId(detail.room_id);
         setHostUserIds(
-          detail.host_user_ids.includes(currentUserId) ? detail.host_user_ids : [currentUserId, ...detail.host_user_ids],
+          detail.host_user_ids.includes(creatorId) ? detail.host_user_ids : [creatorId, ...detail.host_user_ids],
         );
         setHostCode(detail.host_code ?? '');
 
@@ -212,8 +217,11 @@ export default function CreateFixedMeetingModal({
   const hostOnlyOptions = useMemo(() => {
     const ids = new Set(scopeAudienceIds);
     for (const id of hostUserIds) ids.add(id);
-    return groupMembersByRole(members.filter((m) => ids.has(m.id) && m.id !== currentUserId));
-  }, [members, scopeAudienceIds, hostUserIds, currentUserId]);
+    if (currentUserId !== creatorUserId) {
+      ids.add(currentUserId);
+    }
+    return groupMembersByRole(members.filter((m) => ids.has(m.id) && m.id !== creatorUserId));
+  }, [members, scopeAudienceIds, hostUserIds, creatorUserId, currentUserId]);
 
   const excludeOptions = useMemo(() => {
     const ids = new Set(scopeAudienceIds);
@@ -234,7 +242,7 @@ export default function CreateFixedMeetingModal({
       .map((d) => ({ label: d, value: d }));
   }, [allDepartments, members]);
 
-  const currentUserName = members.find((m) => m.id === currentUserId)?.name ?? '自分';
+  const creatorName = members.find((m) => m.id === creatorUserId)?.name ?? (creatorUserId === currentUserId ? '自分' : '作成者');
 
   if (!isOpen || typeof document === 'undefined') return null;
 
@@ -472,15 +480,15 @@ export default function CreateFixedMeetingModal({
 
             <div className="flex flex-wrap gap-1.5 mb-1.5">
               <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-sky-50 border border-sky-200 text-sky-700 text-[11px] font-bold rounded-full">
-                {currentUserName}（自分）
+                {creatorName}（作成者）
               </span>
             </div>
             <CustomDropdown
               multiple
               searchable
               options={hostOnlyOptions}
-              value={hostUserIds.filter((id) => id !== currentUserId)}
-              onChange={(ids) => setHostUserIds([currentUserId, ...ids])}
+              value={hostUserIds.filter((id) => id !== creatorUserId)}
+              onChange={(ids) => setHostUserIds([creatorUserId, ...ids])}
               placeholder="他にホストにする人を選択（任意）"
             />
           </div>

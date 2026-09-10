@@ -6,11 +6,14 @@ import {
   supportsMediapipeBackground,
   type SegmentationQuality,
 } from '../../lib/video/MediapipeBackgroundProcessor';
+import { BlankFrameProcessor } from '../../lib/video/BlankFrameProcessor';
 import {
   useBackgroundLibrary,
   readStoredChoice,
   writeStoredChoice,
   detectSegmentationQuality,
+  detectSegmentationFps,
+  isMobileDevice,
   type BackgroundMode,
 } from './backgroundLibrary';
 
@@ -32,6 +35,18 @@ export { PRESETS } from './backgroundLibrary';
 export function useBackgroundEffect() {
   const { localParticipant } = useLocalParticipant();
   const processorRef = useRef<MediapipeBackgroundProcessor | null>(null);
+  // Guards the automatic high -> balanced fallback (see handlePerfDowngrade) so
+  // it fires at most once per "high" attempt; setQuality resets it whenever the
+  // user picks 'high' again themselves, so a later attempt gets its own chance.
+  const autoDowngradedRef = useRef(false);
+  // Same idea, opposite direction — see handlePerfUpgrade.
+  const autoUpgradedRef = useRef(false);
+  // setQuality closes over applyEffect, and handlePerfDowngrade needs to call
+  // setQuality — but handlePerfDowngrade is handed to applyEffect as a
+  // constructor option, so it has to exist before setQuality does. A ref sidesteps
+  // the circular dependency: handlePerfDowngrade is only ever invoked later, from
+  // inside a running processor, well after this effect has populated it.
+  const setQualityRef = useRef<((q: SegmentationQuality) => Promise<boolean>) | undefined>(undefined);
 
   const supported = useMemo(() => supportsMediapipeBackground(), []);
   const stored = useMemo(readStoredChoice, []);
@@ -61,6 +76,38 @@ export function useBackgroundEffect() {
     const publication = localParticipant.getTrackPublication(Track.Source.Camera);
     return publication?.track as LocalVideoTrack | undefined;
   }, [localParticipant]);
+
+  /**
+   * Wired into the 'high'-quality processor as onSustainedSlowFrames: fires
+   * once its own per-frame cost has averaged above a stutter-level threshold
+   * for a few seconds straight. Falls back to 'balanced' the same way the
+   * manual HD toggle does (see setQuality) rather than duplicating the
+   * processor-swap logic here.
+   */
+  const handlePerfDowngrade = useCallback(() => {
+    if (autoDowngradedRef.current) return;
+    autoDowngradedRef.current = true;
+    console.warn('[Connect] background effect running slow, falling back to balanced quality');
+    void setQualityRef.current?.('balanced').then((ok) => {
+      if (ok) setError('処理が重かったため、背景エフェクトを標準画質に切り替えました。');
+    });
+  }, []);
+
+  /**
+   * Wired into the 'balanced'-quality processor as onSustainedFastFrames: fires once
+   * it's had comfortable headroom for a while, and tries 'high' the same way the
+   * manual HD toggle does. Desktop only — mobile always forces 'balanced' regardless
+   * of measured performance (see detectSegmentationQuality), so there's nothing to
+   * try upgrading to there.
+   */
+  const handlePerfUpgrade = useCallback(() => {
+    if (autoUpgradedRef.current || isMobileDevice()) return;
+    autoUpgradedRef.current = true;
+    console.info('[Connect] background effect has headroom, trying high quality');
+    void setQualityRef.current?.('high').then((ok) => {
+      if (ok) setError('処理に余裕があるため、背景エフェクトを高精細画質に切り替えました。');
+    });
+  }, []);
 
   /**
    * Brings the camera track in line with the requested effect. Reuses the running
@@ -115,6 +162,12 @@ export function useBackgroundEffect() {
       // moment). See MediapipeBackgroundProcessor.init()'s doc comment.
       if (track.getProcessor()) await track.stopProcessor();
 
+      // With nothing attached, the published track would fall straight back to raw
+      // camera video for as long as the new model takes to load — bridge through a
+      // blank placeholder instead, so a swap always reads as "video paused," never
+      // "the background effect fell off." See BlankFrameProcessor's doc comment.
+      await track.setProcessor(new BlankFrameProcessor());
+
       const processor = new MediapipeBackgroundProcessor({
         quality: nextQuality,
         mode: nextMode === 'image' ? 'image' : 'blur',
@@ -124,11 +177,22 @@ export function useBackgroundEffect() {
         edgeFeather: 1.5,
         matteLo: 0.3,
         matteHi: 0.75,
+        segmentationFps: detectSegmentationFps(),
+        // Only 'high' has anywhere lighter to fall back to, and only 'balanced' has
+        // anywhere heavier to try — never both on the same processor.
+        onSustainedSlowFrames: nextQuality === 'high' ? handlePerfDowngrade : undefined,
+        onSustainedFastFrames: nextQuality === 'balanced' ? handlePerfUpgrade : undefined,
       });
+      // setProcessor() resolves once the model is loaded and the pipeline is wired,
+      // not once its output is stable — the processor blanks its own output until
+      // then (see its renderFrame()), so the blank bridge above stays effectively in
+      // place, just handed off to the real processor's own blanking, until this
+      // resolves.
       await track.setProcessor(processor);
+      await processor.waitUntilReady();
       processorRef.current = processor;
     },
-    [getCameraTrack, imageUrlFor],
+    [getCameraTrack, imageUrlFor, handlePerfDowngrade, handlePerfUpgrade],
   );
 
   const commit = useCallback(
@@ -215,24 +279,39 @@ export function useBackgroundEffect() {
     [applyEffect, deleteBackground, imageId, quality],
   );
 
-  /** The manual Balanced/High toggle — see BackgroundControls. */
+  /**
+   * The manual Balanced/High toggle — see BackgroundControls. Also the path
+   * handlePerfDowngrade uses to fall back automatically; returns whether it
+   * succeeded so that caller can decide whether to surface a message.
+   */
   const setQuality = useCallback(
     async (nextQuality: SegmentationQuality) => {
+      // A person choosing 'high' (or 'balanced') again gets a fresh shot at the
+      // opposite auto-adjustment — otherwise one auto-swap early in a call would
+      // silently suppress its counterpart for the rest of every call after.
+      if (nextQuality === 'high') autoDowngradedRef.current = false;
+      if (nextQuality === 'balanced') autoUpgradedRef.current = false;
       setBusy(true);
       setError('');
       try {
         writeStoredChoice({ mode, imageId, quality: nextQuality });
         setQualityState(nextQuality);
         await applyEffect(mode, imageId, nextQuality);
+        return true;
       } catch (e) {
         console.error('[Connect] failed to change segmentation quality:', e);
         setError(e instanceof Error ? e.message : '画質の変更に失敗しました');
+        return false;
       } finally {
         setBusy(false);
       }
     },
     [applyEffect, mode, imageId],
   );
+
+  useEffect(() => {
+    setQualityRef.current = setQuality;
+  }, [setQuality]);
 
   return {
     supported,

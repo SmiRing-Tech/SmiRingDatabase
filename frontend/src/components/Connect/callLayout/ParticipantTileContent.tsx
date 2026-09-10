@@ -13,7 +13,8 @@ import {
   type TrackReferenceOrPlaceholder,
 } from '@livekit/components-react';
 import { Track } from 'livekit-client';
-import { Pin, PinOff } from 'lucide-react';
+import { MoreHorizontal, Pin, PinOff, ShieldCheck, User } from 'lucide-react';
+import { CustomDropdown, type DropdownOption } from '../../ui/CustomDropdown';
 import ClampedVideoTrack, { type FitBox, type ZoomTransform } from './ClampedVideoTrack';
 import { tileId } from './tileIdentity';
 
@@ -44,6 +45,16 @@ export interface TileDisplayProps {
   /** Show a pin button. `onTogglePin` receives the tile's `tileId`. */
   isPinned?: boolean;
   onTogglePin?: (id: string) => void;
+  /** Whether the viewer holds host privileges in this room. */
+  isHost?: boolean;
+  /** Called when a non-host user clicks "ホストになる" on their own tile. */
+  onRequestClaimHost?: () => void;
+  /** Called when a host clicks "一時ホストにする" on another participant's tile. */
+  onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
+  /** Whether the current call is an internal meeting (where profiles are available). */
+  isInternalMeeting?: boolean;
+  /** Called when "プロフィールを見る" is clicked for a participant. */
+  onOpenProfile?: (userId: string) => void;
   /** Local zoom/pan. Only passed for screen shares on a stage. */
   zoom?: ZoomTransform;
   onFitChange?: (fit: FitBox) => void;
@@ -65,6 +76,11 @@ export function ParticipantTileContent({
   renderVideo = true,
   isPinned = false,
   onTogglePin,
+  isHost = false,
+  onRequestClaimHost,
+  onRequestGrantHost,
+  isInternalMeeting = false,
+  onOpenProfile,
   zoom,
   onFitChange,
   density = 'normal',
@@ -190,24 +206,91 @@ export function ParticipantTileContent({
         )}
       </div>
 
-      {/* Replaces LiveKit's <FocusToggle>, which can only ever pin one track.
-          Reusing `lk-focus-toggle-button` inherits its top-right placement and
-          fade-in-on-hover; `!opacity-100` overrides the class's `opacity: 0` so an
-          already-pinned tile keeps showing its badge without hovering. */}
-      {onTogglePin && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onTogglePin(tileId(trackReference));
-          }}
-          title={isPinned ? 'ピン留めを解除' : 'ピン留め'}
-          aria-pressed={isPinned}
-          className={`lk-focus-toggle-button ${isPinned ? '!opacity-100 text-sky-300' : ''}`}
-        >
-          {isPinned ? <PinOff className="w-4 h-4" /> : <Pin className="w-4 h-4" />}
-        </button>
-      )}
+      {/* Replaces single pin button with '...' CustomDropdown menu */}
+      {(() => {
+        const isLocalParticipant = !!participant?.isLocal;
+        const canClaimHost = isLocalParticipant && !isHost && !!onRequestClaimHost;
+        const canGrantHost = !isLocalParticipant && isHost && !!onRequestGrantHost && !!participant?.identity;
+        const canViewProfile = !isLocalParticipant && isInternalMeeting && !!onOpenProfile && !!participant?.identity;
+        const menuOptions: DropdownOption[] = [];
+
+        if (onTogglePin) {
+          menuOptions.push({
+            label: isPinned ? 'ピン留めを解除' : 'ピン留めする',
+            value: 'pin',
+            icon: isPinned ? <PinOff className="w-4 h-4 text-sky-400" /> : <Pin className="w-4 h-4 text-gray-300" />,
+          });
+        }
+
+        if (canClaimHost) {
+          menuOptions.push({
+            label: 'ホストになる',
+            value: 'claim-host',
+            icon: <ShieldCheck className="w-4 h-4 text-sky-400" />,
+          });
+        }
+
+        if (canGrantHost) {
+          menuOptions.push({
+            label: '一時ホストにする',
+            value: 'grant-host',
+            icon: <ShieldCheck className="w-4 h-4 text-sky-400" />,
+          });
+        }
+
+        if (canViewProfile) {
+          menuOptions.push({
+            label: 'プロフィールを見る',
+            value: 'view-profile',
+            icon: <User className="w-4 h-4 text-sky-400" />,
+          });
+        }
+
+        if (menuOptions.length === 0) return null;
+
+        return (
+          <div
+            className="absolute top-2 right-2 z-20 flex items-center gap-1.5 pointer-events-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {isPinned && (
+              <span
+                title="ピン留め中"
+                className="p-1 rounded-lg bg-sky-500/90 text-white backdrop-blur-sm shadow-sm pointer-events-none"
+              >
+                <Pin className="w-3 h-3 fill-current" />
+              </span>
+            )}
+            <CustomDropdown
+              options={menuOptions}
+              value=""
+              minMenuWidth={180}
+              onChange={(val) => {
+                if (val === 'pin') {
+                  onTogglePin?.(tileId(trackReference));
+                } else if (val === 'claim-host') {
+                  onRequestClaimHost?.();
+                } else if (val === 'grant-host' && participant) {
+                  onRequestGrantHost?.(participant.identity, participant.name || participant.identity);
+                } else if (val === 'view-profile' && participant) {
+                  onOpenProfile?.(participant.identity);
+                }
+              }}
+              customTrigger={(isOpen) => (
+                <button
+                  type="button"
+                  aria-label="タイル操作メニュー"
+                  className={`p-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white shadow-md shadow-sky-500/25 backdrop-blur-md transition-all ${
+                    isOpen ? '!opacity-100 ring-2 ring-white/60' : 'opacity-0 group-hover:opacity-100'
+                  } ${isPinned ? '!opacity-90' : ''}`}
+                >
+                  <MoreHorizontal className="w-3.5 h-3.5" />
+                </button>
+              )}
+            />
+          </div>
+        );
+      })()}
     </>
   );
 }
@@ -231,33 +314,41 @@ export type CustomParticipantTileProps = ParticipantTileProps &
  * `<ParticipantTile>` subscribes to speaking state internally rather than receiving
  * it as a prop.
  */
-function CustomParticipantTileImpl({
-  trackRef,
-  renderVideo,
-  isPinned,
-  onTogglePin,
-  zoom,
-  onFitChange,
-  density,
-  // Destructured out (not rendered) purely so it doesn't get spread onto the
-  // underlying DOM node below — only `tilePropsEqual` reads it.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  revisionKey,
-  ...htmlProps
-}: CustomParticipantTileProps) {
+function CustomParticipantTileImpl(props: CustomParticipantTileProps) {
+  const {
+    trackRef,
+    renderVideo,
+    isPinned,
+    onTogglePin,
+    isHost,
+    onRequestClaimHost,
+    onRequestGrantHost,
+    isInternalMeeting,
+    onOpenProfile,
+    zoom,
+    onFitChange,
+    density,
+    revisionKey: _unused,
+    ...htmlProps
+  } = props;
   const trackReference = useEnsureTrackRef(trackRef);
 
   return (
     <ParticipantTile
       trackRef={trackReference}
       {...htmlProps}
-      className={`${micMutedTileClassName(trackReference)} ${htmlProps.className || ''}`}
+      className={`group ${micMutedTileClassName(trackReference)} ${htmlProps.className || ''}`}
     >
       <ParticipantTileContent
         trackRef={trackReference}
         renderVideo={renderVideo}
         isPinned={isPinned}
         onTogglePin={onTogglePin}
+        isHost={isHost}
+        onRequestClaimHost={onRequestClaimHost}
+        onRequestGrantHost={onRequestGrantHost}
+        isInternalMeeting={isInternalMeeting}
+        onOpenProfile={onOpenProfile}
         zoom={zoom}
         onFitChange={onFitChange}
         density={density}
@@ -307,6 +398,11 @@ function tilePropsEqual(a: CustomParticipantTileProps, b: CustomParticipantTileP
     a.renderVideo === b.renderVideo &&
     a.isPinned === b.isPinned &&
     a.onTogglePin === b.onTogglePin &&
+    a.isHost === b.isHost &&
+    a.onRequestClaimHost === b.onRequestClaimHost &&
+    a.onRequestGrantHost === b.onRequestGrantHost &&
+    a.isInternalMeeting === b.isInternalMeeting &&
+    a.onOpenProfile === b.onOpenProfile &&
     a.density === b.density &&
     a.className === b.className &&
     a.zoom === b.zoom &&

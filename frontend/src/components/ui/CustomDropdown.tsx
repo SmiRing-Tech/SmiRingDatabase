@@ -206,6 +206,7 @@ export const CustomDropdown = <T extends boolean = false>({
             const menuWidth = Math.max(coords.width, minMenuWidth);
             // 画面右端からはみ出さないよう、右端揃えで左に広げる
             const rightEdge = coords.right || (coords.left + coords.width);
+            const isRightAligned = (coords.left + menuWidth > window.innerWidth - 16) || (coords.left > window.innerWidth / 2);
             const calculatedLeft = rightEdge - menuWidth < 16
               ? Math.max(16, coords.left)
               : Math.max(16, Math.min(coords.left, rightEdge - menuWidth));
@@ -223,8 +224,12 @@ export const CustomDropdown = <T extends boolean = false>({
                   ...(coords.isBottomHalf
                     ? { bottom: window.innerHeight - coords.top + 8 }
                     : { top: coords.bottom + 8 }),
-                  left: calculatedLeft,
-                  width: menuWidth,
+                  ...(isRightAligned
+                    ? { right: Math.max(16, window.innerWidth - rightEdge), left: 'auto' }
+                    : { left: calculatedLeft, right: 'auto' }),
+                  minWidth: menuWidth,
+                  width: 'max-content',
+                  maxWidth: 'calc(100vw - 32px)',
                   zIndex: 9999,
                 }}
                 className={`bg-white/95 backdrop-blur-md border border-gray-200 rounded-xl shadow-xl overflow-hidden flex flex-col ${fontSize}`}
@@ -291,12 +296,12 @@ export const CustomDropdown = <T extends boolean = false>({
                           </div>
                         )}
 
-                        <div className="flex flex-col truncate">
-                          <span className={`truncate select-none ${isSelected && !multiple ? 'font-bold text-blue-600' : 'text-gray-700 font-medium'}`}>
+                        <div className="flex flex-col min-w-0">
+                          <span className={`whitespace-nowrap select-none ${isSelected && !multiple ? 'font-bold text-blue-600' : 'text-gray-700 font-medium'}`}>
                             {opt.label}
                           </span>
                           {opt.description && (
-                            <span className="opacity-60 line-clamp-1 text-[0.9em] leading-tight mt-0.5">
+                            <span className="opacity-60 whitespace-nowrap text-[0.9em] leading-tight mt-0.5">
                               {opt.description}
                             </span>
                           )}

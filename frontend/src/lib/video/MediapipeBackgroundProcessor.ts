@@ -134,6 +134,25 @@ export type MediapipeBackgroundOptions = {
   matteLo?: number;
   /** Cutoff above which mask values are saturated to 1 (subject). Default: 0.75 */
   matteHi?: number;
+  /**
+   * Fires once, the first time this processor's own per-frame cost (segmentation
+   * + GL compositing, whichever transport path) has averaged above a stutter-
+   * level threshold over a multi-second rolling window. Meant for a caller
+   * running the `high` model to fall back to `balanced` — this processor has no
+   * lighter mode to drop to itself, so it only reports the measurement.
+   */
+  onSustainedSlowFrames?: (avgFrameMs: number) => void;
+  /**
+   * Fires once, the first time this processor's own per-frame cost has averaged
+   * *comfortably below* a headroom threshold over a longer rolling window than
+   * onSustainedSlowFrames uses — deliberately slower to trust and stricter to
+   * satisfy, so a `balanced` processor doesn't talk a caller into `high` on the
+   * strength of a few good seconds only to immediately trip the slow-frame
+   * fallback once the heavier model's own real cost shows up. Meant for a caller
+   * running `balanced` to try upgrading to `high`; meaningless (never fires) for
+   * a processor that has nothing heavier to go to.
+   */
+  onSustainedFastFrames?: (avgFrameMs: number) => void;
 };
 
 const DEFAULTS = {
@@ -215,8 +234,16 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
   // invertMask stays genuinely optional: undefined means "auto-detect", which is
   // a different state from either explicit true or false.
-  private options: Required<Omit<MediapipeBackgroundOptions, 'assetPaths' | 'invertMask'>> &
-    Pick<MediapipeBackgroundOptions, 'assetPaths' | 'invertMask'>;
+  private options: Required<
+    Omit<
+      MediapipeBackgroundOptions,
+      'assetPaths' | 'invertMask' | 'onSustainedSlowFrames' | 'onSustainedFastFrames'
+    >
+  > &
+    Pick<
+      MediapipeBackgroundOptions,
+      'assetPaths' | 'invertMask' | 'onSustainedSlowFrames' | 'onSustainedFastFrames'
+    >;
 
   private segmenter?: ImageSegmenter;
 
@@ -308,6 +335,35 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   private readyWaiters: Array<() => void> = [];
 
   private stabilityFrameLogCount = 0;
+
+  /** Rolling window of renderFrame() durations, for onSustainedSlowFrames. */
+  private static readonly PERF_SLOW_WINDOW = 90;
+
+  /** Above this average ms/frame, compositing alone is already eating most of a 30fps budget. */
+  private static readonly PERF_SLOW_AVG_MS = 20;
+
+  private slowFrameDurations: number[] = [];
+
+  private slowFrameDurationSum = 0;
+
+  private slowCallbackFired = false;
+
+  /**
+   * Rolling window for onSustainedFastFrames — longer than PERF_SLOW_WINDOW (roughly
+   * 5s vs 3s at 30fps) so an upgrade only fires on a longer run of genuinely good
+   * frames than it takes to trigger the opposite, more urgent, downgrade.
+   */
+  private static readonly PERF_FAST_WINDOW = 150;
+
+  /** Below this average ms/frame, there's enough headroom under PERF_SLOW_AVG_MS that
+   *  trying the heavier model is unlikely to immediately trip the slow-frame fallback. */
+  private static readonly PERF_FAST_AVG_MS = 6;
+
+  private fastFrameDurations: number[] = [];
+
+  private fastFrameDurationSum = 0;
+
+  private fastCallbackFired = false;
 
   /** Marks this frame's contribution towards / away from "stable", from renderFrame(). */
   private trackStability() {
@@ -900,6 +956,8 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     const quad = this.quadBuffer;
     if (!gl || !programs || !quad || !this.frameTexture || !this.feathered) return;
 
+    const t0 = performance.now();
+
     this.resetGLState();
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
@@ -911,6 +969,63 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     if (!this.usingImageBackground()) this.blurBackground();
     this.composite();
     this.trackStability();
+
+    // While not yet confirmed stable (fresh processor, matte/temporal-smoothing still
+    // converging), blank the visible output instead of publishing it. This runs *after*
+    // composite() so everything upstream — matte history, temporal smoothing, the
+    // stability counter itself — keeps accumulating normally underneath; only what
+    // actually reaches the canvas (and from there, the published track) is suppressed.
+    // composite()'s last draw call targets the default framebuffer (see drawQuad(...,
+    // null, ...)), so it's still bound here.
+    if (!this.readyResolved) {
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+
+    this.trackFramePerf(performance.now() - t0);
+  }
+
+  /**
+   * Averages over a rolling window rather than reacting to any single frame — segmentForVideo
+   * only actually runs on the fraction of frames allowed by segmentationFps, so most
+   * individual frames are cheap GL-only work and a one-off spike or dip (a GC pause, a
+   * dropped frame) is not the same thing as this processor genuinely being too heavy, or
+   * comfortably light, for the device.
+   */
+  private trackFramePerf(durationMs: number) {
+    const slowCb = this.options.onSustainedSlowFrames;
+    if (slowCb && !this.slowCallbackFired) {
+      this.slowFrameDurations.push(durationMs);
+      this.slowFrameDurationSum += durationMs;
+      if (this.slowFrameDurations.length > MediapipeBackgroundProcessor.PERF_SLOW_WINDOW) {
+        this.slowFrameDurationSum -= this.slowFrameDurations.shift()!;
+      }
+      if (this.slowFrameDurations.length >= MediapipeBackgroundProcessor.PERF_SLOW_WINDOW) {
+        const avg = this.slowFrameDurationSum / this.slowFrameDurations.length;
+        if (avg > MediapipeBackgroundProcessor.PERF_SLOW_AVG_MS) {
+          this.slowCallbackFired = true;
+          this.log('sustained slow frames detected', { avgFrameMs: Math.round(avg) });
+          slowCb(avg);
+        }
+      }
+    }
+
+    const fastCb = this.options.onSustainedFastFrames;
+    if (fastCb && !this.fastCallbackFired) {
+      this.fastFrameDurations.push(durationMs);
+      this.fastFrameDurationSum += durationMs;
+      if (this.fastFrameDurations.length > MediapipeBackgroundProcessor.PERF_FAST_WINDOW) {
+        this.fastFrameDurationSum -= this.fastFrameDurations.shift()!;
+      }
+      if (this.fastFrameDurations.length >= MediapipeBackgroundProcessor.PERF_FAST_WINDOW) {
+        const avg = this.fastFrameDurationSum / this.fastFrameDurations.length;
+        if (avg < MediapipeBackgroundProcessor.PERF_FAST_AVG_MS) {
+          this.fastCallbackFired = true;
+          this.log('sustained fast frames detected', { avgFrameMs: Math.round(avg) });
+          fastCb(avg);
+        }
+      }
+    }
   }
 
   private updateMatte(source: VideoFrame | HTMLVideoElement) {

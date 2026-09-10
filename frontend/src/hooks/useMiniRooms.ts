@@ -22,6 +22,14 @@ export interface MiniRoomParticipant {
   pendingRoomName?: string;
 }
 
+/** Someone elsewhere in this room group — deliberately has no room id/name, see
+ *  refreshOtherRoomParticipants. */
+export interface OtherRoomParticipant {
+  identity: string;
+  name: string;
+  avatarUrl: string | null;
+}
+
 export interface PendingMiniRoomMove {
   destinationRoomId: string;
   destinationName: string;
@@ -98,6 +106,7 @@ export function useMiniRooms({
   const [rooms, setRooms] = useState<MiniRoom[]>([]);
   const [allowSelfAssign, setAllowSelfAssign] = useState(false);
   const [participants, setParticipants] = useState<MiniRoomParticipant[]>([]);
+  const [otherRoomParticipants, setOtherRoomParticipants] = useState<OtherRoomParticipant[]>([]);
   const [pendingMove, setPendingMove] = useState<PendingMiniRoomMove | null>(null);
   const [assignedRoom, setAssignedRoom] = useState<AssignedRoomInfo | null>(null);
   const [assignedInvite, setAssignedInvite] = useState<AssignedInvite | null>(null);
@@ -183,6 +192,23 @@ export function useMiniRooms({
       console.error('[MiniRooms] Failed to load participant roster:', e);
     }
   }, [mainRoomId, isHost]);
+
+  // Open to everyone (not just the host) — feeds the plain Participants panel's "別室"
+  // section. Skipped entirely when there are no mini rooms: with none active, nobody
+  // could possibly be elsewhere, so there is nothing worth polling for.
+  const refreshOtherRoomParticipants = useCallback(async () => {
+    if (!mainRoomId || rooms.length === 0) return;
+    try {
+      const res = await apiClient.get(
+        `/api/connect/rooms/${mainRoomId}/miniroom/other-participants?excludeRoomId=${encodeURIComponent(currentRoomId)}`,
+      );
+      if (!res.ok) return;
+      const body = await res.json();
+      setOtherRoomParticipants(body.participants || []);
+    } catch (e) {
+      console.error('[MiniRooms] Failed to load other-room participant roster:', e);
+    }
+  }, [mainRoomId, rooms.length, currentRoomId]);
 
   // Live updates: room list changes (create/close) and forced-move notices. A forced
   // move's `delayMs` countdown is enforced right here with a plain timeout — there is no
@@ -329,6 +355,23 @@ export function useMiniRooms({
     return () => clearInterval(interval);
   }, [isHost, refreshParticipants]);
 
+  // Same open-to-everyone polling pattern as above, for otherRoomParticipants.
+  const otherRoomPollEnabledRef = useRef(false);
+  const setOtherRoomParticipantPollingEnabled = useCallback(
+    (enabled: boolean) => {
+      otherRoomPollEnabledRef.current = enabled;
+      if (enabled) refreshOtherRoomParticipants();
+    },
+    [refreshOtherRoomParticipants],
+  );
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (otherRoomPollEnabledRef.current) refreshOtherRoomParticipants();
+    }, PARTICIPANTS_POLL_MS);
+    return () => clearInterval(interval);
+  }, [refreshOtherRoomParticipants]);
+
   const createRooms = useCallback(
     async (names: string[], newAllowSelfAssign?: boolean) => {
       const res = await apiClient.post(`/api/connect/rooms/${mainRoomId}/miniroom`, {
@@ -472,6 +515,9 @@ export function useMiniRooms({
     participants,
     setParticipantPollingEnabled,
     refreshParticipants,
+    otherRoomParticipants,
+    setOtherRoomParticipantPollingEnabled,
+    refreshOtherRoomParticipants,
     createRooms,
     moveSelf,
     moveOther,

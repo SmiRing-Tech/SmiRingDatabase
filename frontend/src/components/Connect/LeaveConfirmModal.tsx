@@ -1,15 +1,17 @@
 import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { PhoneOff, X } from 'lucide-react';
+import { PhoneOff, X, Loader2 } from 'lucide-react';
 
 interface LeaveConfirmModalProps {
   isOpen: boolean;
+  loading?: boolean;
   onClose: () => void;
   onConfirm: () => void;
 }
 
 export default function LeaveConfirmModal({
   isOpen,
+  loading = false,
   onClose,
   onConfirm,
 }: LeaveConfirmModalProps) {
@@ -17,14 +19,14 @@ export default function LeaveConfirmModal({
     if (!isOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !loading) {
         onClose();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, loading, onClose]);
 
   if (!isOpen || typeof document === 'undefined') return null;
 
@@ -32,7 +34,9 @@ export default function LeaveConfirmModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       {/* Backdrop */}
       <div
-        onClick={onClose}
+        onClick={() => {
+          if (!loading) onClose();
+        }}
         className="fixed inset-0 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200"
       />
 
@@ -44,8 +48,11 @@ export default function LeaveConfirmModal({
       >
         {/* Close Button */}
         <button
-          onClick={onClose}
-          className="absolute top-4 right-4 p-1.5 rounded-full text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+          onClick={() => {
+            if (!loading) onClose();
+          }}
+          disabled={loading}
+          className="absolute top-4 right-4 p-1.5 rounded-full text-gray-400 hover:text-white hover:bg-gray-800 disabled:opacity-40 disabled:pointer-events-none transition-colors"
           title="閉じる"
         >
           <X className="w-4 h-4" />
@@ -70,21 +77,31 @@ export default function LeaveConfirmModal({
         <div className="flex gap-2.5 pt-2">
           <button
             type="button"
-            onClick={onClose}
-            className="flex-1 py-2.5 px-4 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white font-bold text-xs rounded-xl border border-gray-700 transition-all active:scale-95"
+            disabled={loading}
+            onClick={() => {
+              if (!loading) onClose();
+            }}
+            className="flex-1 py-2.5 px-4 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed text-gray-300 hover:text-white font-bold text-xs rounded-xl border border-gray-700 transition-all active:scale-95"
           >
             キャンセル
           </button>
           <button
             type="button"
-            onClick={() => {
-              onClose();
-              onConfirm();
-            }}
-            className="flex-1 py-2.5 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-rose-950/50 transition-all active:scale-95 flex items-center justify-center gap-1.5"
+            disabled={loading}
+            onClick={onConfirm}
+            className="flex-1 py-2.5 px-4 bg-rose-600 hover:bg-rose-500 disabled:opacity-75 disabled:cursor-not-allowed text-white font-bold text-xs rounded-xl shadow-lg shadow-rose-950/50 transition-all active:scale-95 flex items-center justify-center gap-1.5"
           >
-            <PhoneOff className="w-3.5 h-3.5" />
-            <span>退出する</span>
+            {loading ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>確認中...</span>
+              </>
+            ) : (
+              <>
+                <PhoneOff className="w-3.5 h-3.5" />
+                <span>退出する</span>
+              </>
+            )}
           </button>
         </div>
       </div>

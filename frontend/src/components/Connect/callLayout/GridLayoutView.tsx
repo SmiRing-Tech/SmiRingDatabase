@@ -17,6 +17,11 @@ export interface GridLayoutViewProps {
   tracks: TrackReferenceOrPlaceholder[];
   pinned: string[];
   onTogglePin: (id: string) => void;
+  isHost?: boolean;
+  onRequestClaimHost?: () => void;
+  onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
+  isInternalMeeting?: boolean;
+  onOpenProfile?: (userId: string) => void;
 }
 
 /**
@@ -37,7 +42,16 @@ export interface GridLayoutViewProps {
  * those tracks at the SFU, so the number of streams a viewer actually receives stays
  * flat no matter how many people join.
  */
-export default function GridLayoutView({ tracks, pinned, onTogglePin }: GridLayoutViewProps) {
+export default function GridLayoutView({
+  tracks,
+  pinned,
+  onTogglePin,
+  isHost,
+  onRequestClaimHost,
+  onRequestGrantHost,
+  isInternalMeeting,
+  onOpenProfile,
+}: GridLayoutViewProps) {
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
   const { width, height } = useElementSize(scrollEl);
 
@@ -104,6 +118,11 @@ export default function GridLayoutView({ tracks, pinned, onTogglePin }: GridLayo
                 renderVideo={liveIds.has(id)}
                 isPinned={pinnedSet.has(id)}
                 onTogglePin={onTogglePin}
+                isHost={isHost}
+                onRequestClaimHost={onRequestClaimHost}
+                onRequestGrantHost={onRequestGrantHost}
+                isInternalMeeting={isInternalMeeting}
+                onOpenProfile={onOpenProfile}
                 className="w-full h-full"
               />
             </div>

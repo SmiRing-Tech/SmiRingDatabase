@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { Ban, Droplets, Image as ImageIcon, Loader2, Plus, Trash2 } from 'lucide-react';
 import { PRESETS, type BackgroundEffectState } from './useBackgroundEffect';
+import { isMobileDevice } from './backgroundLibrary';
 
 /** Panel UI. Purely presentational — all the state lives in useBackgroundEffect. */
 export default function BackgroundControls({ state }: { state: BackgroundEffectState }) {
@@ -39,24 +40,30 @@ export default function BackgroundControls({ state }: { state: BackgroundEffectS
         </div>
         {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-400" />}
         {/* Deliberately understated — most people never need to touch this.
-            One small toggle, not a labeled control, tucked in the header. */}
-        <button
-          type="button"
-          onClick={() => void setQuality(quality === 'high' ? 'balanced' : 'high')}
-          disabled={busy}
-          title={
-            quality === 'high'
-              ? '高精細モード（クリックで標準に切り替え）'
-              : '標準モード（クリックで高精細に切り替え）'
-          }
-          className={`text-[9px] font-bold px-1.5 py-0.5 rounded border transition disabled:opacity-50 ${
-            quality === 'high'
-              ? 'border-sky-400/60 text-sky-300'
-              : 'border-gray-700 text-gray-500 hover:text-gray-400'
-          }`}
-        >
-          HD
-        </button>
+            One small toggle, not a labeled control, tucked in the header.
+            Hidden on phones: detectSegmentationQuality() always picks 'balanced'
+            there and there is no lighter model to offer instead, so 'high' is
+            not a real choice on this hardware — offering the toggle anyway
+            would just let someone pick the one setting guaranteed to stutter. */}
+        {!isMobileDevice() && (
+          <button
+            type="button"
+            onClick={() => void setQuality(quality === 'high' ? 'balanced' : 'high')}
+            disabled={busy}
+            title={
+              quality === 'high'
+                ? '高精細モード（クリックで標準に切り替え）'
+                : '標準モード（クリックで高精細に切り替え）'
+            }
+            className={`text-[9px] font-bold px-1.5 py-0.5 rounded border transition disabled:opacity-50 ${
+              quality === 'high'
+                ? 'border-sky-400/60 text-sky-300'
+                : 'border-gray-700 text-gray-500 hover:text-gray-400'
+            }`}
+          >
+            HD
+          </button>
+        )}
       </div>
 
       {/* なし / ぼかし / プリセット画像 / アップロード画像 / 追加、を1つの選択肢一覧に */}
