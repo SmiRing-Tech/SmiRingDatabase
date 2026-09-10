@@ -33,6 +33,8 @@ export function isVideoDelaySupported(): boolean {
 export class VideoDelayPipeline {
   private readonly abortController = new AbortController();
   private readonly generator: MediaStreamTrackGenerator<VideoFrame>;
+  private readonly delayMs: number;
+  private readonly onFrame?: () => void;
   /** performance.now() minus the capture clock, established on the first frame. */
   private baseOffsetMs: number | null = null;
   private stopped = false;
@@ -48,9 +50,11 @@ export class VideoDelayPipeline {
    */
   constructor(
     source: MediaStreamTrack,
-    private readonly delayMs: number,
-    private readonly onFrame?: () => void,
+    delayMs: number,
+    onFrame?: () => void,
   ) {
+    this.delayMs = delayMs;
+    this.onFrame = onFrame;
     const processor = new MediaStreamTrackProcessor({
       track: source as MediaStreamVideoTrack,
       // Chrome's default for video is a single frame, which would drop everything that arrives
