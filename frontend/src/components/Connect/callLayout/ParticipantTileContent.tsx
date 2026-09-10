@@ -17,6 +17,8 @@ import { MoreHorizontal, Pin, PinOff, ShieldCheck, User } from 'lucide-react';
 import { CustomDropdown, type DropdownOption } from '../../ui/CustomDropdown';
 import ClampedVideoTrack, { type FitBox, type ZoomTransform } from './ClampedVideoTrack';
 import { tileId } from './tileIdentity';
+import { TileReactionOverlay } from './TileReactionOverlay';
+import { useParticipantReactions } from '../../../contexts/ReactionContext';
 
 /**
  * `data-lk-speaking` border/ring/shadow should stay off while the mic is muted
@@ -113,22 +115,95 @@ export function ParticipantTileContent({
   // alternative is a black rectangle.
   const showPlaceholder = isCameraOff && (!isScreenShare || !renderVideo);
 
-  if (participant?.isLocal && trackReference.source === Track.Source.Camera) {
-    console.log('[ParticipantTileContent] local camera tile', {
-      isVideo,
-      showVideo,
-      isMuted: trackReference.publication?.isMuted,
-      isSubscribed: trackReference.publication?.isSubscribed,
-      hasPublication: !!trackReference.publication,
-      isCameraOff,
-      showPlaceholder,
-    });
-  }
-
   const avatarSize =
     density === 'compact'
       ? 'w-12 h-12 sm:w-14 sm:h-14'
       : 'w-20 h-20 sm:w-24 sm:h-24 md:w-28 md:h-28';
+
+  const reactions = useParticipantReactions(participant?.identity);
+
+  // '...' CustomDropdown menu for participant actions
+  const isLocalParticipant = !!participant?.isLocal;
+  const canClaimHost = isLocalParticipant && !isHost && !!onRequestClaimHost;
+  const canGrantHost = !isLocalParticipant && isHost && !!onRequestGrantHost && !!participant?.identity;
+  const canViewProfile = !isLocalParticipant && isInternalMeeting && !!onOpenProfile && !!participant?.identity;
+  const menuOptions: DropdownOption[] = [];
+
+  if (onTogglePin) {
+    menuOptions.push({
+      label: isPinned ? 'ピン留めを解除' : 'ピン留めする',
+      value: 'pin',
+      icon: isPinned ? <PinOff className="w-4 h-4 text-sky-400" /> : <Pin className="w-4 h-4 text-gray-300" />,
+    });
+  }
+
+  if (canClaimHost) {
+    menuOptions.push({
+      label: 'ホストになる',
+      value: 'claim-host',
+      icon: <ShieldCheck className="w-4 h-4 text-sky-400" />,
+    });
+  }
+
+  if (canGrantHost) {
+    menuOptions.push({
+      label: '一時ホストにする',
+      value: 'grant-host',
+      icon: <ShieldCheck className="w-4 h-4 text-sky-400" />,
+    });
+  }
+
+  if (canViewProfile) {
+    menuOptions.push({
+      label: 'プロフィールを見る',
+      value: 'view-profile',
+      icon: <User className="w-4 h-4 text-sky-400" />,
+    });
+  }
+
+  const menuDropdown =
+    menuOptions.length > 0 ? (
+      <div
+        className="absolute top-2 right-2 z-20 flex items-center gap-1.5 pointer-events-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {isPinned && (
+          <span
+            title="ピン留め中"
+            className="p-1 rounded-lg bg-sky-500/90 text-white backdrop-blur-sm shadow-sm pointer-events-none"
+          >
+            <Pin className="w-3 h-3 fill-current" />
+          </span>
+        )}
+        <CustomDropdown
+          options={menuOptions}
+          value=""
+          minMenuWidth={180}
+          onChange={(val) => {
+            if (val === 'pin') {
+              onTogglePin?.(tileId(trackReference));
+            } else if (val === 'claim-host') {
+              onRequestClaimHost?.();
+            } else if (val === 'grant-host' && participant) {
+              onRequestGrantHost?.(participant.identity, participant.name || participant.identity);
+            } else if (val === 'view-profile' && participant) {
+              onOpenProfile?.(participant.identity);
+            }
+          }}
+          customTrigger={(isOpen) => (
+            <button
+              type="button"
+              aria-label="タイル操作メニュー"
+              className={`p-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white shadow-md shadow-sky-500/25 backdrop-blur-md transition-all ${
+                isOpen ? '!opacity-100 ring-2 ring-white/60' : 'opacity-0 group-hover:opacity-100'
+              } ${isPinned ? '!opacity-90' : ''}`}
+            >
+              <MoreHorizontal className="w-3.5 h-3.5" />
+            </button>
+          )}
+        />
+      </div>
+    ) : null;
 
   return (
     <>
@@ -138,8 +213,21 @@ export function ParticipantTileContent({
           isLocalMirror={participant.isLocal && !isScreenShare}
           zoom={zoom}
           onFitChange={onFitChange}
-        />
+        >
+          {/* Reactions & '...' menu anchored directly to actual video frame */}
+          {!isScreenShare && <TileReactionOverlay reactions={reactions} />}
+          {menuDropdown}
+        </ClampedVideoTrack>
       )}
+
+      {/* When video is off/placeholder, render reactions & '...' menu on the outer container */}
+      {showPlaceholder && (
+        <>
+          {!isScreenShare && <TileReactionOverlay reactions={reactions} />}
+          {menuDropdown}
+        </>
+      )}
+
       {!isVideo && isTrackReference(trackReference) && <AudioTrack trackRef={trackReference} />}
 
       {/* Camera Off / windowed-out placeholder.
@@ -161,18 +249,6 @@ export function ParticipantTileContent({
               />
             </div>
           ) : (
-            // `ParticipantPlaceholder`'s SVG hardcodes width={320} height={320} as
-            // literal element attributes. LiveKit's own CSS normally overrides that
-            // via `.lk-participant-placeholder svg { width: auto; height: 100% }`, a
-            // rule that only matches that exact class name — which the wrapper above
-            // deliberately doesn't carry (see the comment on it) — and depends on the
-            // browser preferring CSS over SVG presentation attributes, which is not
-            // guaranteed everywhere. Passing `width`/`height` as props instead lands
-            // directly in the element's attribute object (the component spreads its
-            // props there, after the 320 defaults), which unconditionally wins.
-            // `preserveAspectRatio="xMidYMid meet"` (already set internally) keeps the
-            // icon's own 1:1 shape centered and unstretched inside this 100% box even
-            // though the box itself may not be square.
             <div className="w-full h-full p-[10%]">
               <ParticipantPlaceholder width="100%" height="100%" />
             </div>
@@ -205,92 +281,6 @@ export function ParticipantTileContent({
           <ConnectionQualityIndicator className="lk-participant-metadata-item" />
         )}
       </div>
-
-      {/* Replaces single pin button with '...' CustomDropdown menu */}
-      {(() => {
-        const isLocalParticipant = !!participant?.isLocal;
-        const canClaimHost = isLocalParticipant && !isHost && !!onRequestClaimHost;
-        const canGrantHost = !isLocalParticipant && isHost && !!onRequestGrantHost && !!participant?.identity;
-        const canViewProfile = !isLocalParticipant && isInternalMeeting && !!onOpenProfile && !!participant?.identity;
-        const menuOptions: DropdownOption[] = [];
-
-        if (onTogglePin) {
-          menuOptions.push({
-            label: isPinned ? 'ピン留めを解除' : 'ピン留めする',
-            value: 'pin',
-            icon: isPinned ? <PinOff className="w-4 h-4 text-sky-400" /> : <Pin className="w-4 h-4 text-gray-300" />,
-          });
-        }
-
-        if (canClaimHost) {
-          menuOptions.push({
-            label: 'ホストになる',
-            value: 'claim-host',
-            icon: <ShieldCheck className="w-4 h-4 text-sky-400" />,
-          });
-        }
-
-        if (canGrantHost) {
-          menuOptions.push({
-            label: '一時ホストにする',
-            value: 'grant-host',
-            icon: <ShieldCheck className="w-4 h-4 text-sky-400" />,
-          });
-        }
-
-        if (canViewProfile) {
-          menuOptions.push({
-            label: 'プロフィールを見る',
-            value: 'view-profile',
-            icon: <User className="w-4 h-4 text-sky-400" />,
-          });
-        }
-
-        if (menuOptions.length === 0) return null;
-
-        return (
-          <div
-            className="absolute top-2 right-2 z-20 flex items-center gap-1.5 pointer-events-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {isPinned && (
-              <span
-                title="ピン留め中"
-                className="p-1 rounded-lg bg-sky-500/90 text-white backdrop-blur-sm shadow-sm pointer-events-none"
-              >
-                <Pin className="w-3 h-3 fill-current" />
-              </span>
-            )}
-            <CustomDropdown
-              options={menuOptions}
-              value=""
-              minMenuWidth={180}
-              onChange={(val) => {
-                if (val === 'pin') {
-                  onTogglePin?.(tileId(trackReference));
-                } else if (val === 'claim-host') {
-                  onRequestClaimHost?.();
-                } else if (val === 'grant-host' && participant) {
-                  onRequestGrantHost?.(participant.identity, participant.name || participant.identity);
-                } else if (val === 'view-profile' && participant) {
-                  onOpenProfile?.(participant.identity);
-                }
-              }}
-              customTrigger={(isOpen) => (
-                <button
-                  type="button"
-                  aria-label="タイル操作メニュー"
-                  className={`p-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white shadow-md shadow-sky-500/25 backdrop-blur-md transition-all ${
-                    isOpen ? '!opacity-100 ring-2 ring-white/60' : 'opacity-0 group-hover:opacity-100'
-                  } ${isPinned ? '!opacity-90' : ''}`}
-                >
-                  <MoreHorizontal className="w-3.5 h-3.5" />
-                </button>
-              )}
-            />
-          </div>
-        );
-      })()}
     </>
   );
 }

@@ -23,12 +23,17 @@ import {
   X,
   Radio,
   MessageSquare,
+  Smile,
 } from 'lucide-react';
 import type { useAdvancedChat } from '../../hooks/useAdvancedChat';
 import AdvancedChat from '../../components/Connect/AdvancedChat';
 import ClampedVideoTrack from '../../components/Connect/callLayout/ClampedVideoTrack';
 import { tileId } from '../../components/Connect/callLayout/tileIdentity';
 import { useRecordingSync } from './useRecordingSync';
+import { useParticipantReactions, useReactionActions } from '../../contexts/ReactionContext';
+import { TileReactionOverlay } from '../../components/Connect/callLayout/TileReactionOverlay';
+import { PIP_REACTION_EMOJIS } from '../../types/reactions';
+import { FloatingReactionsStream } from '../../components/Connect/FloatingReactionsStream';
 
 interface DocumentPipContentProps {
   roomTitle?: string;
@@ -57,6 +62,7 @@ function PipParticipantTile({
   const [imgError, setImgError] = useState(false);
 
   const participant = trackRef?.participant;
+  const reactions = useParticipantReactions(participant?.identity);
   if (!participant) return null;
 
   const isVideo =
@@ -98,7 +104,9 @@ function PipParticipantTile({
         <ClampedVideoTrack
           trackRef={trackRef}
           isLocalMirror={participant.isLocal && !isScreenShare}
-        />
+        >
+          {!isScreenShare && <TileReactionOverlay reactions={reactions} />}
+        </ClampedVideoTrack>
       )}
 
       {/* Audio stream for audio-only track */}
@@ -106,7 +114,8 @@ function PipParticipantTile({
 
       {/* Camera Off Placeholder: Avatar or Icon */}
       {isCameraOff && !isScreenShare && (
-        <div className="absolute inset-0 flex items-center justify-center p-2 bg-gradient-to-b from-slate-900 to-slate-950">
+        <div className="absolute inset-0 flex items-center justify-center p-2 bg-gradient-to-b from-slate-900 to-slate-950 [container-type:size]">
+          {!isScreenShare && <TileReactionOverlay reactions={reactions} />}
           {avatarUrl && !imgError ? (
             <div
               className={`rounded-xl sm:rounded-2xl overflow-hidden border-2 border-slate-700/80 shadow-xl bg-slate-800 flex items-center justify-center ${
@@ -180,6 +189,9 @@ export default function DocumentPipContent({
   const [layoutMode, setLayoutMode] = useState<PipLayoutMode>('grid');
   const [hideSelf, setHideSelf] = useState(false);
   const [focusedRemoteSpeakerId, setFocusedRemoteSpeakerId] = useState<string | null>(null);
+
+  const [showReactionPicker, setShowReactionPicker] = useState(false);
+  const reactionActions = useReactionActions();
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -636,12 +648,25 @@ export default function DocumentPipContent({
           className="relative p-2 rounded-xl border border-slate-700 bg-slate-800/90 text-white hover:bg-slate-700 transition-all active:scale-90 flex items-center justify-center"
           title="チャットを開く"
         >
-          <MessageSquare className="w-4 h-4 text-sky-300" />
+          <MessageSquare className="w-4 h-4 text-white" />
           {chat.totalUnreadCount > 0 && (
             <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 bg-rose-500 text-white text-[9px] font-bold rounded-full border-2 border-gray-950 flex items-center justify-center animate-pulse">
               {chat.totalUnreadCount}
             </span>
           )}
+        </button>
+
+        {/* Reaction Toggle Button */}
+        <button
+          onClick={() => setShowReactionPicker((prev) => !prev)}
+          className={`p-2 rounded-xl border transition-all active:scale-90 flex items-center justify-center ${
+            showReactionPicker
+              ? 'bg-sky-600/90 text-white border-sky-500 shadow-md shadow-sky-600/30'
+              : 'bg-slate-800/90 text-white border-slate-700 hover:bg-slate-700'
+          }`}
+          title="リアクション"
+        >
+          <Smile className="w-4 h-4 text-gray-200" />
         </button>
 
         {/* Stop Screen Share Button (Rendered ONLY when local user is sharing screen) */}
@@ -656,6 +681,41 @@ export default function DocumentPipContent({
           </button>
         )}
       </footer>
+
+      {/* PiP Mini Reaction Popup: 4 emojis (👍 👏 ❤️ 😭) Centered horizontally right above bottom footer */}
+      {showReactionPicker && (
+        <>
+          {/* Backdrop for outside click inside PiP */}
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setShowReactionPicker(false)}
+          />
+          <div className="fixed bottom-[58px] left-1/2 -translate-x-1/2 z-50 flex items-center gap-1.5 p-1.5 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl shadow-black/80 animate-in fade-in slide-in-from-bottom-2 duration-150">
+            {PIP_REACTION_EMOJIS.map((emoji) => (
+              <button
+                key={emoji.id}
+                type="button"
+                onClick={() => {
+                  reactionActions?.sendReaction(emoji.id);
+                  setShowReactionPicker(false);
+                }}
+                title={emoji.label}
+                className="w-9 h-9 flex items-center justify-center rounded-xl transition-all duration-150 hover:bg-white/10 hover:scale-125 active:scale-95"
+              >
+                <img
+                  src={emoji.src}
+                  alt={emoji.label}
+                  className="w-6 h-6 object-contain pointer-events-none drop-shadow select-none"
+                  loading="eager"
+                />
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Floating Reaction Stream in bottom-left for PiP */}
+      <FloatingReactionsStream className="bottom-14 left-2 scale-75 origin-bottom-left" />
     </div>
   );
 }

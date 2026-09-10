@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   VideoTrack,
   isTrackReference,
@@ -33,6 +33,7 @@ export interface ClampedVideoTrackProps {
   zoom?: ZoomTransform;
   /** Reports the fitted box size, which zoom/pan needs to clamp panning. */
   onFitChange?: (fit: FitBox) => void;
+  children?: ReactNode;
 }
 
 /**
@@ -50,6 +51,7 @@ export default function ClampedVideoTrack({
   isLocalMirror = false,
   zoom,
   onFitChange,
+  children,
 }: ClampedVideoTrackProps) {
   // Callback ref, not useRef: the early `return null` below means this component can
   // render nothing on its first pass and mount the container only later, when the
@@ -231,16 +233,19 @@ export default function ClampedVideoTrack({
       className={`absolute inset-0 w-full h-full min-h-0 min-w-0 overflow-hidden flex items-center justify-center ${className}`}
     >
       <div
-        style={boxStyle}
-        className="relative overflow-hidden shrink-0 flex items-center justify-center rounded-xl sm:rounded-2xl"
+        style={{ ...boxStyle, containerType: 'size' }}
+        className="relative shrink-0 flex items-center justify-center [container-type:size]"
       >
-        <VideoTrack
-          ref={setVideoEl}
-          trackRef={trackRef}
-          onLoadedMetadata={onVideoLoadedMetadata}
-          className="w-full h-full object-cover"
-          style={{ transform: isLocalMirror ? 'scaleX(-1)' : 'none' }}
-        />
+        <div className="w-full h-full overflow-hidden rounded-xl sm:rounded-2xl flex items-center justify-center">
+          <VideoTrack
+            ref={setVideoEl}
+            trackRef={trackRef}
+            onLoadedMetadata={onVideoLoadedMetadata}
+            className="w-full h-full object-cover"
+            style={{ transform: isLocalMirror ? 'scaleX(-1)' : 'none' }}
+          />
+        </div>
+        {children}
       </div>
     </div>
   );

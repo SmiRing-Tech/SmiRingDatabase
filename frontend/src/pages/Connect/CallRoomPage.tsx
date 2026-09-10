@@ -65,6 +65,7 @@ import {
   StopCircle,
   Image as ImageIcon,
   Users,
+  Smile,
 } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import PreJoinScreen, { type PreJoinChoices } from '../../components/Connect/PreJoinScreen';
@@ -81,6 +82,10 @@ import { useMiniRooms, type UseMiniRoomsResult, type ReconnectTarget } from '../
 import { useDocumentPiP } from '../../hooks/useDocumentPiP';
 import { useActiveSpeakerVideoPip } from '../../hooks/useActiveSpeakerVideoPip';
 import { useAdvancedChat } from '../../hooks/useAdvancedChat';
+import { useReactions } from '../../hooks/useReactions';
+import { ReactionProvider, useReactionActions } from '../../contexts/ReactionContext';
+import { ReactionPicker } from '../../components/Connect/ReactionPicker';
+import { FloatingReactionsStream } from '../../components/Connect/FloatingReactionsStream';
 import DocumentPipContent from './DocumentPipContent';
 import { useBackgroundEffect, PRESETS } from './useBackgroundEffect';
 import BackgroundEffectModal from '../../components/Connect/BackgroundEffectModal';
@@ -1007,6 +1012,42 @@ function ChatMenuItem({
   );
 }
 
+/** Toggles the reaction picker popup. */
+function ReactionButton({
+  isOpen,
+  onClick,
+  buttonRef,
+}: {
+  isOpen: boolean;
+  onClick: () => void;
+  buttonRef: React.RefObject<HTMLButtonElement | null>;
+}) {
+  return (
+    <button
+      ref={buttonRef}
+      onClick={onClick}
+      title="リアクション"
+      className={controlButtonClass(isOpen)}
+    >
+      <Smile className="w-5 h-5" />
+      <ControlButtonLabel>リアクション</ControlButtonLabel>
+    </button>
+  );
+}
+
+/** Same reaction picker entry, styled as a row inside `MoreMenu` for when the bar is too narrow. */
+function ReactionMenuItem({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
+    >
+      <Smile className="w-4 h-4 text-sky-400" />
+      <span>リアクション</span>
+    </button>
+  );
+}
+
 /** Toggles the Participants panel. `pendingCount` (host-only — always 0 for non-hosts, see
  *  useConnectWaitlist) drives the same red-dot badge style as ChatToggleButton's unread count. */
 function ParticipantsButton({
@@ -1393,6 +1434,11 @@ function CustomVideoConference({
   // MiniRoomPanel itself branches host vs. non-host content.
   const [showMiniRoomPanel, setShowMiniRoomPanel] = useState(false);
 
+  // Reaction picker state & ref
+  const reactionButtonRef = useRef<HTMLButtonElement>(null);
+  const [showReactionPicker, setShowReactionPicker] = useState(false);
+  const reactionActions = useReactionActions();
+
   // Starting/stopping is host-only, but the recording *state* is read by everyone:
   // participants who can't touch the controls still need to see that they're being recorded.
   const canRecord = isMiniRoomHost;
@@ -1480,6 +1526,25 @@ function CustomVideoConference({
           unreadCount={chat.totalUnreadCount}
           onClick={() => {
             handleToggleChat();
+            close();
+          }}
+        />
+      ),
+    },
+    {
+      key: 'reaction',
+      priority: 1.5,
+      renderBar: () => (
+        <ReactionButton
+          isOpen={showReactionPicker}
+          buttonRef={reactionButtonRef}
+          onClick={() => setShowReactionPicker((prev) => !prev)}
+        />
+      ),
+      renderMenuItem: (close) => (
+        <ReactionMenuItem
+          onClick={() => {
+            setShowReactionPicker(true);
             close();
           }}
         />
@@ -1738,6 +1803,15 @@ function CustomVideoConference({
         mainRoomId={mainRoomId}
         miniRooms={miniRooms}
       />
+
+      <ReactionPicker
+        anchorRef={reactionButtonRef}
+        isOpen={showReactionPicker}
+        onClose={() => setShowReactionPicker(false)}
+        onSelect={(emojiId) => {
+          reactionActions?.sendReaction(emojiId);
+        }}
+      />
     </div>
   );
 }
@@ -1841,6 +1915,7 @@ function CallRoomInner({
   const chat = useAdvancedChat({ roomId: miniRooms.currentRoomId, selfIdentity: user?.id || '' });
 
   const { localParticipant } = useLocalParticipant();
+  const reactions = useReactions({ selfIdentity: user?.id || localParticipant?.identity || '' });
   const room = useRoomContext();
 
   // Listen for host_granted message via LiveKit data channel
@@ -2070,57 +2145,62 @@ function CallRoomInner({
 
       {/* Main Video Conference Area */}
       <div className="flex-1 relative overflow-hidden">
-        <CustomVideoConference
-          layout={layout}
-          onOpenPip={handleOpenPip}
-          onClosePip={handleClosePip}
-          isPipSupported={isPipSupported}
-          isPipActive={isPipActive}
-          chat={chat}
-          showChat={showChat}
-          setShowChat={setShowChat}
-          showParticipants={showParticipants}
-          setShowParticipants={setShowParticipants}
-          isMiniRoomHost={isMiniRoomHost}
-          onRequestClaimHost={() => setShowClaimHostModal(true)}
-          onRequestGrantHost={handleGrantHost}
-          mainRoomId={roomId}
-          miniRooms={miniRooms}
-          recording={recording}
-          isInternalMeeting={isInternalMeeting}
-          selectedProfileUserId={selectedProfileUserId}
-          setSelectedProfileUserId={setSelectedProfileUserId}
-          onOpenProfile={handleOpenProfile}
-        />
+        <ReactionProvider value={reactions}>
+          <CustomVideoConference
+            layout={layout}
+            onOpenPip={handleOpenPip}
+            onClosePip={handleClosePip}
+            isPipSupported={isPipSupported}
+            isPipActive={isPipActive}
+            chat={chat}
+            showChat={showChat}
+            setShowChat={setShowChat}
+            showParticipants={showParticipants}
+            setShowParticipants={setShowParticipants}
+            isMiniRoomHost={isMiniRoomHost}
+            onRequestClaimHost={() => setShowClaimHostModal(true)}
+            onRequestGrantHost={handleGrantHost}
+            mainRoomId={roomId}
+            miniRooms={miniRooms}
+            recording={recording}
+            isInternalMeeting={isInternalMeeting}
+            selectedProfileUserId={selectedProfileUserId}
+            setSelectedProfileUserId={setSelectedProfileUserId}
+            onOpenProfile={handleOpenProfile}
+          />
 
-        <MiniRoomMoveToast pendingMove={miniRooms.pendingMove} />
+          <MiniRoomMoveToast pendingMove={miniRooms.pendingMove} />
 
-        <MiniRoomAssignDialog
-          invite={miniRooms.assignedInvite}
-          onAccept={miniRooms.acceptAssignedInvite}
-          onDismiss={miniRooms.dismissAssignedInvite}
-        />
+          <MiniRoomAssignDialog
+            invite={miniRooms.assignedInvite}
+            onAccept={miniRooms.acceptAssignedInvite}
+            onDismiss={miniRooms.dismissAssignedInvite}
+          />
 
-        <ClaimHostModal
-          isOpen={showClaimHostModal}
-          onClose={() => setShowClaimHostModal(false)}
-          onSubmit={handleClaimHost}
-          roomTitle={roomTitle}
-        />
+          <ClaimHostModal
+            isOpen={showClaimHostModal}
+            onClose={() => setShowClaimHostModal(false)}
+            onSubmit={handleClaimHost}
+            roomTitle={roomTitle}
+          />
 
-        {/* Render Document PiP Portal when active */}
-        {isDocumentPipActive &&
-          pipWindow &&
-          createPortal(
-            <DocumentPipContent
-              roomTitle={roomTitle}
-              onClose={closeDocumentPip}
-              chat={chat}
-              pinnedIds={layout.pinned}
-              isRecording={recording.isRecording}
-            />,
-            pipWindow.document.body,
-          )}
+          {/* Render Document PiP Portal when active */}
+          {isDocumentPipActive &&
+            pipWindow &&
+            createPortal(
+              <DocumentPipContent
+                roomTitle={roomTitle}
+                onClose={closeDocumentPip}
+                chat={chat}
+                pinnedIds={layout.pinned}
+                isRecording={recording.isRecording}
+              />,
+              pipWindow.document.body,
+            )}
+
+          {/* Floating Reaction Stream in bottom-left */}
+          <FloatingReactionsStream />
+        </ReactionProvider>
       </div>
     </div>
   );
