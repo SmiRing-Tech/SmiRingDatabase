@@ -18,12 +18,28 @@ export interface MiniRoomParticipant {
   name: string;
   avatarUrl: string | null;
   currentRoomId: string;
+  pendingRoomId?: string;
+  pendingRoomName?: string;
 }
 
 export interface PendingMiniRoomMove {
   destinationRoomId: string;
   destinationName: string;
   etaMs: number;
+}
+
+export interface AssignedRoomInfo {
+  id: string;
+  name: string;
+  token: string;
+  url: string;
+}
+
+export interface AssignedInvite {
+  destinationRoomId: string;
+  destinationName: string;
+  token: string;
+  url: string;
 }
 
 /** What to reconnect to, and the mic/camera enabled state to carry over. */
@@ -83,6 +99,8 @@ export function useMiniRooms({
   const [allowSelfAssign, setAllowSelfAssign] = useState(false);
   const [participants, setParticipants] = useState<MiniRoomParticipant[]>([]);
   const [pendingMove, setPendingMove] = useState<PendingMiniRoomMove | null>(null);
+  const [assignedRoom, setAssignedRoom] = useState<AssignedRoomInfo | null>(null);
+  const [assignedInvite, setAssignedInvite] = useState<AssignedInvite | null>(null);
 
   const onReconnectRef = useRef(onReconnect);
   useEffect(() => {
@@ -172,6 +190,30 @@ export function useMiniRooms({
   // simply never happens for it (acceptable: nobody is there to see it complete anyway).
   const pendingMoveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const acceptAssignedInvite = useCallback(() => {
+    if (!assignedInvite) return;
+    const invite = assignedInvite;
+    setAssignedInvite(null);
+    void applyReconnect({
+      token: invite.token,
+      url: invite.url,
+      destinationRoomId: invite.destinationRoomId,
+    });
+  }, [assignedInvite, applyReconnect]);
+
+  const dismissAssignedInvite = useCallback(() => {
+    setAssignedInvite(null);
+  }, []);
+
+  const moveToAssignedRoom = useCallback(() => {
+    if (!assignedRoom) return;
+    void applyReconnect({
+      token: assignedRoom.token,
+      url: assignedRoom.url,
+      destinationRoomId: assignedRoom.id,
+    });
+  }, [assignedRoom, applyReconnect]);
+
   useEffect(() => {
     if (!room) return;
 
@@ -186,23 +228,70 @@ export function useMiniRooms({
         if (topic === SYNC_TOPIC && Array.isArray(data.rooms)) {
           setRooms(data.rooms);
           setAllowSelfAssign(!!data.allowSelfAssign);
+          // もしアサインされていたルームが一覧から削除された場合はクリア
+          setAssignedRoom((prev) => (prev && !data.rooms.some((r: MiniRoom) => r.id === prev.id) ? null : prev));
+          setAssignedInvite((prev) =>
+            prev && !data.rooms.some((r: MiniRoom) => r.id === prev.destinationRoomId) ? null : prev,
+          );
         } else if (topic === NOTIFY_TOPIC && data.destinationRoomId && data.token && data.url) {
-          const delayMs = typeof data.delayMs === 'number' ? data.delayMs : 4000;
-          setPendingMove({
-            destinationRoomId: data.destinationRoomId,
-            destinationName: data.destinationName || data.destinationRoomId,
-            etaMs: delayMs,
-          });
+          const isSessionClose = data.action === 'session_close' || data.destinationRoomId === mainRoomId;
 
-          if (pendingMoveTimeoutRef.current) clearTimeout(pendingMoveTimeoutRef.current);
-          pendingMoveTimeoutRef.current = setTimeout(() => {
-            pendingMoveTimeoutRef.current = null;
-            applyReconnect({
+          if (isSessionClose) {
+            // セッション終了時: 全員を自動的にメインルームへ復帰（3秒カウントダウン）
+            setAssignedRoom(null);
+            setAssignedInvite(null);
+            const delayMs = typeof data.delayMs === 'number' ? data.delayMs : 3000;
+            setPendingMove({
+              destinationRoomId: data.destinationRoomId,
+              destinationName: data.destinationName || 'メインルーム',
+              etaMs: delayMs,
+            });
+
+            if (pendingMoveTimeoutRef.current) clearTimeout(pendingMoveTimeoutRef.current);
+            pendingMoveTimeoutRef.current = setTimeout(() => {
+              pendingMoveTimeoutRef.current = null;
+              applyReconnect({
+                token: data.token,
+                url: data.url,
+                destinationRoomId: data.destinationRoomId,
+              });
+            }, delayMs);
+          } else {
+            // 個別アサイン時: カウントダウン自動移動を行わず、ダイアログを表示
+            // （将来戻せるよう以前の自動移動コードをコメントアウトで保持）
+            /*
+            const delayMs = typeof data.delayMs === 'number' ? data.delayMs : 4000;
+            setPendingMove({
+              destinationRoomId: data.destinationRoomId,
+              destinationName: data.destinationName || data.destinationRoomId,
+              etaMs: delayMs,
+            });
+
+            if (pendingMoveTimeoutRef.current) clearTimeout(pendingMoveTimeoutRef.current);
+            pendingMoveTimeoutRef.current = setTimeout(() => {
+              pendingMoveTimeoutRef.current = null;
+              applyReconnect({
+                token: data.token,
+                url: data.url,
+                destinationRoomId: data.destinationRoomId,
+              });
+            }, delayMs);
+            */
+
+            const destinationName = data.destinationName || data.destinationRoomId;
+            setAssignedRoom({
+              id: data.destinationRoomId,
+              name: destinationName,
               token: data.token,
               url: data.url,
-              destinationRoomId: data.destinationRoomId,
             });
-          }, delayMs);
+            setAssignedInvite({
+              destinationRoomId: data.destinationRoomId,
+              destinationName,
+              token: data.token,
+              url: data.url,
+            });
+          }
         }
       } catch (e) {
         console.warn('[MiniRooms] Failed to parse incoming data message:', e);
@@ -213,7 +302,7 @@ export function useMiniRooms({
     return () => {
       room.off(RoomEvent.DataReceived, handleDataReceived);
     };
-  }, [room, applyReconnect]);
+  }, [room, mainRoomId, applyReconnect]);
 
   useEffect(
     () => () => {
@@ -303,9 +392,24 @@ export function useMiniRooms({
       console.log('[MiniRooms] moveOther: response', body);
       if (targetIdentity === selfIdentity && body.token && body.url) {
         await applyReconnect({ token: body.token, url: body.url, destinationRoomId: body.destinationRoomId });
+      } else if (targetIdentity !== selfIdentity) {
+        setParticipants((prev) =>
+          prev.map((p) => {
+            if (p.identity !== targetIdentity) return p;
+            if (destinationRoomId === mainRoomId) {
+              return { ...p, pendingRoomId: undefined, pendingRoomName: undefined };
+            }
+            const destRoom = rooms.find((r) => r.id === destinationRoomId);
+            return {
+              ...p,
+              pendingRoomId: destinationRoomId,
+              pendingRoomName: destRoom ? destRoom.name : 'ミニルーム',
+            };
+          }),
+        );
       }
     },
-    [mainRoomId, selfIdentity, applyReconnect],
+    [mainRoomId, selfIdentity, rooms, applyReconnect],
   );
 
   const closeMiniRoom = useCallback(
@@ -329,6 +433,36 @@ export function useMiniRooms({
     await refreshRooms();
   }, [mainRoomId, refreshRooms]);
 
+  const updateAllowSelfAssign = useCallback(
+    async (newAllowSelfAssign: boolean) => {
+      setAllowSelfAssign(newAllowSelfAssign);
+      const res = await apiClient.patch(`/api/connect/rooms/${mainRoomId}/miniroom/settings`, {
+        allowSelfAssign: newAllowSelfAssign,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        await refreshRooms();
+        throw new Error(body.error || `設定の更新に失敗しました (${res.status})`);
+      }
+    },
+    [mainRoomId, refreshRooms],
+  );
+
+  const updateRoomName = useCallback(
+    async (miniRoomId: string, name: string) => {
+      setRooms((prev) => prev.map((r) => (r.id === miniRoomId ? { ...r, name } : r)));
+      const res = await apiClient.patch(`/api/connect/rooms/${mainRoomId}/miniroom/${miniRoomId}`, {
+        name,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        await refreshRooms();
+        throw new Error(body.error || `ルーム名の更新に失敗しました (${res.status})`);
+      }
+    },
+    [mainRoomId, refreshRooms],
+  );
+
   return {
     rooms,
     allowSelfAssign,
@@ -343,6 +477,13 @@ export function useMiniRooms({
     moveOther,
     closeMiniRoom,
     closeSession,
+    updateAllowSelfAssign,
+    updateRoomName,
+    assignedRoom,
+    assignedInvite,
+    acceptAssignedInvite,
+    dismissAssignedInvite,
+    moveToAssignedRoom,
   };
 }
 

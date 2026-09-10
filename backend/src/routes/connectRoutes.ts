@@ -259,6 +259,73 @@ function serializeMiniRooms(rows: MiniRoomRow[]) {
   return rows.map((r) => ({ id: r.id, name: r.name, createdAt: new Date(r.created_at).getTime() }));
 }
 
+interface PendingMiniRoomAssignment {
+  destinationRoomId: string;
+  destinationName: string;
+  assignedAt: number;
+}
+
+// In-memory track of participants assigned to a mini room who haven't moved yet.
+// Map<mainRoomId, Map<identity, PendingMiniRoomAssignment>>
+const pendingMiniRoomAssignments = new Map<string, Map<string, PendingMiniRoomAssignment>>();
+
+function setPendingAssignment(
+  mainRoomId: string,
+  identity: string,
+  destinationRoomId: string,
+  destinationName: string,
+) {
+  let roomMap = pendingMiniRoomAssignments.get(mainRoomId);
+  if (!roomMap) {
+    roomMap = new Map();
+    pendingMiniRoomAssignments.set(mainRoomId, roomMap);
+  }
+  roomMap.set(identity, {
+    destinationRoomId,
+    destinationName,
+    assignedAt: Date.now(),
+  });
+}
+
+function clearPendingAssignment(mainRoomId: string, identity: string) {
+  const roomMap = pendingMiniRoomAssignments.get(mainRoomId);
+  if (roomMap) {
+    roomMap.delete(identity);
+    if (roomMap.size === 0) {
+      pendingMiniRoomAssignments.delete(mainRoomId);
+    }
+  }
+}
+
+function clearRoomPendingAssignments(mainRoomId: string, destinationRoomId?: string) {
+  if (!destinationRoomId) {
+    pendingMiniRoomAssignments.delete(mainRoomId);
+    return;
+  }
+  const roomMap = pendingMiniRoomAssignments.get(mainRoomId);
+  if (roomMap) {
+    for (const [identity, item] of roomMap.entries()) {
+      if (item.destinationRoomId === destinationRoomId) {
+        roomMap.delete(identity);
+      }
+    }
+    if (roomMap.size === 0) {
+      pendingMiniRoomAssignments.delete(mainRoomId);
+    }
+  }
+}
+
+function getPendingAssignment(mainRoomId: string, identity: string): PendingMiniRoomAssignment | undefined {
+  const item = pendingMiniRoomAssignments.get(mainRoomId)?.get(identity);
+  if (!item) return undefined;
+  // Expire assignments older than 1 hour just in case
+  if (Date.now() - item.assignedAt > 3600 * 1000) {
+    clearPendingAssignment(mainRoomId, identity);
+    return undefined;
+  }
+  return item;
+}
+
 /** Finds which of the given LiveKit rooms an identity is currently connected to. */
 async function findParticipantCurrentRoom(
   candidateRoomIds: string[],
@@ -1371,6 +1438,86 @@ router.post(
   },
 );
 
+// PATCH /api/connect/rooms/:roomId/miniroom/settings - Update allowSelfAssign for all active mini rooms in this session.
+router.patch(
+  '/api/connect/rooms/:roomId/miniroom/settings',
+  authenticate,
+  requireRoomHost,
+  async (req: Request, res: Response) => {
+    try {
+      const { roomId } = req.params;
+      if (!isValidRoomName(roomId)) {
+        return res.status(400).json({ error: 'ルーム名が不正です' });
+      }
+
+      const { allowSelfAssign } = req.body ?? {};
+      if (typeof allowSelfAssign !== 'boolean') {
+        return res.status(400).json({ error: 'allowSelfAssign (boolean) が必要です' });
+      }
+
+      const { error: updateError } = await supabase
+        .from('connect_miniroom_rooms')
+        .update({ allow_self_assign: allowSelfAssign })
+        .eq('main_room_id', roomId);
+
+      if (updateError) {
+        console.error('[Connect] Failed to update allow_self_assign:', updateError);
+        return res.status(500).json({ error: '設定の更新に失敗しました' });
+      }
+
+      const allMiniRooms = await getActiveMiniRooms(roomId);
+      const rooms = serializeMiniRooms(allMiniRooms);
+      await broadcastMiniRoomSync(roomId, rooms, allowSelfAssign);
+
+      return res.status(200).json({ ok: true, allowSelfAssign });
+    } catch (error: any) {
+      console.error('[Connect] PATCH .../miniroom/settings failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// PATCH /api/connect/rooms/:roomId/miniroom/:miniRoomId - Rename a mini room.
+router.patch(
+  '/api/connect/rooms/:roomId/miniroom/:miniRoomId',
+  authenticate,
+  requireRoomHost,
+  async (req: Request, res: Response) => {
+    try {
+      const { roomId, miniRoomId } = req.params;
+      if (!isValidRoomName(roomId)) {
+        return res.status(400).json({ error: 'ルーム名が不正です' });
+      }
+
+      const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+      if (!name || name.length > 40) {
+        return res.status(400).json({ error: 'ルーム名は1〜40文字で入力してください' });
+      }
+
+      const { error: updateError } = await supabase
+        .from('connect_miniroom_rooms')
+        .update({ name })
+        .eq('id', miniRoomId)
+        .eq('main_room_id', roomId);
+
+      if (updateError) {
+        console.error('[Connect] Failed to rename mini room:', updateError);
+        return res.status(500).json({ error: 'ルーム名の更新に失敗しました' });
+      }
+
+      const allMiniRooms = await getActiveMiniRooms(roomId);
+      const rooms = serializeMiniRooms(allMiniRooms);
+      const allowSelfAssign = allMiniRooms[0]?.allow_self_assign ?? false;
+      await broadcastMiniRoomSync(roomId, rooms, allowSelfAssign);
+
+      return res.status(200).json({ ok: true, room: { id: miniRoomId, name } });
+    } catch (error: any) {
+      console.error('[Connect] PATCH .../miniroom/:miniRoomId failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
 // GET /api/connect/rooms/:roomId/miniroom/participants - Live roster with current room, for the host's move UI.
 router.get(
   '/api/connect/rooms/:roomId/miniroom/participants',
@@ -1408,11 +1555,27 @@ router.get(
         } catch {
           // Ignore malformed metadata.
         }
+
+        const pending = getPendingAssignment(roomId, p.identity);
+        let pendingRoomId: string | undefined = undefined;
+        let pendingRoomName: string | undefined = undefined;
+
+        if (pending) {
+          if (currentRoomId === pending.destinationRoomId) {
+            clearPendingAssignment(roomId, p.identity);
+          } else {
+            pendingRoomId = pending.destinationRoomId;
+            pendingRoomName = pending.destinationName;
+          }
+        }
+
         return {
           identity: p.identity,
           name: p.name || p.identity,
           avatarUrl,
           currentRoomId,
+          pendingRoomId,
+          pendingRoomName,
         };
       });
 
@@ -1498,11 +1661,19 @@ router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req
     // along with the notice, so the target's own client can apply it after `delayMs`
     // (they see a "moving to..." toast in the meantime rather than an instant cut).
     const destinationName = destinationRoomId === roomId ? 'メインルーム' : destinationMiniRoom!.name;
+
+    if (destinationRoomId === roomId) {
+      clearPendingAssignment(roomId, targetIdentity);
+    } else {
+      setPendingAssignment(roomId, targetIdentity, destinationRoomId, destinationName);
+    }
+
     const delayMs = 4000;
     const targetToken = await mintLiveKitToken(targetIdentity, destinationRoomId);
     const notifyPayload = Buffer.from(
       JSON.stringify({
         type: 'miniroom_notify',
+        action: 'assigned',
         destinationRoomId,
         destinationName,
         token: targetToken,
@@ -1573,6 +1744,7 @@ router.post(
                 const notifyPayload = Buffer.from(
                   JSON.stringify({
                     type: 'miniroom_notify',
+                    action: 'session_close',
                     destinationRoomId: roomId,
                     destinationName: 'メインルーム',
                     token,
@@ -1602,6 +1774,11 @@ router.post(
       );
 
       const idsToRemove = targets.map((r) => r.id);
+      if (miniRoomId) {
+        clearRoomPendingAssignments(roomId, miniRoomId);
+      } else {
+        clearRoomPendingAssignments(roomId);
+      }
       const { error } = await supabase.from('connect_miniroom_rooms').delete().in('id', idsToRemove);
       if (error) {
         console.error('[Connect] Failed to delete closed mini room rows:', error);

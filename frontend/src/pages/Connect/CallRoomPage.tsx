@@ -72,6 +72,7 @@ import MiniRoomPanel from '../../components/Connect/MiniRoomPanel';
 import ParticipantsPanel from '../../components/Connect/ParticipantsPanel';
 import { useConnectWaitlist } from '../../hooks/useConnectWaitlist';
 import MiniRoomMoveToast from '../../components/Connect/MiniRoomMoveToast';
+import MiniRoomAssignDialog from '../../components/Connect/MiniRoomAssignDialog';
 import { useAuth } from '../../context/AuthContext';
 import { useRecording } from './useRecording';
 import { useRecordingSync } from './useRecordingSync';
@@ -1921,6 +1922,12 @@ function CallRoomInner({
         />
 
         <MiniRoomMoveToast pendingMove={miniRooms.pendingMove} />
+
+        <MiniRoomAssignDialog
+          invite={miniRooms.assignedInvite}
+          onAccept={miniRooms.acceptAssignedInvite}
+          onDismiss={miniRooms.dismissAssignedInvite}
+        />
 
         {/* Render Document PiP Portal when active */}
         {isDocumentPipActive &&

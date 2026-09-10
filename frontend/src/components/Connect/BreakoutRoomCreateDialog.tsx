@@ -311,7 +311,13 @@ function DialogContent({
                   />
                 </button>
                 <span className="text-sm font-bold text-gray-100">メインルーム</span>
-                <span className="text-xs font-bold text-sky-400">({mainParticipants.length})</span>
+                <span
+                  className={`text-xs font-bold shrink-0 ${
+                    mainParticipants.length > 0 ? 'text-sky-400' : 'text-gray-100'
+                  }`}
+                >
+                  ({mainParticipants.length})
+                </span>
               </div>
               <span className="text-[10px] font-semibold text-gray-400 px-2 py-0.5 rounded-full bg-gray-700/50">
                 メイン
@@ -392,7 +398,11 @@ function DialogContent({
                     placeholder={`ルーム${idx + 1}`}
                     className="flex-1 min-w-0 bg-transparent text-sm font-bold text-gray-100 placeholder-gray-500 focus:outline-none"
                   />
-                  <span className="text-xs font-semibold text-gray-400 shrink-0">
+                  <span
+                    className={`text-xs font-bold shrink-0 ${
+                      roomParticipants.length > 0 ? 'text-sky-400' : 'text-gray-400'
+                    }`}
+                  >
                     ({roomParticipants.length})
                   </span>
                   <button

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, DoorOpen, Plus, LogOut, ChevronRight, ChevronDown } from 'lucide-react';
+import { X, DoorOpen, Plus, LogOut, ChevronRight, ChevronDown, Pencil, Check, Loader2 } from 'lucide-react';
 import BreakoutRoomCreateDialog from './BreakoutRoomCreateDialog';
 import { CustomDropdown, type DropdownOption } from '../ui/CustomDropdown';
 import type { UseMiniRoomsResult } from '../../hooks/useMiniRooms';
@@ -132,8 +132,11 @@ function HostManagementView({
   miniRooms: UseMiniRoomsResult;
   initialExpandAll?: boolean;
 }) {
-  const [allowSelfAssignDraft, setAllowSelfAssignDraft] = useState(miniRooms.allowSelfAssign);
   const [adding, setAdding] = useState(false);
+  const [closingSession, setClosingSession] = useState(false);
+  const [updatingSettings, setUpdatingSettings] = useState(false);
+  const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
+  const [editingRoomName, setEditingRoomName] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   // 作成画面から遷移してきた時のみ、すべてのルームのアコーディオンを開いて初期化
@@ -164,10 +167,6 @@ function HostManagementView({
     setExpandedRooms((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
-  useEffect(() => {
-    setAllowSelfAssignDraft(miniRooms.allowSelfAssign);
-  }, [miniRooms.allowSelfAssign]);
-
   const participantsByRoom = useMemo(() => {
     const map = new Map<string, typeof miniRooms.participants>();
     map.set(mainRoomId, []);
@@ -181,6 +180,21 @@ function HostManagementView({
     return map;
   }, [mainRoomId, miniRooms.rooms, miniRooms.participants]);
 
+  // ミニルームへ案内中（移動待ち）の参加者
+  const pendingByRoom = useMemo(() => {
+    const map = new Map<string, typeof miniRooms.participants>();
+    miniRooms.rooms.forEach((r) => map.set(r.id, []));
+
+    miniRooms.participants.forEach((p) => {
+      if (p.pendingRoomId && p.pendingRoomId !== p.currentRoomId) {
+        const list = map.get(p.pendingRoomId) || [];
+        list.push(p);
+        map.set(p.pendingRoomId, list);
+      }
+    });
+    return map;
+  }, [miniRooms.rooms, miniRooms.participants]);
+
   const destinationOptions: DropdownOption[] = useMemo(() => {
     return [
       { label: 'メインルーム', value: mainRoomId },
@@ -188,16 +202,71 @@ function HostManagementView({
     ];
   }, [mainRoomId, miniRooms.rooms]);
 
+  // 既存のルーム名の中から最大番号を探し、被りを避けて +1 で自動採番
   const handleAddRoom = async () => {
     setError(null);
     setAdding(true);
     try {
-      const nextNum = miniRooms.rooms.length + 1;
-      await miniRooms.createRooms([`ルーム${nextNum}`], allowSelfAssignDraft);
+      let maxNum = 0;
+      for (const r of miniRooms.rooms) {
+        const matches = r.name.match(/\d+/g);
+        if (matches) {
+          for (const m of matches) {
+            const n = parseInt(m, 10);
+            if (!isNaN(n) && n > maxNum) {
+              maxNum = n;
+            }
+          }
+        }
+      }
+      const nextNum = maxNum > 0 ? maxNum + 1 : miniRooms.rooms.length + 1;
+      await miniRooms.createRooms([`ルーム${nextNum}`], miniRooms.allowSelfAssign);
     } catch (e) {
       setError(getErrorMessage(e, 'ルームの追加に失敗しました'));
     } finally {
       setAdding(false);
+    }
+  };
+
+  // 作成後のルーム名変更
+  const handleSaveRoomName = async (miniRoomId: string) => {
+    const trimmed = editingRoomName.trim();
+    if (!trimmed) {
+      setError('ルーム名を入力してください');
+      return;
+    }
+    setError(null);
+    try {
+      await miniRooms.updateRoomName(miniRoomId, trimmed);
+      setEditingRoomId(null);
+    } catch (e) {
+      setError(getErrorMessage(e, 'ルーム名の変更に失敗しました'));
+    }
+  };
+
+  // 自由移動設定（allowSelfAssign）の即時変更
+  const handleToggleAllowSelfAssign = async () => {
+    setError(null);
+    setUpdatingSettings(true);
+    try {
+      await miniRooms.updateAllowSelfAssign(!miniRooms.allowSelfAssign);
+    } catch (e) {
+      setError(getErrorMessage(e, '設定の更新に失敗しました'));
+    } finally {
+      setUpdatingSettings(false);
+    }
+  };
+
+  // セッション終了
+  const handleCloseSession = async () => {
+    setError(null);
+    setClosingSession(true);
+    try {
+      await miniRooms.closeSession();
+    } catch (e) {
+      setError(getErrorMessage(e, 'セッションの終了に失敗しました'));
+    } finally {
+      setClosingSession(false);
     }
   };
 
@@ -255,7 +324,13 @@ function HostManagementView({
                 />
               </button>
               <span className="text-sm font-bold text-gray-100">メインルーム</span>
-              <span className="text-xs font-bold text-sky-400">({mainRoomParticipants.length})</span>
+              <span
+                className={`text-xs font-bold shrink-0 ${
+                  mainRoomParticipants.length > 0 ? 'text-sky-400' : 'text-gray-100'
+                }`}
+              >
+                ({mainRoomParticipants.length})
+              </span>
             </div>
             <span className="text-[10px] font-semibold text-gray-400 px-2 py-0.5 rounded-full bg-gray-700/50">
               メイン
@@ -279,6 +354,11 @@ function HostManagementView({
                           </div>
                         )}
                         <span className="font-medium text-xs text-gray-200 truncate">{p.name}</span>
+                        {p.pendingRoomId && p.pendingRoomId !== p.currentRoomId && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 border border-sky-500/30 shrink-0 whitespace-nowrap">
+                            {p.pendingRoomName || 'ミニルーム'}に案内中
+                          </span>
+                        )}
                       </div>
                       <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
                         <CustomDropdown
@@ -313,6 +393,7 @@ function HostManagementView({
         {/* Mini Room Tiles */}
         {miniRooms.rooms.map((room) => {
           const roomParticipants = participantsByRoom.get(room.id) ?? [];
+          const pendingParticipants = pendingByRoom.get(room.id) ?? [];
           return (
             <div
               key={room.id}
@@ -338,8 +419,61 @@ function HostManagementView({
                       }`}
                     />
                   </button>
-                  <span className="text-sm font-bold text-gray-100 truncate">{room.name}</span>
-                  <span className="text-xs font-semibold text-gray-400 shrink-0">({roomParticipants.length})</span>
+                  {editingRoomId === room.id ? (
+                    <div className="flex items-center gap-1.5 min-w-0" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="text"
+                        value={editingRoomName}
+                        onChange={(e) => setEditingRoomName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveRoomName(room.id);
+                          if (e.key === 'Escape') setEditingRoomId(null);
+                        }}
+                        autoFocus
+                        maxLength={40}
+                        className="px-2 py-0.5 bg-gray-950 border border-sky-500 rounded-lg text-xs font-bold text-white focus:outline-none w-28"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSaveRoomName(room.id)}
+                        className="p-1 rounded-md text-sky-400 hover:text-white hover:bg-sky-500/20 transition-colors"
+                        title="保存"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingRoomId(null)}
+                        className="p-1 rounded-md text-gray-400 hover:text-white hover:bg-gray-700/60 transition-colors"
+                        title="キャンセル"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-sm font-bold text-gray-100 truncate">{room.name}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingRoomId(room.id);
+                          setEditingRoomName(room.name);
+                        }}
+                        className="p-1 -m-1 rounded-md text-gray-400 hover:text-gray-200 hover:bg-gray-700/60 transition-colors"
+                        title="ルーム名を変更"
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
+                  <span
+                    className={`text-xs font-bold shrink-0 ${
+                      roomParticipants.length > 0 ? 'text-sky-400' : 'text-gray-400'
+                    }`}
+                  >
+                    ({roomParticipants.length})
+                  </span>
                 </div>
                 <button
                   onClick={(e) => {
@@ -356,10 +490,11 @@ function HostManagementView({
 
               {expandedRooms[room.id] && (
                 <div className="px-3 pb-2.5 pt-1 border-t border-gray-700/40 bg-gray-900/40">
-                  {roomParticipants.length === 0 ? (
+                  {roomParticipants.length === 0 && pendingParticipants.length === 0 ? (
                     <p className="text-[11px] text-gray-500 py-1 pl-6">参加者はいません</p>
                   ) : (
                     <div className="space-y-1.5 pl-2 pt-1">
+                      {/* 通常在室している参加者 */}
                       {roomParticipants.map((p) => (
                         <div key={p.identity} className="flex items-center justify-between gap-2 py-1 pl-2 pr-1">
                           <div className="flex items-center gap-2 min-w-0">
@@ -396,6 +531,33 @@ function HostManagementView({
                           </div>
                         </div>
                       ))}
+
+                      {/* 移動待ちの参加者（グレーアウト表示） */}
+                      {pendingParticipants.map((p) => (
+                        <div
+                          key={`pending-${p.identity}`}
+                          className="flex items-center justify-between gap-2 py-1 pl-2 pr-1 opacity-45 select-none"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            {p.avatarUrl ? (
+                              <img src={p.avatarUrl} alt="" className="w-5 h-5 rounded-full object-cover shrink-0 grayscale" />
+                            ) : (
+                              <div className="w-5 h-5 rounded-full bg-gray-700 text-gray-400 text-[10px] font-bold flex items-center justify-center shrink-0">
+                                {p.name.charAt(0)}
+                              </div>
+                            )}
+                            <span className="font-medium text-xs text-gray-300 truncate">{p.name}</span>
+                            <span className="text-[10px] font-medium text-gray-400 shrink-0">
+                              （移動待ち）
+                            </span>
+                          </div>
+                          <div className="shrink-0">
+                            <span className="inline-block px-2 py-0.5 text-[10px] text-gray-400 bg-gray-800/80 rounded-md border border-gray-700/60">
+                              案内中
+                            </span>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -407,30 +569,31 @@ function HostManagementView({
 
       {/* Footer (Fixed) */}
       <div className="shrink-0 pt-3 border-t border-gray-800 space-y-3">
-        {/* Toggle switch for allowSelfAssignDraft */}
+        {/* Toggle switch for allowSelfAssign (Instant Sync) */}
         <div
-          onClick={() => setAllowSelfAssignDraft(!allowSelfAssignDraft)}
+          onClick={handleToggleAllowSelfAssign}
           className="flex items-center justify-between gap-3 px-1 cursor-pointer select-none py-1 group"
         >
           <span className="text-xs text-gray-300 group-hover:text-gray-200 transition-colors leading-relaxed">
-            参加者が自分で入るルームを選べるようにする（次にルームを追加した時に反映されます）
+            参加者が自分で入るルームを選べるようにする
           </span>
           <button
             type="button"
             role="switch"
-            aria-checked={allowSelfAssignDraft}
+            aria-checked={miniRooms.allowSelfAssign}
+            disabled={updatingSettings}
             onClick={(e) => {
               e.stopPropagation();
-              setAllowSelfAssignDraft(!allowSelfAssignDraft);
+              handleToggleAllowSelfAssign();
             }}
-            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-              allowSelfAssignDraft ? 'bg-sky-500' : 'bg-gray-700'
+            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
+              miniRooms.allowSelfAssign ? 'bg-sky-500' : 'bg-gray-700'
             }`}
           >
             <span
               aria-hidden="true"
               className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
-                allowSelfAssignDraft ? 'translate-x-4' : 'translate-x-0'
+                miniRooms.allowSelfAssign ? 'translate-x-4' : 'translate-x-0'
               }`}
             />
           </button>
@@ -439,12 +602,19 @@ function HostManagementView({
         {error && <p className="text-xs text-rose-400 leading-relaxed">{error}</p>}
 
         <button
-          onClick={() =>
-            miniRooms.closeSession().catch((e) => setError(getErrorMessage(e, 'セッションの終了に失敗しました')))
-          }
-          className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-rose-500/40 text-rose-400 hover:bg-rose-500/10 text-xs font-bold transition-colors"
+          type="button"
+          onClick={handleCloseSession}
+          disabled={closingSession}
+          className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-rose-500/40 text-rose-400 hover:bg-rose-500/10 text-xs font-bold transition-colors disabled:opacity-50"
         >
-          セッションを終了（全員をメインルームに戻す）
+          {closingSession ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>セッションを終了中...</span>
+            </>
+          ) : (
+            <span>セッションを終了（全員をメインルームに戻す）</span>
+          )}
         </button>
       </div>
     </>
@@ -497,6 +667,26 @@ function ParticipantPickerView({
               )}
             </button>
           ))}
+        </div>
+      ) : miniRooms.assignedRoom ? (
+        <div className="space-y-2">
+          <div className="p-2.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-xs text-sky-300 leading-relaxed">
+            ホストから「{miniRooms.assignedRoom.name}」にアサインされています。
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              miniRooms.moveToAssignedRoom();
+              onDone();
+            }}
+            disabled={busy || miniRooms.currentRoomId === miniRooms.assignedRoom.id}
+            className="w-full flex items-center justify-between px-4 py-3 bg-sky-900/30 hover:bg-sky-900/50 border border-sky-500/40 rounded-xl text-sm font-bold text-sky-100 disabled:opacity-40 transition-colors"
+          >
+            <span>{miniRooms.assignedRoom.name}へ参加</span>
+            {miniRooms.currentRoomId === miniRooms.assignedRoom.id && (
+              <span className="text-[10px] font-bold text-sky-400">現在ここ</span>
+            )}
+          </button>
         </div>
       ) : (
         <p className="text-xs text-gray-400 leading-relaxed">
