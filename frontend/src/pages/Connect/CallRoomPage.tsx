@@ -1653,6 +1653,7 @@ function CallRoomInner({
   onBeforeReconnectDisconnect,
   pendingVideoTrack,
   pendingAudioTrack,
+  initialMediaChoices,
 }: {
   roomId: string;
   roomTitle: string;
@@ -1668,6 +1669,7 @@ function CallRoomInner({
    *  Null once already published; see the publish effect below. */
   pendingVideoTrack: LocalVideoTrack | null;
   pendingAudioTrack: LocalAudioTrack | null;
+  initialMediaChoices?: PreJoinChoices | null;
 }) {
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -1696,6 +1698,11 @@ function CallRoomInner({
   const { localParticipant } = useLocalParticipant();
   const room = useRoomContext();
 
+  const mediaChoicesRef = useRef(initialMediaChoices);
+  useEffect(() => {
+    mediaChoicesRef.current = initialMediaChoices;
+  }, [initialMediaChoices]);
+
   // Publishes the pre-join camera/mic tracks once the room is actually connected
   // — the initial join, and again after every mini-room switch (`useMiniRooms`'
   // `applyReconnect` disconnects-then-reconnects this same <LiveKitRoom>, keeping
@@ -1721,15 +1728,22 @@ function CallRoomInner({
             !localParticipant.getTrackPublication(Track.Source.Camera)
           ) {
             videoPublishInFlightRef.current = true;
-            await localParticipant.publishTrack(pendingVideoTrack);
-            forcePublishRerender();
-            // DIAGNOSTIC: an immediate re-render alone didn't fix this (confirmed by
-            // the previous test round) — useTracks() apparently needs its own
-            // internal (RxJS) pipeline to finish processing LocalTrackPublished
-            // first. Retry on a short delay to see whether this is a timing gap
-            // rather than a genuinely missed/broken update.
-            setTimeout(() => forcePublishRerender(), 300);
-            setTimeout(() => forcePublishRerender(), 1000);
+            try {
+              await localParticipant.publishTrack(pendingVideoTrack);
+              if (mediaChoicesRef.current?.videoEnabled === false) {
+                await localParticipant.setCameraEnabled(false);
+              }
+              forcePublishRerender();
+              // DIAGNOSTIC: an immediate re-render alone didn't fix this (confirmed by
+              // the previous test round) — useTracks() apparently needs its own
+              // internal (RxJS) pipeline to finish processing LocalTrackPublished
+              // first. Retry on a short delay to see whether this is a timing gap
+              // rather than a genuinely missed/broken update.
+              setTimeout(() => forcePublishRerender(), 300);
+              setTimeout(() => forcePublishRerender(), 1000);
+            } finally {
+              videoPublishInFlightRef.current = false;
+            }
           }
           if (
             pendingAudioTrack &&
@@ -1737,18 +1751,36 @@ function CallRoomInner({
             !localParticipant.getTrackPublication(Track.Source.Microphone)
           ) {
             audioPublishInFlightRef.current = true;
-            await localParticipant.publishTrack(pendingAudioTrack);
-            forcePublishRerender();
+            try {
+              await localParticipant.publishTrack(pendingAudioTrack);
+              if (mediaChoicesRef.current?.audioEnabled === false) {
+                await localParticipant.setMicrophoneEnabled(false);
+              }
+              forcePublishRerender();
+            } finally {
+              audioPublishInFlightRef.current = false;
+            }
           }
         } catch (e) {
           console.error('[CallRoomPage] failed to publish pre-join tracks:', e);
+          videoPublishInFlightRef.current = false;
+          audioPublishInFlightRef.current = false;
         }
       })();
     };
+
+    const handleDisconnected = () => {
+      console.log('[CallRoomPage] room disconnected: resetting publish in-flight flags');
+      videoPublishInFlightRef.current = false;
+      audioPublishInFlightRef.current = false;
+    };
+
     room.on(RoomEvent.Connected, publishPending);
+    room.on(RoomEvent.Disconnected, handleDisconnected);
     publishPending(); // covers the initial connect if it already fired before this effect attached
     return () => {
       room.off(RoomEvent.Connected, publishPending);
+      room.off(RoomEvent.Disconnected, handleDisconnected);
     };
   }, [room, localParticipant, pendingVideoTrack, pendingAudioTrack]);
 
@@ -2411,15 +2443,28 @@ export default function CallRoomPage({
   // "the user left the call", so without this flag handleLeave would treat every mini-
   // room move as the participant leaving and end the call before the reconnect happens.
   const isSwitchingRoomsRef = useRef(false);
+  const switchingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleBeforeReconnectDisconnect = useCallback(() => {
     isSwitchingRoomsRef.current = true;
+    if (switchingTimeoutRef.current) clearTimeout(switchingTimeoutRef.current);
+    // ルーム切替中の不意の切断誤判定を防ぐ（8秒間のセーフティガード）
+    switchingTimeoutRef.current = setTimeout(() => {
+      isSwitchingRoomsRef.current = false;
+    }, 8000);
+  }, []);
+
+  const handleConnected = useCallback(() => {
+    if (switchingTimeoutRef.current) {
+      clearTimeout(switchingTimeoutRef.current);
+      switchingTimeoutRef.current = null;
+    }
+    isSwitchingRoomsRef.current = false;
   }, []);
 
   const handleLeave = () => {
     if (isSwitchingRoomsRef.current) {
       console.log('[CallRoomPage] handleLeave: ignoring disconnect caused by mini-room switch');
-      isSwitchingRoomsRef.current = false;
       return;
     }
     setIsDisconnected(true);
@@ -2545,6 +2590,7 @@ export default function CallRoomPage({
         video={false}
         audio={false}
         options={roomOptions}
+        onConnected={handleConnected}
         onDisconnected={handleLeave}
         onError={(e) => {
           setErrorMsg(e.message);
@@ -2559,6 +2605,7 @@ export default function CallRoomPage({
           onBeforeReconnectDisconnect={handleBeforeReconnectDisconnect}
           pendingVideoTrack={pendingVideoTrack}
           pendingAudioTrack={pendingAudioTrack}
+          initialMediaChoices={choices}
         />
       </LiveKitRoom>
     </div>

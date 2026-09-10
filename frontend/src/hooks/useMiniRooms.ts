@@ -251,8 +251,10 @@ export function useMiniRooms({
         throw new Error(body.error || `ミニルームの作成に失敗しました (${res.status})`);
       }
       const body = await res.json();
-      setRooms(body.rooms || []);
+      const created = (body.rooms || []) as MiniRoom[];
+      setRooms(created);
       setAllowSelfAssign(!!body.allowSelfAssign);
+      return created;
     },
     [mainRoomId],
   );

@@ -349,8 +349,23 @@ async function isMainRoomSessionEmpty(mainRoomId: string): Promise<boolean> {
   if (miniRooms === null) return false; // Inconclusive — don't risk deleting active mini rooms.
   if (miniRooms.length === 0) return true;
 
+  // If any mini room was created very recently (< 2 minutes ago), the session was just created
+  // and participants are likely in transit (reconnecting). Do not treat it as stale.
+  const hasRecentlyCreatedRoom = miniRooms.some((r) => {
+    const createdAt = r.created_at ? new Date(r.created_at).getTime() : 0;
+    return Date.now() - createdAt < 120_000;
+  });
+  if (hasRecentlyCreatedRoom) return false;
+
   try {
-    const liveMiniRooms = await roomService!.listRooms(miniRooms.map((r) => r.id));
+    let liveMiniRooms = await roomService!.listRooms(miniRooms.map((r) => r.id));
+    if (liveMiniRooms.some((r) => r.numParticipants > 0)) return false;
+
+    // Grace period for room transitions: wait 5s and re-verify before tearing down the session.
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    if (!(await isRoomEmpty(mainRoomId))) return false;
+
+    liveMiniRooms = await roomService!.listRooms(miniRooms.map((r) => r.id));
     return !liveMiniRooms.some((r) => r.numParticipants > 0);
   } catch (e) {
     console.error('[Connect] Failed to check mini room occupancy:', e);
