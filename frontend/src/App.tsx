@@ -1,5 +1,6 @@
 import { createBrowserRouter, RouterProvider, Navigate, useLocation } from 'react-router-dom';
 import BackgroundBlurLabPage from './pages/Dev/BackgroundBlurLabPage';
+import NoiseCancelLabPage from './pages/Dev/NoiseCancelLabPage';
 import { useEffect } from 'react';
 import type { PermissionAction } from './context/AuthContext';
 
@@ -181,7 +182,10 @@ const AppShell = () => {
 const router = createBrowserRouter([
   // 0. 開発用ルート（本番ビルドには含まれない）
   ...(import.meta.env.DEV
-    ? [{ path: '/dev/blur-lab', element: <BackgroundBlurLabPage /> }]
+    ? [
+        { path: '/dev/blur-lab', element: <BackgroundBlurLabPage /> },
+        { path: '/dev/noise-cancel-lab', element: <NoiseCancelLabPage /> },
+      ]
     : []),
 
   // 1. 公開ルート

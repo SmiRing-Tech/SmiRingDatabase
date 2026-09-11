@@ -12,6 +12,12 @@
  * Web Audio has DelayNode for the audio half; video has no equivalent, so frames are paced by
  * hand through WebCodecs insertable streams — the same MediaStreamTrackProcessor/Generator
  * plumbing MediapipeBackgroundProcessor already uses for background replacement.
+ *
+ * The per-frame wait is timed off a dedicated Worker's setInterval (videoDelayTicker.worker.ts),
+ * not a plain setTimeout in transform(). Backgrounding the tab clamps main-thread timers to
+ * ~1/sec in Chrome, which turned this into "frames dump out once a second, choppy video" —
+ * dedicated Workers are exempt from that throttle, so ticking from one keeps pacing smooth
+ * whether or not the tab is visible.
  */
 
 /** Frames are buffered for the whole delay window; sized for the worst-case capture rate. */
@@ -39,6 +45,10 @@ export class VideoDelayPipeline {
   private baseOffsetMs: number | null = null;
   private stopped = false;
 
+  private readonly ticker: Worker;
+  /** Pending frame releases, each waiting for performance.now() to reach `at`. */
+  private waiters: Array<{ at: number; resolve: () => void }> = [];
+
   /**
    * @param source   The track currently feeding the sender — the background processor's output
    *                 when one is attached, the raw camera otherwise. Read directly rather than
@@ -55,6 +65,18 @@ export class VideoDelayPipeline {
   ) {
     this.delayMs = delayMs;
     this.onFrame = onFrame;
+
+    this.ticker = new Worker(new URL('./videoDelayTicker.worker.ts', import.meta.url), { type: 'module' });
+    this.ticker.onmessage = () => {
+      const now = performance.now();
+      this.waiters = this.waiters.filter((w) => {
+        if (now < w.at) return true;
+        w.resolve();
+        return false;
+      });
+    };
+    this.ticker.postMessage('start');
+
     const processor = new MediaStreamTrackProcessor({
       track: source as MediaStreamVideoTrack,
       // Chrome's default for video is a single frame, which would drop everything that arrives
@@ -93,7 +115,7 @@ export class VideoDelayPipeline {
       this.baseOffsetMs = performance.now() - frameMs;
       waitMs = this.delayMs;
     }
-    if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    if (waitMs > 0) await this.waitUntil(performance.now() + waitMs);
 
     // A frame that's still open when the pipeline goes away holds GPU memory until GC.
     if (this.stopped) {
@@ -104,11 +126,24 @@ export class VideoDelayPipeline {
     this.onFrame?.();
   }
 
+  /** Resolves once performance.now() reaches `at`, ticked by the un-throttled worker. */
+  private waitUntil(at: number): Promise<void> {
+    return new Promise((resolve) => {
+      this.waiters.push({ at, resolve });
+    });
+  }
+
   /** Only ever call once the sender has been pointed somewhere else — this track is live. */
   stop() {
     if (this.stopped) return;
     this.stopped = true;
     this.abortController.abort();
     this.track.stop();
+    // Settle any in-flight transform() await immediately so its pending VideoFrame gets closed
+    // (see the comment above) instead of leaking until the worker is torn down.
+    this.waiters.forEach((w) => w.resolve());
+    this.waiters = [];
+    this.ticker.postMessage('stop');
+    this.ticker.terminate();
   }
 }

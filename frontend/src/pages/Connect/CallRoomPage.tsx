@@ -33,8 +33,8 @@ import {
   type LocalAudioTrack,
   type LocalVideoTrack,
 } from 'livekit-client';
-import { KrispNoiseFilter, isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter';
 import { MicVAD } from '@ricky0123/vad-web';
+import { GtcrnNoiseCancelTrack, GTCRN_PIPELINE_LATENCY_MS } from '../../lib/audio/gtcrn/GtcrnNoiseCancelTrack';
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import '@livekit/components-styles';
@@ -221,10 +221,10 @@ const GATE_DELAY_MS = 200;
 // Gain is ramped rather than stepped: an instant 0<->1 jump on a live signal is an audible click.
 const GATE_RAMP_MS = 15;
 
-// Whatever stage currently feeds the sender: a processor's output when one is attached (Krisp
-// for audio, the background effect for video), the raw capture otherwise. Deliberately NOT
-// sender.track — once the gate graph below is installed that *is* our own output, and feeding
-// it back in would loop the pipeline into itself.
+// Whatever stage currently feeds the sender: a LiveKit processor's output when one is attached
+// (the background effect, for video — nothing attaches one for audio anymore now that Krisp is
+// gone), the raw capture otherwise. Deliberately NOT sender.track — once the gate graph below is
+// installed that *is* our own output, and feeding it back in would loop the pipeline into itself.
 function resolveUpstreamTrack(track: LocalAudioTrack | LocalVideoTrack): MediaStreamTrack {
   return track.getProcessor()?.processedTrack ?? track.mediaStreamTrack;
 }
@@ -234,15 +234,24 @@ function vadLog(msg: string, data?: Record<string, unknown>) {
 }
 
 /**
- * Silences outgoing audio whenever the local participant isn't actually speaking.
+ * Owns the outgoing mic pipeline: optionally cleans it up with GTCRN noise cancellation, and
+ * optionally silences it entirely whenever the local participant isn't actually speaking (the
+ * VAD auto-gate). Both are independently toggleable, but live in one hook/one effect — not two
+ * — because both need to control the same sender, and this file already learned the hard way
+ * (see the reattachUpstream/reassertSenderTrack comment below) what happens when two independent
+ * pieces of code race to call sender.replaceTrack() on the same track. When VAD is off but
+ * noise-cancel is on, the gate/delay stage still runs, just permanently open with zero delay —
+ * a transparent pass-through around the (still active) noise-cancel stage.
  *
+ * @param enabled VAD auto-gate on/off.
  * @param sensitivity positiveSpeechThreshold — how loud/clear speech has to be before the gate
  *   opens. Lower catches quieter speech but lets more background noise through; higher rejects
  *   more noise but can clip quiet speech. The right value is a property of the room the user is
  *   currently in, not something the app can know in advance, hence a live-adjustable setting
  *   rather than a constant — see the comment above VAD_POSITIVE_SPEECH_THRESHOLD.
+ * @param noiseCancelEnabled GTCRN noise cancellation on/off.
  */
-function useVadAutoGate(enabled: boolean, sensitivity: number) {
+function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnabled: boolean) {
   const { localParticipant, isMicrophoneEnabled } = useLocalParticipant();
   const [loading, setLoading] = useState(false);
   const [trackEpoch, setTrackEpoch] = useState(0);
@@ -255,13 +264,32 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
   // Live-updated via vad.setOptions() (see the effect below) rather than rebuilding the whole
   // pipeline on every slider move — that would reload the ONNX model each time.
   const vadRef = useRef<MicVAD | null>(null);
+  // Bumped once at the top of every run of the main effect below. A run's cleanup captures the
+  // value it was born with and, right before its own "restore the raw mic to the sender" call,
+  // checks it's still current — see the long comment at that call site for why a same-tick
+  // track-id check alone isn't enough to prevent it from clobbering a newer run's own sender
+  // assignment (replaceTrack() is itself async and can resolve after a faster newer run's own
+  // replaceTrack() already has, even when the id check passed before either call started).
+  const generationRef = useRef(0);
 
   useEffect(() => {
     isMicrophoneEnabledRef.current = isMicrophoneEnabled;
     if (!isMicrophoneEnabled) {
       setGateRef.current?.(false, 'manual mute');
+    } else if (!enabled) {
+      // With VAD running, deliberately *don't* reopen here — onSpeechStart does that once real
+      // speech resumes, and reopening blind on unmute would leak whatever stale "was speaking"
+      // state the gate had before the mute (see the file-level comment on this hook). But with
+      // VAD off (noise-cancel-only mode) nothing else ever calls setGate(true, ...) — there's no
+      // speech detector to do it — so without this branch, one manual mute/unmute cycle wedges
+      // the gate shut for the rest of the call: closing on mute isn't just a VAD nicety, it's
+      // load-bearing even here, since GtcrnNoiseCancelTrack processes a *clone* of the raw mic
+      // track, and a clone's `.enabled` is independent of the original's — LiveKit's own mute
+      // (which just flips `.enabled` on the original) never reaches it, so this gate is the only
+      // thing that actually silences outgoing audio while muted in this mode.
+      setGateRef.current?.(true, 'manual unmute (no VAD to reopen it)');
     }
-  }, [isMicrophoneEnabled]);
+  }, [isMicrophoneEnabled, enabled]);
 
   useEffect(() => {
     vadRef.current?.setOptions({
@@ -287,8 +315,9 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
   }, [localParticipant]);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled && !noiseCancelEnabled) return;
 
+    const myGeneration = ++generationRef.current;
     let cancelled = false;
     let vad: MicVAD | null = null;
     let vadTrack: MediaStreamTrack | null = null;
@@ -296,13 +325,26 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
     let gateCtx: AudioContext | null = null;
     let delayNode: DelayNode | null = null;
     let gainNode: GainNode | null = null;
-    let gateOpen = true;
+    // Seeded from the live ref, not hardcoded true: React runs every changed effect's cleanup
+    // (in hook-declaration order) before running any changed effect's setup, so when `enabled`
+    // itself is what's changing, the isMicrophoneEnabledRef effect above — which tries to
+    // reopen the gate on unmute when VAD isn't running to do it — executes in the window after
+    // this effect's *previous* run has already been torn down (nulling setGateRef.current) but
+    // before *this* run has rebuilt it, so that call silently no-ops. Reading the current mic
+    // state directly here instead means a fresh instance always starts correctly synced to it,
+    // independent of that ordering race — confirmed live: toggling VAD off while already
+    // unmuted rebuilt this effect and the gate came up wedged shut with no further "gate CLOSE"
+    // ever logged, because there was nothing left here to have forced it open.
+    let gateOpen = isMicrophoneEnabledRef.current;
     let gatedOutputTrack: MediaStreamTrack | null = null;
     let currentSourceNode: MediaStreamAudioSourceNode | null = null;
     let currentSourceTrack: MediaStreamTrack | null = null;
+    let currentUpstreamId: string | null = null;
     let micTrack: LocalAudioTrack | null = null;
     let unusableSender: RTCRtpSender | null = null;
     let detachTrackListeners: (() => void) | null = null;
+    let noiseCancelTrack: GtcrnNoiseCancelTrack | null = null;
+    let selfHealInterval: ReturnType<typeof setInterval> | null = null;
 
     // Gates by ramping a GainNode the mic is routed through (downstream of the delay line
     // below), not by toggling MediaStreamTrack.enabled — this file went through a whole saga
@@ -310,9 +352,15 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
     // Krisp/other processing is in the chain (see git history), whereas a zeroed gain is
     // literal zeroed samples with nothing downstream left to disagree about.
     const setGate = (open: boolean, reason: string) => {
-      if (!gainNode || !gateCtx) return;
+      if (!gainNode || !gateCtx) {
+        vadLog('gate change dropped: graph not built yet', { open, reason });
+        return;
+      }
       // Never let VAD re-open a mic the user has manually muted.
-      if (open && !isMicrophoneEnabledRef.current) return;
+      if (open && !isMicrophoneEnabledRef.current) {
+        vadLog('gate OPEN blocked: isMicrophoneEnabled is false', { reason });
+        return;
+      }
       if (gateOpen === open) return;
       gateOpen = open;
       vadLog(`gate ${open ? 'OPEN' : 'CLOSE'}`, { reason });
@@ -346,15 +394,32 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
     //     cause a hijack.
     const reattachUpstream = (track: LocalAudioTrack) => {
       if (!gateCtx || !delayNode) return;
-      const upstream = resolveUpstreamTrack(track);
-      if (currentSourceTrack && currentSourceTrack.id === upstream.id) return;
+      // Prefer the noise-cancelled output when that stage is running; resolveUpstreamTrack
+      // falls back to the raw capture (no processor is ever attached to the mic track anymore
+      // now that Krisp is gone, so this always resolves to track.mediaStreamTrack in practice).
+      const upstream = noiseCancelTrack?.track ?? resolveUpstreamTrack(track);
+      // Compared against the upstream's own id, not currentSourceTrack's — currentSourceTrack is
+      // a *clone* of whatever upstream previously was, and a clone always gets a fresh id, so
+      // comparing clone-to-upstream was always false and rebuilt this graph on every single call
+      // (every mute/unmute, every self-heal tick), each time briefly disconnecting and
+      // reconnecting the source node for no reason.
+      if (currentUpstreamId === upstream.id) return;
+      currentUpstreamId = upstream.id;
       currentSourceNode?.disconnect();
       currentSourceTrack?.stop();
       const clonedUpstream = upstream.clone();
       currentSourceTrack = clonedUpstream;
       currentSourceNode = gateCtx.createMediaStreamSource(new MediaStream([clonedUpstream]));
       currentSourceNode.connect(delayNode);
-      vadLog('gate graph source reattached', { upstreamTrackId: upstream.id });
+      vadLog('gate graph source reattached', {
+        upstreamTrackId: upstream.id,
+        // The gate wiring alone (sender -> gatedOutputTrack) can't tell you whether the audio
+        // actually flowing through it went through GTCRN or is raw mic — this can. If
+        // noiseCancelEnabled is true but this says 'raw mic (noise-cancel unavailable)',
+        // GtcrnNoiseCancelTrack.create() failed (see the '[Connect] GTCRN' logs for why) and
+        // everything downstream is silently working exactly as designed, just unprocessed.
+        upstreamSource: noiseCancelTrack ? 'GTCRN-processed' : 'raw mic (noise-cancel unavailable)',
+      });
     };
 
     const reassertSenderTrack = (track: LocalAudioTrack) => {
@@ -368,8 +433,22 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
         unusableSender = sender;
         return;
       }
+      const hijackedId = sender.track?.id ?? null;
+      // A bare track id doesn't say much on its own — name it against every candidate this
+      // closure actually knows about, so a hijack log is diagnostic instead of just alarming.
+      const hijackedByKnownTrack =
+        hijackedId === null
+          ? '(none — sender.track is null)'
+          : hijackedId === track.mediaStreamTrack.id
+            ? 'raw mic (track.mediaStreamTrack)'
+            : hijackedId === noiseCancelTrack?.track.id
+              ? "GTCRN output (this run's noiseCancelTrack)"
+              : hijackedId === currentSourceTrack?.id
+                ? 'gate input clone (currentSourceTrack)'
+                : '(unrecognized — not raw mic, this GTCRN instance, or the gate input clone)';
       vadLog('gate reasserted onto sender (was hijacked)', {
-        hijackedByTrackId: sender.track?.id ?? '(none)',
+        hijackedByTrackId: hijackedId ?? '(none)',
+        hijackedByKnownTrack,
       });
       sender.replaceTrack(gatedOutputTrack).catch((e) => {
         unusableSender = sender;
@@ -381,8 +460,25 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
     // can be called again later without rebuilding this part.
     const buildGateGraph = async (track: LocalAudioTrack) => {
       gateCtx = new AudioContext();
-      delayNode = gateCtx.createDelay(GATE_DELAY_MS / 1000 + 0.1);
-      delayNode.delayTime.value = GATE_DELAY_MS / 1000;
+      // A freshly constructed AudioContext can start life 'suspended' under the browsers'
+      // autoplay policy — and since this whole pipeline is built from a useEffect (async, well
+      // removed from the click that joined the call), it sometimes never gets the implicit
+      // resume a same-tick user gesture would have given it. Suspended means every node
+      // downstream, including the GainNode feeding the sender, produces silence — the mic
+      // *looks* published and unmuted but nothing is actually flowing. Toggling the auto-gate/
+      // noise-cancel switch (a fresh click, i.e. a fresh gesture) rebuilds this from scratch and
+      // "fixes" it, which is what made this so confusing to reproduce. Resuming explicitly here
+      // removes the guesswork.
+      if (gateCtx.state === 'suspended') {
+        await gateCtx.resume().catch((e) => console.error('[Connect] failed to resume gate AudioContext:', e));
+      }
+      // The delay only exists to preserve onset audio for the VAD gate (see GATE_DELAY_MS's
+      // comment) — with VAD off there's nothing to preserve it for, so skip straight to a
+      // (still gate-controlled, just permanently-open) pass-through instead of adding latency
+      // for no reason.
+      const activeDelayMs = enabled ? GATE_DELAY_MS : 0;
+      delayNode = gateCtx.createDelay(Math.max(activeDelayMs, 1) / 1000 + 0.1);
+      delayNode.delayTime.value = activeDelayMs / 1000;
       gainNode = gateCtx.createGain();
       gainNode.gain.value = gateOpen ? 1 : 0;
       const destination = gateCtx.createMediaStreamDestination();
@@ -392,9 +488,12 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
       reattachUpstream(track);
       await track.sender?.replaceTrack(gatedOutputTrack);
       vadLog('gate graph installed', {
-        delayMs: GATE_DELAY_MS,
+        delayMs: activeDelayMs,
+        noiseCancelEnabled,
         gatedOutputTrackId: gatedOutputTrack.id,
         senderTrackId: track.sender?.track?.id ?? '(no sender)',
+        gateCtxState: gateCtx.state,
+        isMicrophoneEnabled: isMicrophoneEnabledRef.current,
       });
     };
 
@@ -408,30 +507,67 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
       // handled by the effect above) needs a full restart. Krisp attaching/detaching and a
       // manual mute/unmute cycle just change what feeds the *same* track's sender, which
       // reattachUpstream + reassertSenderTrack handle immediately without tearing anything down.
-      const onUpstreamChange = () => {
+      const onUpstreamChange = (eventName: string) => () => {
+        vadLog('track event fired', { eventName });
         reattachUpstream(track);
         reassertSenderTrack(track);
       };
-      track.on(TrackEvent.TrackProcessorUpdate, onUpstreamChange);
-      track.on(TrackEvent.Restarted, onUpstreamChange);
-      track.on(TrackEvent.Unmuted, onUpstreamChange);
+      const onTrackProcessorUpdate = onUpstreamChange('TrackProcessorUpdate');
+      const onRestarted = onUpstreamChange('Restarted');
+      const onUnmuted = onUpstreamChange('Unmuted');
+      track.on(TrackEvent.TrackProcessorUpdate, onTrackProcessorUpdate);
+      track.on(TrackEvent.Restarted, onRestarted);
+      track.on(TrackEvent.Unmuted, onUnmuted);
       detachTrackListeners = () => {
-        track.off(TrackEvent.TrackProcessorUpdate, onUpstreamChange);
-        track.off(TrackEvent.Restarted, onUpstreamChange);
-        track.off(TrackEvent.Unmuted, onUpstreamChange);
+        track.off(TrackEvent.TrackProcessorUpdate, onTrackProcessorUpdate);
+        track.off(TrackEvent.Restarted, onRestarted);
+        track.off(TrackEvent.Unmuted, onUnmuted);
       };
+      // Belt-and-suspenders self-heal that runs regardless of whether VAD is enabled: VAD's own
+      // onFrameProcessed callback already reasserts every ~32ms while it's running, but with VAD
+      // off (noise-cancel-only mode) nothing else does, so a hijack from a source we haven't
+      // even identified yet — see the 'gate reasserted onto sender' log — could otherwise sit
+      // silently forever, same as the bug the noise-cancel-only case has already hit twice.
+      selfHealInterval = setInterval(() => reassertSenderTrack(track), 500);
 
-      // VAD listens on the raw capture — undelayed, pre-Krisp, pre-gate — so its decision
-      // timing is exactly what it already was; only the *output* is delayed, not the analysis.
-      vadTrack = track.mediaStreamTrack.clone();
-      const vadStream = new MediaStream([vadTrack]);
+      if (noiseCancelEnabled) {
+        try {
+          noiseCancelTrack = await GtcrnNoiseCancelTrack.create(track.mediaStreamTrack);
+        } catch (e) {
+          console.error('[Connect] failed to start noise cancellation, falling back to raw mic:', e);
+          noiseCancelTrack = null;
+        }
+        if (cancelled) {
+          noiseCancelTrack?.stop();
+          return;
+        }
+      }
+
       await buildGateGraph(track);
       if (cancelled) return;
+
+      if (!enabled) {
+        // Noise-cancel-only: the gate graph above is already a permanently-open, zero-delay
+        // pass-through around whatever noiseCancelTrack produced — nothing further to set up.
+        setLoading(false);
+        return;
+      }
+
+      // VAD listens on the raw capture — undelayed, pre-gate, pre-noise-cancel — so its
+      // decision timing is exactly what it already was; only the *output* passes through the
+      // gate (and optionally noise-cancel), not the analysis.
+      vadTrack = track.mediaStreamTrack.clone();
+      const vadStream = new MediaStream([vadTrack]);
 
       setLoading(true);
       let frameCount = 0;
       try {
         vad = await MicVAD.new({
+          // Reuse the gate's own context (already explicitly resumed above) instead of letting
+          // vad-web create a second, unmanaged one of its own — vad-web never calls .resume()
+          // on whichever AudioContext it ends up with, so a self-created one is just as exposed
+          // to the same "stuck suspended" failure mode this whole comment block is about.
+          audioContext: gateCtx ?? undefined,
           model: VAD_MODEL,
           // Initial value only — the effect above pushes changes live via setOptions() once
           // vadRef.current is set below, so the slider doesn't rebuild this whole pipeline.
@@ -471,6 +607,8 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
                 notSpeech: probabilities.notSpeech.toFixed(3),
                 peakAmplitude: peakAmplitude.toFixed(4),
                 gateOpen,
+                gateCtxState: gateCtx?.state ?? '(no context)',
+                isMicrophoneEnabled: isMicrophoneEnabledRef.current,
                 senderTrackMatchesGate: !hijacked,
                 ...(hijacked ? { liveSenderTrackId, expectedGatedTrackId: gatedOutputTrack?.id } : {}),
               });
@@ -518,9 +656,16 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
       cancelled = true;
       setLoading(false);
       clearMisfireHoldTimer();
+      if (selfHealInterval !== null) clearInterval(selfHealInterval);
       setGateRef.current = null;
       vadRef.current = null;
       detachTrackListeners?.();
+      // Stopped immediately, before the slow `await vad?.destroy()` below, so a new run's own
+      // GTCRN instance (built right away if noiseCancelEnabled stays true) doesn't spend that
+      // whole window running ONNX inference twice over — observed live as inference time
+      // spiking from ~6ms to 35-125ms right as a new run started, easing back down over the
+      // following seconds as this old instance's stop() finally landed.
+      noiseCancelTrack?.stop();
       void (async () => {
         try {
           await vad?.destroy();
@@ -532,8 +677,34 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
         // permanently silent the moment auto-gate is switched off. Skipped once the peer
         // connection is gone — there's nothing to restore onto, and that's the normal case
         // here, since leaving the room is what tore this down.
+        //
+        // This whole cleanup runs as an un-awaited async IIFE (React doesn't wait out a
+        // cleanup's returned promise before mounting the next effect run), and the await above
+        // — tearing down the AudioWorklet — is slow enough that the *next* run's start() (e.g.
+        // toggling this same switch back on, or noiseCancelEnabled flipping) routinely finishes
+        // building its own gate graph and calling replaceTrack() before we get here.
+        //
+        // An id check alone ("is the sender still pointing at what I installed?") isn't enough:
+        // it can pass and then still lose, because replaceTrack() is itself async — a newer run
+        // can start *and finish* its own replaceTrack() while this call is in flight, so this
+        // one resolves last and clobbers it anyway (confirmed live: 'gate reasserted onto sender
+        // (was hijacked)' logs showing the hijacker as the raw mic track, landing right after a
+        // fresh 'gate graph installed'). generationRef is bumped synchronously at the top of
+        // every run, well before any run's own awaits — so checking it immediately before
+        // *initiating* replaceTrack (not just before deciding to) means a newer run is always
+        // already reflected here, and this call never gets sent to race it in the first place.
         const micSender = micTrack?.sender;
-        if (micTrack && micSender && micSender.transport?.state !== 'closed') {
+        if (
+          micTrack &&
+          micSender &&
+          micSender.transport?.state !== 'closed' &&
+          micSender.track?.id === gatedOutputTrack?.id &&
+          // Intentional: reading the *current*, possibly-newer value here (not a snapshot) is
+          // the entire point of this check, not a bug the lint rule's DOM-ref-in-cleanup
+          // heuristic applies to.
+          // eslint-disable-next-line react-hooks/exhaustive-deps
+          generationRef.current === myGeneration
+        ) {
           try {
             await micSender.replaceTrack(resolveUpstreamTrack(micTrack));
           } catch (e) {
@@ -545,16 +716,17 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
         void gateCtx?.close().catch(() => {});
       })();
     };
-  }, [enabled, localParticipant, trackEpoch]);
+  }, [enabled, localParticipant, trackEpoch, noiseCancelEnabled]);
 
   return loading;
 }
 
 /**
- * Delays outgoing camera video by the same GATE_DELAY_MS the audio gate delays audio, so a
- * remote viewer gets both on one timeline instead of hearing a voice trail its own lips (and
- * so composited recordings don't bake that offset in). Driven by the same toggle as the gate:
- * the delay only exists to match it, and is pure added latency without it.
+ * Delays outgoing camera video to stay level with however much the audio pipeline is currently
+ * delaying audio (the VAD gate's GATE_DELAY_MS, GTCRN's own capture-buffering latency, or both
+ * added together — see the caller), so a remote viewer gets both on one timeline instead of
+ * hearing a voice trail its own lips (and so composited recordings don't bake that offset in).
+ * `delayMs <= 0` means neither audio stage is currently adding delay, so this is a no-op.
  *
  * Structured deliberately like useVadAutoGate: the delay is spliced in at the *sender*, not
  * through LiveKit's single processor slot, because the background effect owns that slot and
@@ -563,9 +735,12 @@ function useVadAutoGate(enabled: boolean, sensitivity: number) {
  * gate competes with Krisp's — same fix, same reasons: re-derive from the current upstream and
  * take the sender back, synchronously on the track's events plus a per-frame self-heal.
  */
-function useVideoDelay(enabled: boolean) {
+function useVideoDelay(delayMs: number) {
   const { localParticipant } = useLocalParticipant();
   const [trackEpoch, setTrackEpoch] = useState(0);
+  // Same race, same fix as useVadAutoGate's generationRef — see the long comment at its
+  // cleanup's replaceTrack() call for why an id check alone isn't sufficient.
+  const generationRef = useRef(0);
 
   useEffect(() => {
     const bump = (publication: { source?: Track.Source }) => {
@@ -579,9 +754,9 @@ function useVideoDelay(enabled: boolean) {
   }, [localParticipant]);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (delayMs <= 0) return;
     // Safari and Firefox have no insertable streams. Video just stays undelayed there — the
-    // audio gate still works, it's only lip-sync that goes back to being GATE_DELAY_MS off.
+    // audio side still works, it's only lip-sync that goes back to being delayMs off.
     if (!isVideoDelaySupported()) {
       vadLog('video delay unsupported on this browser, leaving video undelayed');
       return;
@@ -596,6 +771,7 @@ function useVideoDelay(enabled: boolean) {
       return;
     }
 
+    const myGeneration = ++generationRef.current;
     let pipeline: VideoDelayPipeline | null = null;
     let currentUpstreamId: string | null = null;
     let unusableSender: RTCRtpSender | null = null;
@@ -634,10 +810,10 @@ function useVideoDelay(enabled: boolean) {
       // Build and hand over the replacement before retiring the old pipeline: stopping it
       // first would leave the sender holding an ended track for the length of a round trip.
       const previous = pipeline;
-      pipeline = new VideoDelayPipeline(upstream, GATE_DELAY_MS, () => reassertSenderTrack(track));
+      pipeline = new VideoDelayPipeline(upstream, delayMs, () => reassertSenderTrack(track));
       const installed = pipeline;
       vadLog('video delay pipeline installed', {
-        delayMs: GATE_DELAY_MS,
+        delayMs,
         upstreamTrackId: upstream.id,
         delayedTrackId: installed.track.id,
       });
@@ -665,8 +841,22 @@ function useVideoDelay(enabled: boolean) {
         // Hand the sender back what it would have carried without the delay, before tearing
         // the pipeline down — otherwise outgoing video freezes on the last delayed frame.
         // Skipped once the peer connection is gone, same as the audio gate's teardown.
+        //
+        // Also skipped if the sender no longer points at *this* pipeline's own output, or if a
+        // newer effect run has already started (checked right before the call, not just before
+        // deciding to make it — replaceTrack() is itself async, so an id check alone can pass
+        // and still lose to a faster newer run's own replaceTrack() finishing after this one).
+        // Same race, same fix as the audio gate's teardown — see its long comment.
         const sender = track.sender;
-        if (sender && sender.transport?.state !== 'closed') {
+        if (
+          sender &&
+          sender.transport?.state !== 'closed' &&
+          sender.track?.id === pipeline?.track.id &&
+          // Intentional, see the audio gate's identical check for why reading the live value
+          // here is the point, not a bug.
+          // eslint-disable-next-line react-hooks/exhaustive-deps
+          generationRef.current === myGeneration
+        ) {
           try {
             await sender.replaceTrack(resolveUpstreamTrack(track));
           } catch (e) {
@@ -676,7 +866,7 @@ function useVideoDelay(enabled: boolean) {
         pipeline?.stop();
       })();
     };
-  }, [enabled, localParticipant, trackEpoch]);
+  }, [delayMs, localParticipant, trackEpoch]);
 }
 
 /**
@@ -745,107 +935,35 @@ function DropdownPortal({
 }
 
 /**
- * Owns the Krisp/background/VAD toggle state and track-processor wiring.
+ * Owns the noise-cancel/background/VAD toggle state. Krisp (paid, cloud-auth-dependent, and
+ * broken in this environment — see git history) is gone; GTCRN noise cancellation replaces it,
+ * running entirely client-side with no per-participant server cost and no external auth call.
+ * Unlike Krisp, it doesn't go through LiveKit's setProcessor() slot at all — it's a stage inside
+ * useVadAutoGate's own audio graph (see that hook's doc comment) — so there's no separate
+ * apply/sync effect here: the two booleans below just flow straight into that hook's params,
+ * and it owns the entire lifecycle reactively.
  */
-function useMediaEnhancementsState(localParticipant: ReturnType<typeof useLocalParticipant>['localParticipant']) {
-  const room = useRoomContext();
+function useMediaEnhancementsState() {
   const background = useBackgroundEffect();
-  const [krispEnabled, setKrispEnabled] = useState(true);
-  const [krispLoading, setKrispLoading] = useState(false);
   const [autoGateEnabled, setAutoGateEnabled] = useState(true);
   const [vadSensitivity, setVadSensitivity] = useState(VAD_POSITIVE_SPEECH_THRESHOLD);
-  const autoGateLoading = useVadAutoGate(autoGateEnabled, vadSensitivity);
-  // Same toggle: video is only delayed to stay level with the audio the gate delays.
-  useVideoDelay(autoGateEnabled);
-
-  const isKrispSupported = isKrispNoiseFilterSupported();
-
-  const appliedRef = useRef<{ track: LocalAudioTrack | null; enabled: boolean | null }>({
-    track: null,
-    enabled: null,
-  });
-
-  const applyKrisp = useCallback(async (enabled: boolean, track: LocalAudioTrack) => {
-    if (enabled) {
-      if (!track.getProcessor()) {
-        // setProcessor() throws "Audio context needs to be set on LocalAudioTrack"
-        // if the track has no AudioContext yet. Room.connect() acquires one early,
-        // but a track built before connect (the pre-join mic preview, published
-        // once the room is up) can still reach setProcessor() before that context
-        // was propagated onto it. startAudio() is safe to call repeatedly, and
-        // even where autoplay is blocked it still assigns the context
-        // synchronously (see Room.acquireAudioContext) — that assignment, not
-        // actual playback, is the half setProcessor needs, so the rejection from
-        // a blocked play() is fine to swallow here.
-        await room.startAudio().catch(() => {});
-        // TEMP DIAGNOSTIC: useBVC (Krisp's "Background Voice Cancellation") talks to
-        // Krisp's own cloud service, not our self-hosted LiveKit server — no API key
-        // is configured for it anywhere in this repo. It's the likely source of the
-        // "connect.smiring-ryugaku.com/settings" 404 / "Could not authenticate"
-        // uncaught rejection seen right before the intermittent black-video bug.
-        // Disabled here to test whether that's the actual trigger; revert (useBVC:
-        // true) once confirmed either way.
-        await track.setProcessor(KrispNoiseFilter({ quality: 'high', useBVC: false }));
-      }
-    } else if (track.getProcessor()) {
-      await track.stopProcessor();
-    }
-  }, [room]);
-
-  useEffect(() => {
-    if (!isKrispSupported) return;
-
-    const syncKrisp = async () => {
-      const pub = localParticipant.getTrackPublication(Track.Source.Microphone);
-      const track = pub?.track as LocalAudioTrack | undefined;
-      if (!track) return;
-      const already = appliedRef.current;
-      if (already.track === track && already.enabled === krispEnabled) return;
-      try {
-        await applyKrisp(krispEnabled, track);
-        appliedRef.current = { track, enabled: krispEnabled };
-      } catch (e) {
-        console.error('[Connect] Failed to enable Krisp filter:', e);
-      }
-    };
-
-    syncKrisp();
-    localParticipant.on(ParticipantEvent.LocalTrackPublished, syncKrisp);
-    return () => {
-      localParticipant.off(ParticipantEvent.LocalTrackPublished, syncKrisp);
-    };
-  }, [localParticipant, krispEnabled, isKrispSupported, applyKrisp]);
-
-  const toggleKrisp = useCallback(async () => {
-    if (!isKrispSupported) return;
-    const pub = localParticipant.getTrackPublication(Track.Source.Microphone);
-    const track = pub?.track as LocalAudioTrack | undefined;
-    const nextEnabled = !krispEnabled;
-    setKrispLoading(true);
-    try {
-      if (track) {
-        await applyKrisp(nextEnabled, track);
-        appliedRef.current = { track, enabled: nextEnabled };
-      }
-      setKrispEnabled(nextEnabled);
-    } catch (e) {
-      console.error('[Connect] failed to toggle Krisp filter:', e);
-    } finally {
-      setKrispLoading(false);
-    }
-  }, [localParticipant, krispEnabled, isKrispSupported, applyKrisp]);
+  const [noiseCancelEnabled, setNoiseCancelEnabled] = useState(true);
+  const autoGateLoading = useVadAutoGate(autoGateEnabled, vadSensitivity, noiseCancelEnabled);
+  // Video is only delayed to stay level with however much the audio side is currently delaying
+  // audio — zero, one, or both of these stages may be contributing at any given moment.
+  useVideoDelay(
+    (autoGateEnabled ? GATE_DELAY_MS : 0) + (noiseCancelEnabled ? GTCRN_PIPELINE_LATENCY_MS : 0),
+  );
 
   return {
     background,
-    krispEnabled,
-    krispLoading,
     autoGateEnabled,
     setAutoGateEnabled,
     autoGateLoading,
     vadSensitivity,
     setVadSensitivity,
-    isKrispSupported,
-    toggleKrisp,
+    noiseCancelEnabled,
+    setNoiseCancelEnabled,
   };
 }
 
@@ -876,15 +994,13 @@ function MicMenuDropdown({
   } = useMediaDeviceSelect({ kind: 'audiooutput' });
 
   const {
-    krispEnabled,
-    krispLoading,
     autoGateEnabled,
     setAutoGateEnabled,
     autoGateLoading,
     vadSensitivity,
     setVadSensitivity,
-    isKrispSupported,
-    toggleKrisp,
+    noiseCancelEnabled,
+    setNoiseCancelEnabled,
   } = mediaEnhancements;
 
   return (
@@ -962,38 +1078,29 @@ function MicMenuDropdown({
           </div>
         )}
 
-        {/* Krisp AI Noise Filter */}
+        {/* GTCRN Noise Cancellation */}
         <div className="space-y-1.5 border-t border-gray-800/80 pt-2.5 px-1">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Volume2 className="w-4 h-4 text-sky-400" />
               <div>
-                <p className="text-xs font-bold text-gray-200">Krisp AI ノイズ除去</p>
+                <p className="text-xs font-bold text-gray-200">ノイズキャンセリング</p>
                 <p className="text-[10px] text-gray-400">マイクの周囲の雑音を除去</p>
               </div>
             </div>
 
-            {isKrispSupported ? (
-              <button
-                onClick={toggleKrisp}
-                disabled={krispLoading}
-                className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
-                  krispEnabled ? 'bg-sky-500' : 'bg-gray-700'
+            <button
+              onClick={() => setNoiseCancelEnabled((prev) => !prev)}
+              className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
+                noiseCancelEnabled ? 'bg-sky-500' : 'bg-gray-700'
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                  noiseCancelEnabled ? 'translate-x-5' : 'translate-x-0'
                 }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out flex items-center justify-center ${
-                    krispEnabled ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                >
-                  {krispLoading && <Loader2 className="w-2.5 h-2.5 animate-spin text-gray-600" />}
-                </span>
-              </button>
-            ) : (
-              <span className="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full border border-gray-700">
-                非対応
-              </span>
-            )}
+              />
+            </button>
           </div>
         </div>
 
@@ -1850,7 +1957,7 @@ function CustomVideoConference({
   onOpenProfile?: (userId: string) => void;
 }) {
   const { localParticipant } = useLocalParticipant();
-  const mediaEnhancements = useMediaEnhancementsState(localParticipant);
+  const mediaEnhancements = useMediaEnhancementsState();
   // Prefer the authenticated user id (matches useAdvancedChat's selfIdentity and the
   // backend's LiveKit identity for logged-in joiners; localParticipant.identity is empty
   // until the connection completes — see useAdvancedChat's comment). Anonymous guests have
@@ -3141,6 +3248,16 @@ export default function CallRoomPage({
         videoEncoding: isMobileDevice() ? VideoPresets.h360.encoding : VideoPresets.h720.encoding,
         simulcast: !isMobileDevice(),
         videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360],
+        // LiveKit's own default here is 'balanced', which — per Chromium's
+        // BalancedDegradationSettings table — responds to CPU/bandwidth overuse by cutting
+        // framerate first while holding resolution steady, only dropping resolution once fps
+        // is already low. That's exactly the "stays 720p, framerate craters" pattern reported
+        // when the tab is backgrounded: Chromium lowers a hidden tab's whole renderer-process
+        // OS scheduling priority (not something a page can opt out of), the encoder thread gets
+        // starved, and 'balanced' reads that as CPU overuse. 'maintain-framerate' instead lets
+        // resolution drop to keep motion smooth, which reads better for a talking-head call than
+        // stutter — the actual amount of degradation is unchanged, only which axis absorbs it.
+        degradationPreference: 'maintain-framerate',
         screenShareEncoding: {
           // 4 Mbps over a 1080p-capped capture is a little over twice the bits per pixel the
           // old 6 Mbps had to spread across a native Retina surface, so this is a quality
