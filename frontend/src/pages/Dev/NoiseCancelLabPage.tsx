@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import * as ort from 'onnxruntime-web';
+// See the comment in GtcrnNoiseCancelTrack.ts: the /wasm entry excludes the webgpu/jsep backend
+// (and its oversized .wasm file), which this dev-only page doesn't use either.
+import * as ort from 'onnxruntime-web/wasm';
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import { GtcrnStreamProcessor, GTCRN_SAMPLE_RATE, type OrtTensorLike } from '../../lib/audio/gtcrn/GtcrnStreamProcessor';

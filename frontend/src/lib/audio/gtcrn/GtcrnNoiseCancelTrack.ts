@@ -1,4 +1,8 @@
-import * as ort from 'onnxruntime-web';
+// The 'onnxruntime-web/wasm' entry point, not the bare 'onnxruntime-web' package: the default
+// entry bundles every backend (wasm, webgl, webgpu/jsep), and the jsep backend alone drags in a
+// 25.6MB .wasm file — over Cloudflare Pages' 25MB per-file limit — that this app never uses
+// (execution is pinned to 'wasm' below). The /wasm entry excludes it entirely.
+import * as ort from 'onnxruntime-web/wasm';
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import { GtcrnStreamProcessor, GTCRN_SAMPLE_RATE, type OrtTensorLike } from './GtcrnStreamProcessor';
