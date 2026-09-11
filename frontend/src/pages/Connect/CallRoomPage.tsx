@@ -408,6 +408,14 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
       currentSourceNode?.disconnect();
       currentSourceTrack?.stop();
       const clonedUpstream = upstream.clone();
+      // clone() snapshots .enabled from the source at clone time and never updates it again —
+      // if upstream happens to be raw mic (noise-cancel unavailable) and the mic was mid-mute
+      // at that exact moment, this clone is silently disabled forever, even after the real mic
+      // unmutes (confirmed live: this is what was wedging VAD's own input clone shut on slow,
+      // first-time model downloads — see vadTrack below). Actual muting already goes through
+      // the GainNode, not this track's .enabled, so there's no reason for this clone to ever be
+      // disabled in the first place.
+      clonedUpstream.enabled = true;
       currentSourceTrack = clonedUpstream;
       currentSourceNode = gateCtx.createMediaStreamSource(new MediaStream([clonedUpstream]));
       currentSourceNode.connect(delayNode);
@@ -557,6 +565,15 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
       // decision timing is exactly what it already was; only the *output* passes through the
       // gate (and optionally noise-cancel), not the analysis.
       vadTrack = track.mediaStreamTrack.clone();
+      // clone() snapshots .enabled from the source at clone time and never updates it again — if
+      // the raw mic happens to be mid-mute (.enabled false) at this exact moment, this clone is
+      // silently disabled forever, even once the real mic unmutes right after. Confirmed live:
+      // on a slow, first-time model download, VAD's peakAmplitude sat at literal 0.0000 for the
+      // entire call, root cause traced to exactly this ('vad track health' log showed vadTrack
+      // stuck enabled=false while rawMicTrack read enabled=true moments later). VAD's decision
+      // should never depend on LiveKit's mute state anyway — actual muting already goes through
+      // the GainNode downstream, not this track's .enabled — so just force it live.
+      vadTrack.enabled = true;
       const vadStream = new MediaStream([vadTrack]);
 
       setLoading(true);
@@ -602,6 +619,17 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
               }
               const liveSenderTrackId = micTrack?.sender?.track?.id ?? '(no sender)';
               const hijacked = liveSenderTrackId !== (gatedOutputTrack?.id ?? null);
+              // Plain string, not an object, so it survives being copy-pasted from a collapsed
+              // console line (nested-object previews keep getting truncated with '…' — this
+              // can't be). Targets one specific open question: when peakAmplitude sits at
+              // literal 0 the whole call, is VAD's own input clone reporting itself healthy
+              // (live, unmuted) while still producing silence — a Web Audio graph problem — or
+              // does the clone (or the raw mic track it was cloned from) show muted/ended itself,
+              // which would point at the underlying hardware capture instead, upstream of
+              // anything this file controls.
+              console.log(
+                `[Connect VAD] vad track health: vadTrack(readyState=${vadTrack?.readyState}, muted=${vadTrack?.muted}, enabled=${vadTrack?.enabled}) rawMicTrack(readyState=${track.mediaStreamTrack.readyState}, muted=${track.mediaStreamTrack.muted}, enabled=${track.mediaStreamTrack.enabled})`,
+              );
               vadLog('silero frame', {
                 isSpeech: probabilities.isSpeech.toFixed(3),
                 notSpeech: probabilities.notSpeech.toFixed(3),

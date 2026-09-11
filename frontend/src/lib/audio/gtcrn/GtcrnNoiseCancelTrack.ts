@@ -118,6 +118,15 @@ export class GtcrnNoiseCancelTrack {
     // resampler handle 48kHz-hardware -> 16kHz transparently (same trick as the VAD mic tap).
     this.ctx = new AudioContext({ sampleRate: GTCRN_SAMPLE_RATE });
     this.sourceClone = source.clone();
+    // clone() snapshots .enabled from the source at clone time and never updates it again — if
+    // the raw mic happens to be mid-mute (.enabled false) at this exact moment (e.g. a brief
+    // initial mute right as the call starts, still in effect while this constructor runs on a
+    // slow first-time model load), this clone is silently disabled forever, even once the real
+    // mic unmutes moments later. Confirmed live for the same clone-of-the-mic pattern in
+    // CallRoomPage's vadTrack — see its matching comment. Actual muting already goes through
+    // useVadAutoGate's GainNode downstream, not this track's .enabled, so there's no reason for
+    // this clone to ever be disabled.
+    this.sourceClone.enabled = true;
     const sourceNode = this.ctx.createMediaStreamSource(new MediaStream([this.sourceClone]));
 
     this.capture = this.ctx.createScriptProcessor(BUFFER_SIZE, 1, 1);
