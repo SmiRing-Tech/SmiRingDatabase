@@ -1614,10 +1614,17 @@ router.get('/api/connect/rooms/:roomId/messages', authenticate, async (req: Requ
       return res.status(400).json({ error: 'ルーム名が不正です' });
     }
 
+    const userId = req.user!.id;
+
+    // Only return messages the caller is actually a party to: broadcast ('everyone'),
+    // messages they sent, or DMs/group threads that list them as a recipient. Without this,
+    // any authenticated participant who has ever been in the room could read other people's
+    // DMs from the shared room_id history.
     const { data, error } = await supabase
       .from('connect_chat_messages')
       .select('*')
       .eq('room_id', roomId)
+      .or(`thread_id.eq.everyone,sender_identity.eq.${userId},recipient_identities.cs.{${userId}}`)
       .order('created_at', { ascending: true })
       .limit(500);
 
