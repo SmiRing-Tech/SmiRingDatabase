@@ -105,6 +105,7 @@ export default function SignInPage() {
         provider: 'google',
         options: {
           redirectTo: `${window.location.origin}/sign-in`,
+          queryParams: { prompt: 'select_account' },
         },
       });
 

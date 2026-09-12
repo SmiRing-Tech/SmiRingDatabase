@@ -12,6 +12,8 @@ interface UseAdvancedChatOptions {
    *  LiveKit participant identity — available immediately from AuthContext, unlike
    *  `localParticipant.identity`, which is empty until the LiveKit connection completes. */
   selfIdentity: string;
+  /** Whether the chat panel is currently open. Controls unread badge incrementing. */
+  isOpen?: boolean;
 }
 
 /** Deterministic thread id from a set of participant identities. Must match the
@@ -22,9 +24,12 @@ function getCanonicalThreadId(identities: string[]): string {
   return `dm_${unique.join('_')}`;
 }
 
-export function useAdvancedChat({ roomId, selfIdentity }: UseAdvancedChatOptions) {
+export function useAdvancedChat({ roomId, selfIdentity, isOpen = false }: UseAdvancedChatOptions) {
   const room = useRoomContext();
   const participants = useParticipants();
+
+  const isOpenRef = useRef(isOpen);
+  isOpenRef.current = isOpen;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [threads, setThreads] = useState<ChatThread[]>([
@@ -37,6 +42,8 @@ export function useAdvancedChat({ roomId, selfIdentity }: UseAdvancedChatOptions
     },
   ]);
   const [activeThreadId, setActiveThreadId] = useState<string>('everyone');
+  const activeThreadIdRef = useRef(activeThreadId);
+  activeThreadIdRef.current = activeThreadId;
   const [lastNotificationMessage, setLastNotificationMessage] = useState<ChatMessage | null>(null);
 
   // Cache for participant display names & avatars learned from live participants or historical chat messages
@@ -157,7 +164,7 @@ export function useAdvancedChat({ roomId, selfIdentity }: UseAdvancedChatOptions
 
       setThreads((prev) => {
         const existing = prev.find((t) => t.id === msg.threadId);
-        const isCurrentlyActive = activeThreadId === msg.threadId;
+        const isCurrentlyActive = isOpenRef.current && activeThreadIdRef.current === msg.threadId;
 
         let targetThread: ChatThread;
         if (existing) {
@@ -325,10 +332,12 @@ export function useAdvancedChat({ roomId, selfIdentity }: UseAdvancedChatOptions
     };
   }, [room, ingestMessage]);
 
-  // When activeThreadId changes, clear unread count for it
+  // When activeThreadId changes or chat is opened, clear unread count for it
   useEffect(() => {
-    markThreadAsRead(activeThreadId);
-  }, [activeThreadId, markThreadAsRead]);
+    if (isOpen) {
+      markThreadAsRead(activeThreadId);
+    }
+  }, [isOpen, activeThreadId, markThreadAsRead]);
 
   // Total unread count across all threads
   const totalUnreadCount = useMemo(() => {

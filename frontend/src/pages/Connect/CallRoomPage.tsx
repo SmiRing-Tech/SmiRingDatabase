@@ -2494,8 +2494,11 @@ function CallRoomInner({
   // (same value the backend issues as the LiveKit participant identity) rather than
   // localParticipant.identity, which is empty until the LiveKit connection completes.
   // Keyed off the *current* room (main or mini room) so each mini room gets its own
-  // independent chat thread, exactly like any other Connect room would.
-  const chat = useAdvancedChat({ roomId: miniRooms.currentRoomId, selfIdentity: user?.id || '' });
+  const chat = useAdvancedChat({
+    roomId: miniRooms.currentRoomId,
+    selfIdentity: user?.id || '',
+    isOpen: showChat,
+  });
 
   const { localParticipant } = useLocalParticipant();
   const reactions = useReactions({ selfIdentity: user?.id || localParticipant?.identity || '' });
