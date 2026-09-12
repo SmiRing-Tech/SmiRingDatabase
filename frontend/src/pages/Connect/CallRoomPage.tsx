@@ -973,7 +973,7 @@ function DropdownPortal({
  */
 function useMediaEnhancementsState() {
   const background = useBackgroundEffect();
-  const [autoGateEnabled, setAutoGateEnabled] = useState(true);
+  const [autoGateEnabled, setAutoGateEnabled] = useState(false);
   const [vadSensitivity, setVadSensitivity] = useState(VAD_POSITIVE_SPEECH_THRESHOLD);
   const [noiseCancelEnabled, setNoiseCancelEnabled] = useState(true);
   const autoGateLoading = useVadAutoGate(autoGateEnabled, vadSensitivity, noiseCancelEnabled);

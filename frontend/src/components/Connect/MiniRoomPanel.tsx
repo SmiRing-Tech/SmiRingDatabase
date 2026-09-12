@@ -26,7 +26,6 @@ interface MiniRoomPanelProps {
  *    allow_self_assign flag)
  */
 export default function MiniRoomPanel({ isOpen, onClose, isHost, mainRoomId, miniRooms }: MiniRoomPanelProps) {
-  const [justCreated, setJustCreated] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
 
   // Host roster polling only runs while this panel is actually open.
@@ -38,7 +37,6 @@ export default function MiniRoomPanel({ isOpen, onClose, isHost, mainRoomId, min
 
   useEffect(() => {
     if (!isOpen) {
-      setJustCreated(false);
       setIsCreating(false);
     }
   }, [isOpen]);
@@ -66,9 +64,6 @@ export default function MiniRoomPanel({ isOpen, onClose, isHost, mainRoomId, min
         mainRoomId={mainRoomId}
         onCreatingStart={() => setIsCreating(true)}
         onCreatingEnd={() => setIsCreating(false)}
-        onSessionCreated={() => {
-          setJustCreated(true);
-        }}
       />
     );
   }
@@ -97,7 +92,6 @@ export default function MiniRoomPanel({ isOpen, onClose, isHost, mainRoomId, min
           <HostManagementView
             mainRoomId={mainRoomId}
             miniRooms={miniRooms}
-            initialExpandAll={justCreated}
           />
         ) : (
           <>
@@ -126,11 +120,9 @@ export default function MiniRoomPanel({ isOpen, onClose, isHost, mainRoomId, min
 function HostManagementView({
   mainRoomId,
   miniRooms,
-  initialExpandAll = false,
 }: {
   mainRoomId: string;
   miniRooms: UseMiniRoomsResult;
-  initialExpandAll?: boolean;
 }) {
   const [adding, setAdding] = useState(false);
   const [closingSession, setClosingSession] = useState(false);
@@ -139,32 +131,19 @@ function HostManagementView({
   const [editingRoomName, setEditingRoomName] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  // 作成画面から遷移してきた時のみ、すべてのルームのアコーディオンを開いて初期化
-  const [expandedRooms, setExpandedRooms] = useState<Record<string, boolean>>(() => {
-    if (initialExpandAll) {
-      const all: Record<string, boolean> = { main: true };
-      miniRooms.rooms.forEach((r) => {
-        all[r.id] = true;
-      });
-      return all;
-    }
-    return {};
-  });
+  // 手動で開閉を切り替えたルームの記録（ユーザー操作を優先）
+  const [manuallyToggled, setManuallyToggled] = useState<Record<string, boolean>>({});
 
-  useEffect(() => {
-    if (initialExpandAll && miniRooms.rooms.length > 0) {
-      setExpandedRooms((prev) => {
-        const next: Record<string, boolean> = { ...prev, main: true };
-        miniRooms.rooms.forEach((r) => {
-          next[r.id] = true;
-        });
-        return next;
-      });
+  // 参加者（または移動案内中）が1人以上いればデフォルトで開く、0人なら閉じる
+  const isRoomExpanded = (roomId: string, count: number) => {
+    if (manuallyToggled[roomId] !== undefined) {
+      return manuallyToggled[roomId];
     }
-  }, [initialExpandAll, miniRooms.rooms]);
+    return count > 0;
+  };
 
-  const toggleRoom = (id: string) => {
-    setExpandedRooms((prev) => ({ ...prev, [id]: !prev[id] }));
+  const toggleRoom = (roomId: string, currentExpanded: boolean) => {
+    setManuallyToggled((prev) => ({ ...prev, [roomId]: !currentExpanded }));
   };
 
   const participantsByRoom = useMemo(() => {
@@ -302,42 +281,45 @@ function HostManagementView({
       {/* Room List (Scrollable Area) */}
       <div className="flex-1 min-h-0 overflow-y-auto pr-1 py-4 space-y-2.5">
         {/* Main Room Tile (Fixed at top, non-deletable) */}
-        <div className="bg-gray-800/70 border border-gray-700/70 rounded-xl overflow-hidden transition-all">
-          <div
-            onClick={() => toggleRoom('main')}
-            className="flex items-center justify-between gap-2 p-2.5 cursor-pointer hover:bg-gray-800/90 transition-colors"
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleRoom('main');
-                }}
-                className="p-1 -m-1 rounded-lg text-gray-400 hover:text-white transition-colors shrink-0"
-                title={expandedRooms['main'] ? '閉じる' : '参加者を表示'}
+        {(() => {
+          const isMainExpanded = isRoomExpanded('main', mainRoomParticipants.length);
+          return (
+            <div className="bg-gray-800/70 border border-gray-700/70 rounded-xl overflow-hidden transition-all">
+              <div
+                onClick={() => toggleRoom('main', isMainExpanded)}
+                className="flex items-center justify-between gap-2 p-2.5 cursor-pointer hover:bg-gray-800/90 transition-colors"
               >
-                <ChevronRight
-                  className={`w-4 h-4 transition-transform duration-200 ${
-                    expandedRooms['main'] ? 'rotate-90 text-sky-400' : ''
-                  }`}
-                />
-              </button>
-              <span className="text-sm font-bold text-gray-100">メインルーム</span>
-              <span
-                className={`text-xs font-bold shrink-0 ${
-                  mainRoomParticipants.length > 0 ? 'text-sky-400' : 'text-gray-100'
-                }`}
-              >
-                ({mainRoomParticipants.length})
-              </span>
-            </div>
-            <span className="text-[10px] font-semibold text-gray-400 px-2 py-0.5 rounded-full bg-gray-700/50">
-              メイン
-            </span>
-          </div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleRoom('main', isMainExpanded);
+                    }}
+                    className="p-1 -m-1 rounded-lg text-gray-400 hover:text-white transition-colors shrink-0"
+                    title={isMainExpanded ? '閉じる' : '参加者を表示'}
+                  >
+                    <ChevronRight
+                      className={`w-4 h-4 transition-transform duration-200 ${
+                        isMainExpanded ? 'rotate-90 text-sky-400' : ''
+                      }`}
+                    />
+                  </button>
+                  <span className="text-sm font-bold text-gray-100">メインルーム</span>
+                  <span
+                    className={`text-xs font-bold shrink-0 ${
+                      mainRoomParticipants.length > 0 ? 'text-sky-400' : 'text-gray-100'
+                    }`}
+                  >
+                    ({mainRoomParticipants.length})
+                  </span>
+                </div>
+                <span className="text-[10px] font-semibold text-gray-400 px-2 py-0.5 rounded-full bg-gray-700/50">
+                  メイン
+                </span>
+              </div>
 
-          {expandedRooms['main'] && (
+              {isMainExpanded && (
             <div className="px-3 pb-2.5 pt-1 border-t border-gray-700/40 bg-gray-900/40">
               {mainRoomParticipants.length === 0 ? (
                 <p className="text-[11px] text-gray-500 py-1 pl-6">参加者はいません</p>
@@ -389,18 +371,21 @@ function HostManagementView({
             </div>
           )}
         </div>
+      );
+    })()}
 
         {/* Mini Room Tiles */}
         {miniRooms.rooms.map((room) => {
           const roomParticipants = participantsByRoom.get(room.id) ?? [];
           const pendingParticipants = pendingByRoom.get(room.id) ?? [];
+          const isExpanded = isRoomExpanded(room.id, roomParticipants.length + pendingParticipants.length);
           return (
             <div
               key={room.id}
               className="bg-gray-800/60 border border-gray-700/60 rounded-xl overflow-hidden transition-all"
             >
               <div
-                onClick={() => toggleRoom(room.id)}
+                onClick={() => toggleRoom(room.id, isExpanded)}
                 className="flex items-center justify-between gap-2 p-2.5 cursor-pointer hover:bg-gray-800/80 transition-colors"
               >
                 <div className="flex items-center gap-2 min-w-0">
@@ -408,14 +393,14 @@ function HostManagementView({
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      toggleRoom(room.id);
+                      toggleRoom(room.id, isExpanded);
                     }}
                     className="p-1 -m-1 rounded-lg text-gray-400 hover:text-white transition-colors shrink-0"
-                    title={expandedRooms[room.id] ? '閉じる' : '参加者を表示'}
+                    title={isExpanded ? '閉じる' : '参加者を表示'}
                   >
                     <ChevronRight
                       className={`w-4 h-4 transition-transform duration-200 ${
-                        expandedRooms[room.id] ? 'rotate-90 text-sky-400' : ''
+                        isExpanded ? 'rotate-90 text-sky-400' : ''
                       }`}
                     />
                   </button>
@@ -488,7 +473,7 @@ function HostManagementView({
                 </button>
               </div>
 
-              {expandedRooms[room.id] && (
+              {isExpanded && (
                 <div className="px-3 pb-2.5 pt-1 border-t border-gray-700/40 bg-gray-900/40">
                   {roomParticipants.length === 0 && pendingParticipants.length === 0 ? (
                     <p className="text-[11px] text-gray-500 py-1 pl-6">参加者はいません</p>
