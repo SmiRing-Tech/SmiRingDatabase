@@ -7,6 +7,8 @@ import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import { GtcrnStreamProcessor, GTCRN_SAMPLE_RATE, type OrtTensorLike } from './GtcrnStreamProcessor';
 import { keepAudioContextResumed } from '../keepAudioContextResumed';
+import type { GtcrnPlaybackOptions, GtcrnPlaybackStats } from './gtcrnPlayback.worklet';
+import playbackWorkletUrl from './gtcrnPlayback.worklet.ts?worker&url';
 
 /**
  * Wraps GtcrnStreamProcessor into a MediaStreamTrack-in, MediaStreamTrack-out node, the same
@@ -17,19 +19,30 @@ import { keepAudioContextResumed } from '../keepAudioContextResumed';
  * this avoids reintroducing that class of bug — see the comment above useVadAutoGate).
  *
  * onnxruntime-web can't run inside an AudioWorkletGlobalScope (see NoiseCancelLabPage's doc
- * comment for the upstream issue), so — like the lab page — capture and playback both use plain
- * ScriptProcessorNode callbacks on the main thread, where awaiting the async ONNX call is
- * straightforward.
+ * comment for the upstream issue), so capture still uses a plain ScriptProcessorNode callback on
+ * the main thread, where awaiting the async ONNX call is straightforward. Playback does NOT:
+ * it's an AudioWorkletNode, because having it on the main thread is what made operating the UI
+ * audible to the rest of the call. See gtcrnPlayback.worklet.ts for the full story.
  */
 
 // 1024 samples @ 16kHz = 64ms. The lab page used 4096 (256ms) for generous headroom while
 // tuning; GTCRN's measured RTF (~0.03-0.04, i.e. 25-30x faster than real-time — see
 // noise-cancel-research) leaves enormous margin even at this much smaller, lower-latency size.
 const BUFFER_SIZE = 1024;
-/** Dominant source of this stage's added latency: audio only becomes visible to the capture
- * callback once a full buffer has arrived. Exported so callers (the video delay pipeline, to
- * keep lips in sync) can account for it instead of guessing. */
-export const GTCRN_PIPELINE_LATENCY_MS = (BUFFER_SIZE / GTCRN_SAMPLE_RATE) * 1000;
+
+/** How long a main-thread stall the playback worklet can hide before listeners hear anything.
+ * Paid for one-for-one in mouth-to-ear latency (and, via GTCRN_PIPELINE_LATENCY_MS below, in
+ * how far video is delayed to keep lips in sync), so it's a straight continuity-vs-latency
+ * dial: raise it if stutter survives, lower it if the delay becomes the bigger complaint. */
+const PRIME_MS = 128;
+/** Ceiling on queued audio, so a producer that ever runs ahead doesn't leave the extra delay in
+ * place for the rest of the call. Generous — it should only ever bite after a long stall. */
+const MAX_QUEUE_MS = 400;
+
+/** This stage's added latency: a full capture buffer has to arrive before the main thread sees
+ * it at all, then the worklet holds PRIME_MS more as its anti-stall cushion. Exported so callers
+ * (the video delay pipeline, to keep lips in sync) can account for it instead of guessing. */
+export const GTCRN_PIPELINE_LATENCY_MS = (BUFFER_SIZE / GTCRN_SAMPLE_RATE) * 1000 + PRIME_MS;
 
 let sessionPromise: Promise<ort.InferenceSession> | null = null;
 function getSession(): Promise<ort.InferenceSession> {
@@ -87,9 +100,8 @@ export class GtcrnNoiseCancelTrack {
   private readonly sourceClone: MediaStreamTrack;
   private readonly destination: MediaStreamAudioDestinationNode;
   private readonly capture: ScriptProcessorNode;
-  private readonly playback: ScriptProcessorNode;
+  private readonly playback: AudioWorkletNode;
   private readonly silentGain: GainNode;
-  private outputQueue: Float32Array[] = [];
   private stopped = false;
   private readonly detachResumeRetry: () => void;
 
@@ -99,13 +111,41 @@ export class GtcrnNoiseCancelTrack {
   private inferenceCount = 0;
   private inferenceTimeTotalMs = 0;
   private inferenceTimeMaxMs = 0;
-  private underrunCount = 0;
   private lastInputRms = 0;
   private lastOutputRms = 0;
+  // Gap between consecutive capture callbacks. Capture is the one stage still on the main
+  // thread, so this is the direct readout of how starved the main thread gets: at
+  // BUFFER_SIZE=1024 it should sit at ~64ms, and whatever it peaks to during a tab/app switch
+  // is the stall the playback worklet's PRIME_MS cushion has to cover.
+  private captureIntervalMaxMs = 0;
+  private lastCaptureAt = 0;
+  // Reported by the worklet (it owns the queue now), mirrored here for the stats line.
+  private playbackStats: GtcrnPlaybackStats | null = null;
   private statsInterval: ReturnType<typeof setInterval>;
 
   static async create(source: MediaStreamTrack): Promise<GtcrnNoiseCancelTrack> {
     const session = await getSession();
+    // Model is fixed at 16kHz; creating the context at that rate lets the browser's own
+    // resampler handle 48kHz-hardware -> 16kHz transparently (same trick as the VAD mic tap).
+    const ctx = new AudioContext({ sampleRate: GTCRN_SAMPLE_RATE });
+    // A freshly constructed AudioContext can start 'suspended' under the browsers' autoplay
+    // policy — this runs well removed from whatever click actually joined the call (there's a
+    // model load awaited above, and an addModule() below), so it doesn't reliably inherit that
+    // gesture, and on stricter browsers (Safari, in-app webviews) a single resume() attempt
+    // here can silently fail with no error. Suspended means the graph never processes a single
+    // sample: the output track is live but permanently silent, which looks exactly like a stuck
+    // mute. keepAudioContextResumed retries on every subsequent page interaction until it
+    // actually succeeds, instead of gambling on this one. Attached before the await below so
+    // the retry is already armed while the module loads. See the matching comment in
+    // CallRoomPage's buildGateGraph.
+    const detachResumeRetry = keepAudioContextResumed(ctx);
+    try {
+      await ctx.audioWorklet.addModule(playbackWorkletUrl);
+    } catch (e) {
+      detachResumeRetry();
+      void ctx.close();
+      throw e;
+    }
     const sessionLike = {
       run: async (feeds: Record<string, OrtTensorLike>) => {
         const ortFeeds: Record<string, ort.Tensor> = {};
@@ -119,24 +159,17 @@ export class GtcrnNoiseCancelTrack {
       },
     };
     const processor = new GtcrnStreamProcessor(sessionLike, makeTensor);
-    const instance = new GtcrnNoiseCancelTrack(source, processor);
-    return instance;
+    return new GtcrnNoiseCancelTrack(ctx, detachResumeRetry, source, processor);
   }
 
-  private constructor(source: MediaStreamTrack, processor: GtcrnStreamProcessor) {
-    // Model is fixed at 16kHz; creating the context at that rate lets the browser's own
-    // resampler handle 48kHz-hardware -> 16kHz transparently (same trick as the VAD mic tap).
-    this.ctx = new AudioContext({ sampleRate: GTCRN_SAMPLE_RATE });
-    // A freshly constructed AudioContext can start 'suspended' under the browsers' autoplay
-    // policy — this constructor runs well removed from whatever click actually joined the call
-    // (there's a model load awaited above), so it doesn't reliably inherit that gesture, and on
-    // stricter browsers (Safari, in-app webviews) a single resume() attempt here can silently
-    // fail with no error. Suspended means the capture/playback graph never processes a single
-    // sample: the output track is live but permanently silent, which looks exactly like a stuck
-    // mute. keepAudioContextResumed retries on every subsequent page interaction until it
-    // actually succeeds, instead of gambling on this one. See the matching comment in
-    // CallRoomPage's buildGateGraph.
-    this.detachResumeRetry = keepAudioContextResumed(this.ctx);
+  private constructor(
+    ctx: AudioContext,
+    detachResumeRetry: () => void,
+    source: MediaStreamTrack,
+    processor: GtcrnStreamProcessor,
+  ) {
+    this.ctx = ctx;
+    this.detachResumeRetry = detachResumeRetry;
     this.sourceClone = source.clone();
     // clone() snapshots .enabled from the source at clone time and never updates it again — if
     // the raw mic happens to be mid-mute (.enabled false) at this exact moment (e.g. a brief
@@ -152,21 +185,31 @@ export class GtcrnNoiseCancelTrack {
     this.capture = this.ctx.createScriptProcessor(BUFFER_SIZE, 1, 1);
     let processing = false;
     this.capture.onaudioprocess = (event) => {
-      if (this.stopped || processing) return;
+      if (this.stopped) return;
+      // Measured before the `processing` bail-out below, so this stays a reading of how late
+      // the main thread delivered the callback and doesn't get inflated by a skipped buffer.
+      const now = performance.now();
+      if (this.lastCaptureAt > 0) {
+        const gap = now - this.lastCaptureAt;
+        if (gap > this.captureIntervalMaxMs) this.captureIntervalMaxMs = gap;
+      }
+      this.lastCaptureAt = now;
+      if (processing) return;
       processing = true;
       const input = new Float32Array(event.inputBuffer.getChannelData(0));
       this.lastInputRms = rms(input);
-      const t0 = performance.now();
       void processor
         .push(input)
         .then((enhanced) => {
-          const elapsed = performance.now() - t0;
+          const elapsed = performance.now() - now;
           this.inferenceCount++;
           this.inferenceTimeTotalMs += elapsed;
           if (elapsed > this.inferenceTimeMaxMs) this.inferenceTimeMaxMs = elapsed;
           if (enhanced.length > 0 && !this.stopped) {
             this.lastOutputRms = rms(enhanced);
-            this.outputQueue.push(enhanced);
+            // Transferred, not copied: push() hands back a freshly allocated buffer it doesn't
+            // retain, so the worklet can take ownership outright.
+            this.playback.port.postMessage({ type: 'samples', samples: enhanced }, [enhanced.buffer]);
           }
         })
         .catch((e) => console.error('[Connect] GTCRN inference failed:', e))
@@ -183,22 +226,15 @@ export class GtcrnNoiseCancelTrack {
     this.capture.connect(this.silentGain);
     this.silentGain.connect(this.ctx.destination);
 
-    this.playback = this.ctx.createScriptProcessor(BUFFER_SIZE, 0, 1);
-    this.playback.onaudioprocess = (event) => {
-      const out = event.outputBuffer.getChannelData(0);
-      let filled = 0;
-      while (filled < out.length && this.outputQueue.length > 0) {
-        const chunk = this.outputQueue[0];
-        const take = Math.min(chunk.length, out.length - filled);
-        out.set(chunk.subarray(0, take), filled);
-        filled += take;
-        if (take === chunk.length) this.outputQueue.shift();
-        else this.outputQueue[0] = chunk.subarray(take);
-      }
-      if (filled < out.length) {
-        out.fill(0, filled); // underrun — pad with silence, not garbage
-        this.underrunCount++;
-      }
+    const playbackOptions: GtcrnPlaybackOptions = { primeMs: PRIME_MS, maxMs: MAX_QUEUE_MS };
+    this.playback = new AudioWorkletNode(this.ctx, 'gtcrn-playback', {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      processorOptions: playbackOptions,
+    });
+    this.playback.port.onmessage = (event: MessageEvent<GtcrnPlaybackStats>) => {
+      this.playbackStats = event.data;
     };
     this.destination = this.ctx.createMediaStreamDestination();
     this.playback.connect(this.destination);
@@ -209,12 +245,16 @@ export class GtcrnNoiseCancelTrack {
         inferenceCount: this.inferenceCount,
         meanMs: meanMs.toFixed(2),
         maxMs: this.inferenceTimeMaxMs.toFixed(2),
-        underrunCount: this.underrunCount,
-        queuedMs: ((this.outputQueue.reduce((n, c) => n + c.length, 0) / GTCRN_SAMPLE_RATE) * 1000).toFixed(0),
+        captureIntervalMaxMs: this.captureIntervalMaxMs.toFixed(0),
+        underrunCount: this.playbackStats?.underrunCount ?? 0,
+        droppedSamples: this.playbackStats?.droppedSamples ?? 0,
+        queuedMs: (this.playbackStats?.queuedMs ?? 0).toFixed(0),
+        priming: this.playbackStats?.priming ?? true,
         inputRms: this.lastInputRms.toFixed(4),
         outputRms: this.lastOutputRms.toFixed(4),
         ctxState: this.ctx.state,
       });
+      this.captureIntervalMaxMs = 0;
     }, 3000);
   }
 
@@ -228,6 +268,7 @@ export class GtcrnNoiseCancelTrack {
     this.detachResumeRetry();
     clearInterval(this.statsInterval);
     this.capture.disconnect();
+    this.playback.port.postMessage({ type: 'stop' });
     this.playback.disconnect();
     this.silentGain.disconnect();
     this.sourceClone.stop();
