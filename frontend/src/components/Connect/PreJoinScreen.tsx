@@ -3,6 +3,7 @@ import { createLocalTracks, Track, type LocalAudioTrack, type LocalVideoTrack } 
 import { Mic, MicOff, Video, VideoOff, Loader2, RotateCcw, Volume2 } from 'lucide-react';
 import PreJoinBackgroundPanel from './PreJoinBackgroundPanel';
 import { usePreJoinBackground } from '../../pages/Connect/usePreJoinBackground';
+import { warmupGtcrnModel } from '../../lib/audio/gtcrn/GtcrnNoiseCancelTrack';
 import { isMobileDevice } from '../../pages/Connect/backgroundLibrary';
 import { useMicLevel, playSpeakerTestTone } from './audioTest';
 
@@ -192,6 +193,28 @@ export default function PreJoinScreen({
   const { state: backgroundState, isReady: isBackgroundReady } = usePreJoinBackground(videoTrack);
   const [backgroundPanelOpen, setBackgroundPanelOpen] = useState(false);
 
+  // Preloads the noise-cancel ONNX model while the user is still looking at this screen — see
+  // warmupGtcrnModel's doc comment for why this is what actually fixes "mic looks on but nobody
+  // can hear me" reports, rather than just being a nice-to-have speedup. Started unconditionally
+  // on mount, not gated on audioTrack existing, so it runs in parallel with the getUserMedia()
+  // permission prompt rather than after it.
+  const [noiseCancelWarm, setNoiseCancelWarm] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    // A slow/failed download must not strand the user unable to join at all.
+    const timeout = setTimeout(() => {
+      if (!cancelled) setNoiseCancelWarm(true);
+    }, 8000);
+    void warmupGtcrnModel().finally(() => {
+      clearTimeout(timeout);
+      if (!cancelled) setNoiseCancelWarm(true);
+    });
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
+  }, []);
+
   useEffect(() => {
     console.log(
       `[PreJoinScreen t=${performance.now().toFixed(0)}ms] isBackgroundReady -> ${isBackgroundReady}`,
@@ -337,7 +360,11 @@ export default function PreJoinScreen({
   // proven itself internally (polarity confidently detected + matte stabilized —
   // see MediapipeBackgroundProcessor.waitUntilReady()), not just "attached".
   const isVideoReady = !videoTrack || isBackgroundReady;
-  const ready = (!!videoTrack || !!audioTrack) && isVideoReady;
+  // Only relevant when a mic track exists at all; noise-cancel itself only actually spins up
+  // once the user is in the room (see useVadAutoGate) — this just makes sure its model is
+  // already warm by then.
+  const isAudioReady = !audioTrack || noiseCancelWarm;
+  const ready = (!!videoTrack || !!audioTrack) && isVideoReady && isAudioReady;
 
   return (
     <div className="rounded-2xl overflow-hidden relative">
@@ -354,7 +381,13 @@ export default function PreJoinScreen({
         {!ready && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-gray-400">
             <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
-            <p className="text-xs font-semibold">カメラを準備しています...</p>
+            <p className="text-xs font-semibold">
+              {!isVideoReady && !isAudioReady
+                ? 'カメラとマイクを準備しています...'
+                : !isVideoReady
+                  ? 'カメラを準備しています...'
+                  : 'マイクを準備しています...'}
+            </p>
           </div>
         )}
 

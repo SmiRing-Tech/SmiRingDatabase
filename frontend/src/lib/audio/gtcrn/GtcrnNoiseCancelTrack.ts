@@ -6,6 +6,7 @@ import * as ort from 'onnxruntime-web/wasm';
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import { GtcrnStreamProcessor, GTCRN_SAMPLE_RATE, type OrtTensorLike } from './GtcrnStreamProcessor';
+import { keepAudioContextResumed } from '../keepAudioContextResumed';
 
 /**
  * Wraps GtcrnStreamProcessor into a MediaStreamTrack-in, MediaStreamTrack-out node, the same
@@ -54,6 +55,23 @@ function getSession(): Promise<ort.InferenceSession> {
   return sessionPromise;
 }
 
+/**
+ * Fire-and-forget preload of the ONNX session, exported so PreJoinScreen can start this — the
+ * slow part of `GtcrnNoiseCancelTrack.create()`, a multi-second download + WASM compile on first
+ * use — while the user is still looking at the pre-join preview, in parallel with the
+ * getUserMedia() permission prompt. `getSession()` caches at module scope, so by the time
+ * `create()` actually runs after the user joins, it resolves near-instantly instead of running
+ * that same load deep inside the room-join sequence — which is what left this class's own
+ * `AudioContext.resume()` landing too late for stricter browsers' autoplay policy to honor (see
+ * the constructor's comment). Settles either way; a failed warmup just leaves `create()` to
+ * retry from scratch as it always has.
+ */
+export function warmupGtcrnModel(): Promise<void> {
+  return getSession()
+    .then(() => undefined)
+    .catch(() => undefined);
+}
+
 function makeTensor(data: Float32Array, dims: readonly number[]): OrtTensorLike {
   return new ort.Tensor('float32', data, dims as number[]);
 }
@@ -73,6 +91,7 @@ export class GtcrnNoiseCancelTrack {
   private readonly silentGain: GainNode;
   private outputQueue: Float32Array[] = [];
   private stopped = false;
+  private readonly detachResumeRetry: () => void;
 
   // Diagnostics only — cheap to keep always-on given how much this pipeline has needed
   // debugging blind. Logged periodically rather than per-hop (62x/sec at BUFFER_SIZE=1024)
@@ -101,15 +120,6 @@ export class GtcrnNoiseCancelTrack {
     };
     const processor = new GtcrnStreamProcessor(sessionLike, makeTensor);
     const instance = new GtcrnNoiseCancelTrack(source, processor);
-    // A freshly constructed AudioContext can start 'suspended' under the browsers' autoplay
-    // policy, and nothing else in this pipeline ever resumes it — this whole factory runs well
-    // removed from whatever click actually joined the call (there's a model load awaited above),
-    // so it doesn't reliably inherit that gesture. Suspended means the capture/playback graph
-    // never processes a single sample: the output track is live but permanently silent, which
-    // looks exactly like a stuck mute. See the matching comment in CallRoomPage's buildGateGraph.
-    if (instance.ctx.state === 'suspended') {
-      await instance.ctx.resume().catch((e) => console.error('[Connect] failed to resume GTCRN AudioContext:', e));
-    }
     return instance;
   }
 
@@ -117,6 +127,16 @@ export class GtcrnNoiseCancelTrack {
     // Model is fixed at 16kHz; creating the context at that rate lets the browser's own
     // resampler handle 48kHz-hardware -> 16kHz transparently (same trick as the VAD mic tap).
     this.ctx = new AudioContext({ sampleRate: GTCRN_SAMPLE_RATE });
+    // A freshly constructed AudioContext can start 'suspended' under the browsers' autoplay
+    // policy — this constructor runs well removed from whatever click actually joined the call
+    // (there's a model load awaited above), so it doesn't reliably inherit that gesture, and on
+    // stricter browsers (Safari, in-app webviews) a single resume() attempt here can silently
+    // fail with no error. Suspended means the capture/playback graph never processes a single
+    // sample: the output track is live but permanently silent, which looks exactly like a stuck
+    // mute. keepAudioContextResumed retries on every subsequent page interaction until it
+    // actually succeeds, instead of gambling on this one. See the matching comment in
+    // CallRoomPage's buildGateGraph.
+    this.detachResumeRetry = keepAudioContextResumed(this.ctx);
     this.sourceClone = source.clone();
     // clone() snapshots .enabled from the source at clone time and never updates it again — if
     // the raw mic happens to be mid-mute (.enabled false) at this exact moment (e.g. a brief
@@ -205,6 +225,7 @@ export class GtcrnNoiseCancelTrack {
   stop() {
     if (this.stopped) return;
     this.stopped = true;
+    this.detachResumeRetry();
     clearInterval(this.statsInterval);
     this.capture.disconnect();
     this.playback.disconnect();

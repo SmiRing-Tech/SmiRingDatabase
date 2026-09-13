@@ -35,6 +35,7 @@ import {
 } from 'livekit-client';
 import { MicVAD } from '@ricky0123/vad-web';
 import { GtcrnNoiseCancelTrack, GTCRN_PIPELINE_LATENCY_MS } from '../../lib/audio/gtcrn/GtcrnNoiseCancelTrack';
+import { keepAudioContextResumed } from '../../lib/audio/keepAudioContextResumed';
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import '@livekit/components-styles';
@@ -345,6 +346,7 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
     let detachTrackListeners: (() => void) | null = null;
     let noiseCancelTrack: GtcrnNoiseCancelTrack | null = null;
     let selfHealInterval: ReturnType<typeof setInterval> | null = null;
+    let detachGateResumeRetry: (() => void) | null = null;
 
     // Gates by ramping a GainNode the mic is routed through (downstream of the delay line
     // below), not by toggling MediaStreamTrack.enabled — this file went through a whole saga
@@ -473,13 +475,14 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
       // removed from the click that joined the call), it sometimes never gets the implicit
       // resume a same-tick user gesture would have given it. Suspended means every node
       // downstream, including the GainNode feeding the sender, produces silence — the mic
-      // *looks* published and unmuted but nothing is actually flowing. Toggling the auto-gate/
-      // noise-cancel switch (a fresh click, i.e. a fresh gesture) rebuilds this from scratch and
-      // "fixes" it, which is what made this so confusing to reproduce. Resuming explicitly here
-      // removes the guesswork.
-      if (gateCtx.state === 'suspended') {
-        await gateCtx.resume().catch((e) => console.error('[Connect] failed to resume gate AudioContext:', e));
-      }
+      // *looks* published and unmuted but nothing is actually flowing. A single resume() call
+      // here can silently fail on stricter browsers (Safari, in-app webviews) if the gesture
+      // that started the join is already stale by the time this runs, with no error to show for
+      // it. keepAudioContextResumed retries on every subsequent page interaction until it
+      // actually succeeds — toggling the auto-gate/noise-cancel switch or rejoining "fixed" this
+      // before only because that's a fresh gesture landing close enough to a resume() attempt to
+      // work; this makes *any* later tap/click do the same instead of needing that specific one.
+      detachGateResumeRetry = keepAudioContextResumed(gateCtx);
       // The delay only exists to preserve onset audio for the VAD gate (see GATE_DELAY_MS's
       // comment) — with VAD off there's nothing to preserve it for, so skip straight to a
       // (still gate-controlled, just permanently-open) pass-through instead of adding latency
@@ -741,6 +744,7 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
         }
         currentSourceTrack?.stop();
         gatedOutputTrack?.stop();
+        detachGateResumeRetry?.();
         void gateCtx?.close().catch(() => {});
       })();
     };
