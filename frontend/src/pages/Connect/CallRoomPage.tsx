@@ -830,6 +830,13 @@ function useVideoDelay(delayMs: number) {
     // to re-point the way the audio graph re-points its source node.
     const syncToUpstream = (track: LocalVideoTrack) => {
       const upstream = resolveUpstreamTrack(track);
+      // Camera-off publishes still go through this path: the track is published live, then
+      // immediately muted, which stops its MediaStreamTrack to turn off the camera indicator
+      // (see LocalVideoTrack.mute()). MediaStreamTrackProcessor refuses to construct on an
+      // already-ended track, so building a pipeline here would throw synchronously and crash
+      // the app. Nothing to delay while the camera is off anyway — TrackEvent.Unmuted /
+      // TrackEvent.Restarted re-fire this once a live track exists.
+      if (upstream.readyState === 'ended') return;
       if (currentUpstreamId === upstream.id) {
         reassertSenderTrack(track);
         return;
