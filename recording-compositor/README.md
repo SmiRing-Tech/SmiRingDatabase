@@ -130,7 +130,9 @@ Hetzner の箱が大人数の通話で詰まるようなら下げる。上限の
 ```sql
 INSERT INTO permissions (name, resource, action, description) VALUES
   ('録画の閲覧', 'connect_recording', 'read', 'SmiRing Connectの録画を閲覧・ダウンロードできる'),
-  ('録画の開始・停止', 'connect_recording', 'write', 'SmiRing Connectの通話で録画を開始・停止できる');
+  ('録画の開始・保存・破棄', 'connect_recording', 'write', 'SmiRing Connectの通話で録画を開始でき、停止後の保存確定・破棄ができる');
+-- 録画の「停止」はこの権限を問わない。ホストなら誰でも進行中の録画を止められる
+-- （止めた人にしか見えない保存/破棄の確認画面が出るだけで、保存確定にはこのwrite権限が要る）。
 
 -- smiring_member ロールに write を付与(write は read を包含する)
 INSERT INTO permission_mappings (grantee_type, grantee_id, permission_id)

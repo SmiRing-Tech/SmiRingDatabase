@@ -3,12 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Film, Loader2, Play, Trash2, Video } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import { usePermission } from '../../hooks/usePermission';
+import RecordingReviewModal from '../../components/Connect/RecordingReviewModal';
 
 interface Recording {
   id: string;
   roomId: string;
   roomTitle: string | null;
-  status: 'recording' | 'processing' | 'completed' | 'failed';
+  title: string | null;
+  status: 'recording' | 'pending_review' | 'processing' | 'completed' | 'failed';
   durationSeconds: number | null;
   createdAt: string;
   thumbnailUrl: string | null;
@@ -24,6 +26,7 @@ function formatDuration(seconds: number | null): string {
 
 const STATUS_LABEL: Record<Recording['status'], string> = {
   recording: '録画中',
+  pending_review: '確認待ち',
   processing: '準備中',
   completed: '',
   failed: '失敗',
@@ -39,6 +42,9 @@ export default function RecordingsListPage() {
   const [recordings, setRecordings] = useState<Recording[] | null>(null);
   const [error, setError] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  // A pending_review tile only ever appears here for the person who can act on it (the
+  // backend hides it from everyone else), so clicking it can open the review dialog directly.
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
 
   const load = useCallback(
     () =>
@@ -128,12 +134,17 @@ export default function RecordingsListPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {recordings.map((recording) => {
               const isPlayable = recording.status === 'completed';
+              const isReviewable = recording.status === 'pending_review';
+              const isClickable = isPlayable || isReviewable;
               return (
                 <div
                   key={recording.id}
-                  onClick={() => isPlayable && navigate(`/connect/recordings/${recording.id}`)}
+                  onClick={() => {
+                    if (isPlayable) navigate(`/connect/recordings/${recording.id}`);
+                    else if (isReviewable) setReviewingId(recording.id);
+                  }}
                   className={`text-left bg-white border border-slate-100 rounded-3xl overflow-hidden shadow-sm hover:shadow-md hover:border-sky-200 transition-all duration-200 group ${
-                    isPlayable ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'
+                    isClickable ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'
                   }`}
                 >
                   <div className="relative aspect-video bg-gray-100 flex items-center justify-center overflow-hidden">
@@ -176,9 +187,11 @@ export default function RecordingsListPage() {
                   <div className="p-4 space-y-1">
                     <div className="flex items-start justify-between gap-2">
                       <h3 className="font-black text-gray-900 text-sm line-clamp-1 flex-1">
-                        {recording.roomTitle || recording.roomId}
+                        {recording.title || recording.roomTitle || recording.roomId}
                       </h3>
-                      {canDelete && (
+                      {/* pending_review has no r2/thumbnail yet — resolved via the review
+                          dialog's discard, not this generic delete. */}
+                      {canDelete && !isReviewable && (
                         <button
                           type="button"
                           onClick={(e) => handleDelete(e, recording.id)}
@@ -210,6 +223,15 @@ export default function RecordingsListPage() {
           </div>
         )}
       </div>
+
+      <RecordingReviewModal
+        recordingId={reviewingId}
+        defaultTitle={recordings?.find((r) => r.id === reviewingId)?.roomTitle ?? ''}
+        onDone={() => {
+          setReviewingId(null);
+          load();
+        }}
+      />
     </div>
   );
 }

@@ -8,6 +8,7 @@ interface Recording {
   id: string;
   roomId: string;
   roomTitle: string | null;
+  title: string | null;
   status: string;
   durationSeconds: number | null;
   createdAt: string;
@@ -112,7 +113,7 @@ export default function RecordingPlayerPage() {
             </div>
             <div className="pt-2">
               <h1 className="text-xl md:text-2xl font-black text-gray-900 tracking-tight">
-                {recording.roomTitle || recording.roomId}
+                {recording.title || recording.roomTitle || recording.roomId}
               </h1>
               <p className="text-sm text-gray-500 font-semibold mt-1">
                 {new Date(recording.createdAt).toLocaleString('ja-JP')}
@@ -127,7 +128,9 @@ export default function RecordingPlayerPage() {
               ? 'この録画は合成に失敗したため再生できません。'
               : recording.status === 'recording'
                 ? 'この録画はまだ録画中です。'
-                : `準備中です${recording.progress != null ? `（${recording.progress}%）` : ''}。完了するまでお待ちください。`}
+                : recording.status === 'pending_review'
+                  ? 'この録画はまだ保存が確定していません。録画一覧から保存または破棄してください。'
+                  : `準備中です${recording.progress != null ? `（${recording.progress}%）` : ''}。完了するまでお待ちください。`}
           </div>
         )}
       </div>

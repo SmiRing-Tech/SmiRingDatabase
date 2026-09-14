@@ -30,6 +30,11 @@ export function useRecording(roomId: string) {
   // room metadata. Distinct from `busy` (in-flight request): a click during THIS window
   // would double-fire start/stop while the first call is still settling.
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | null>(null);
+  // Set right after a successful stop, from the response body's recordingId — not derived
+  // from room metadata, which no longer carries anything once the pointer is cleared. This
+  // is local state on whoever's client called stop(), never broadcast to the room, which is
+  // what keeps the save/discard review dialog private to the person who stopped it.
+  const [pendingReviewRecordingId, setPendingReviewRecordingId] = useState<string | null>(null);
 
   const session = useMemo<RecordingSession | null>(() => {
     if (!metadata) return null;
@@ -42,6 +47,26 @@ export function useRecording(roomId: string) {
   }, [metadata]);
 
   const isRecording = session !== null;
+
+  // Picks up a recording left pending_review from before this mount — a reload, or
+  // rejoining after leaving without deciding. Only ever returns one this user can act on
+  // (see the route's ownership filter), so nothing here needs to check who it belongs to.
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .get(`/api/connect/rooms/${roomId}/recording`)
+      .then(async (res) => {
+        if (!res.ok || cancelled) return;
+        const body = await res.json().catch(() => ({}));
+        if (!cancelled && body.pendingReviewRecordingId) {
+          setPendingReviewRecordingId(body.pendingReviewRecordingId);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId]);
 
   // A ref, not state: this must never itself trigger a render, only compare against the
   // next one. Starts at `undefined` so joining a call that's already recording doesn't
@@ -68,8 +93,10 @@ export function useRecording(roomId: string) {
     return () => clearTimeout(timer);
   }, [pendingAction]);
 
+  // Returns the new recordingId on a successful stop (null otherwise) so the caller can
+  // decide whether to pop the review dialog open immediately.
   const call = useCallback(
-    async (action: 'start' | 'stop') => {
+    async (action: 'start' | 'stop'): Promise<string | null> => {
       setBusy(true);
       setError(null);
       try {
@@ -78,9 +105,17 @@ export function useRecording(roomId: string) {
           const body = await response.json().catch(() => ({}));
           throw new Error(body.error ?? '録画の操作に失敗しました');
         }
+        let recordingId: string | null = null;
+        if (action === 'stop') {
+          const body = await response.json().catch(() => ({}));
+          recordingId = body.recordingId ?? null;
+          if (recordingId) setPendingReviewRecordingId(recordingId);
+        }
         setPendingAction(action);
+        return recordingId;
       } catch (e: any) {
         setError(e.message ?? '録画の操作に失敗しました');
+        return null;
       } finally {
         setBusy(false);
       }
@@ -97,5 +132,7 @@ export function useRecording(roomId: string) {
     error,
     start: useCallback(() => call('start'), [call]),
     stop: useCallback(() => call('stop'), [call]),
+    pendingReviewRecordingId,
+    clearPendingReview: useCallback(() => setPendingReviewRecordingId(null), []),
   };
 }

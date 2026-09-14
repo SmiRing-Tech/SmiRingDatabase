@@ -9,7 +9,6 @@ import {
 } from 'livekit-server-sdk';
 import { supabase } from './supabase';
 import { r2, BUCKET_NAME } from './r2';
-import { triggerCompositor } from './compositorTrigger';
 
 const LIVEKIT_URL = process.env.LIVEKIT_URL;
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
@@ -58,6 +57,28 @@ export function isRecordingConfigured(): boolean {
   return !!egressClient;
 }
 
+/** Recording id embedded in a temp file's key — see `buildTempRecordingKey`. */
+function recordingIdFromTempKey(key: string): string | null {
+  const rest = key.slice(TEMP_RECORDING_PREFIX.length);
+  return rest.split('/')[1] ?? null;
+}
+
+/**
+ * Which of these temp files' recordings must not be swept: still actively recording, or
+ * sitting in `pending_review` waiting on someone to confirm or discard it. Everything else
+ * (completed, failed, or no row at all — a crashed job's leftovers) is fair game.
+ */
+async function protectedRecordingIds(keys: string[]): Promise<Set<string>> {
+  const ids = Array.from(new Set(keys.map(recordingIdFromTempKey).filter((id): id is string => !!id)));
+  if (ids.length === 0) return new Set();
+  const { data, error } = await supabase.from('connect_recordings').select('id, status').in('id', ids);
+  if (error) {
+    console.error('[Recording] Failed to check recording status before stale cleanup:', error);
+    return new Set(ids); // Can't tell what's safe — protect everything rather than risk it.
+  }
+  return new Set((data ?? []).filter((r) => r.status === 'recording' || r.status === 'pending_review').map((r) => r.id));
+}
+
 /**
  * Deletes temp per-track files older than 24h. The compositor deletes its own inputs on
  * success, so anything still here this long after is a crashed or stuck Job execution —
@@ -65,6 +86,11 @@ export function isRecordingConfigured(): boolean {
  * (see maintenanceRoutes.ts's runHourlyTasks) rather than an R2 lifecycle rule, since the
  * app already has a scheduled task runner and this keeps recording cleanup alongside
  * everything else it manages.
+ *
+ * `pending_review` recordings are deliberately exempt from the 24h cutoff: unlike a crashed
+ * job, someone deciding whether to keep a call is expected to take longer than a day
+ * sometimes, and its files should only go away when they explicitly discard it
+ * (`deleteTempRecordingFiles`) — not from this sweep running in the background.
  */
 export async function cleanupStaleTempRecordings(): Promise<number> {
   const cutoff = Date.now() - STALE_TEMP_RECORDING_MS;
@@ -83,13 +109,20 @@ export async function cleanupStaleTempRecordings(): Promise<number> {
       (o) => o.Key && o.LastModified && o.LastModified.getTime() < cutoff,
     );
     if (stale.length > 0) {
-      await r2.send(
-        new DeleteObjectsCommand({
-          Bucket: BUCKET_NAME,
-          Delete: { Objects: stale.map((o) => ({ Key: o.Key! })) },
-        }),
-      );
-      deletedCount += stale.length;
+      const protectedIds = await protectedRecordingIds(stale.map((o) => o.Key!));
+      const deletable = stale.filter((o) => {
+        const id = recordingIdFromTempKey(o.Key!);
+        return !id || !protectedIds.has(id);
+      });
+      if (deletable.length > 0) {
+        await r2.send(
+          new DeleteObjectsCommand({
+            Bucket: BUCKET_NAME,
+            Delete: { Objects: deletable.map((o) => ({ Key: o.Key! })) },
+          }),
+        );
+        deletedCount += deletable.length;
+      }
     }
     continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
   } while (continuationToken);
@@ -98,6 +131,32 @@ export async function cleanupStaleTempRecordings(): Promise<number> {
     console.log(`[Recording] Cleaned up ${deletedCount} stale temp recording file(s)`);
   }
   return deletedCount;
+}
+
+/**
+ * Deletes every temp per-track file for one recording — the discard path's cleanup. Run
+ * immediately rather than waiting on `cleanupStaleTempRecordings`'s sweep, since a discarded
+ * recording's files should disappear the moment the user asks for that, not a day later.
+ */
+export async function deleteTempRecordingFiles(roomId: string, recordingId: string): Promise<void> {
+  const prefix = `${TEMP_RECORDING_PREFIX}${sanitizeKeyPart(roomId)}/${sanitizeKeyPart(recordingId)}/`;
+  let continuationToken: string | undefined;
+
+  do {
+    const response = await r2.send(
+      new ListObjectsV2Command({ Bucket: BUCKET_NAME, Prefix: prefix, ContinuationToken: continuationToken }),
+    );
+    const objects = (response.Contents ?? []).filter((o) => o.Key);
+    if (objects.length > 0) {
+      await r2.send(
+        new DeleteObjectsCommand({
+          Bucket: BUCKET_NAME,
+          Delete: { Objects: objects.map((o) => ({ Key: o.Key! })) },
+        }),
+      );
+    }
+    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (continuationToken);
 }
 
 /** Metadata pointer written on the LiveKit room while a recording is running. */
@@ -690,14 +749,19 @@ export async function getActiveRecordingId(roomId: string): Promise<string | nul
 }
 
 /**
- * Ends a recording: stop the egresses, drop the room pointer, hand the room to the
- * compositor. Shared by the explicit stop route and the webhook's end-of-call safety net,
- * so a host who never presses stop still gets their video.
+ * Ends a recording: stop the egresses, drop the room pointer, and leave it in
+ * `pending_review` — temp files kept, compositor not yet started. Shared by the explicit
+ * stop route (`stoppedBy` is whoever pressed it) and the webhook's end-of-call safety net
+ * (`stoppedBy` is null — nobody pressed stop, the call just ended), so a host who never
+ * presses stop still gets a recording they can come back to. Someone still has to confirm
+ * it from the recordings list before it's actually composited (`POST .../confirm` in
+ * connectRoutes.ts), or discard it (`POST .../discard`).
  */
 export async function finishRecording(
   roomService: RoomServiceClient,
   roomId: string,
   recordingId: string,
+  stoppedBy: string | null,
 ): Promise<void> {
   await stopActiveEgresses(roomId);
   await closeOpenIntervals(recordingId);
@@ -707,19 +771,12 @@ export async function finishRecording(
     console.warn(`[Recording] Failed to clear recording metadata on ${roomId}:`, e?.message),
   );
 
-  // Guarded on the current status so a stop racing the end-of-call webhook can't hand the
-  // same recording to the compositor twice.
-  const { data, error } = await supabase
+  // Guarded on the current status so a stop racing the end-of-call webhook can't stomp on
+  // whichever of them got here first.
+  const { error } = await supabase
     .from('connect_recordings')
-    .update({ status: 'processing' })
+    .update({ status: 'pending_review', stopped_by: stoppedBy })
     .eq('id', recordingId)
-    .eq('status', 'recording')
-    .select('id');
-  if (error) {
-    console.error('[Recording] Failed to mark recording as processing:', error);
-    return;
-  }
-  if (!data || data.length === 0) return; // Someone else already finished it.
-
-  await triggerCompositor(roomId, recordingId);
+    .eq('status', 'recording');
+  if (error) console.error('[Recording] Failed to mark recording as pending_review:', error);
 }

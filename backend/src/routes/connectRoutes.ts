@@ -13,6 +13,7 @@ import { ensureJpegBuffer } from '../lib/imageInput';
 import {
   closeParticipantPresence,
   closeParticipantTracks,
+  deleteTempRecordingFiles,
   finishRecording,
   getActiveRecordingId,
   getRecordingSession,
@@ -23,6 +24,7 @@ import {
   startTrackRecording,
   syncCameraRecordings,
 } from '../lib/recording';
+import { triggerCompositor } from '../lib/compositorTrigger';
 
 // smiring_member ロールID（ryugakusai-web / frontend/src/hooks/useIsInternal.ts と共通の定義）
 const SMIRING_MEMBER_ROLE_ID = 'c7f24039-c537-402e-91db-664684f5f8b3';
@@ -994,6 +996,48 @@ async function writeRoomChildRows(
 
   const results = await Promise.all(inserts);
   return results.find((r) => r.error)?.error ?? null;
+}
+
+/**
+ * Which of `directory`'s members would see `room` (a full `connect_rooms` row) on their
+ * Connect home — the same predicate `GET /api/connect/rooms` applies per-user across every
+ * room, just run for one room across every member instead. Used to build the "this
+ * meeting's own audience" viewer-candidate group when picking who can watch a finished
+ * recording (see GET /api/connect/recordings/:id/viewer-candidates).
+ */
+async function resolveRoomAudienceUserIds(
+  room: any,
+  directory: { id: string; role_group: string; departments: string[] }[],
+): Promise<Set<string>> {
+  const [{ data: viewerRows }, { data: hostRows }, { data: roleRows }, { data: deptRows }] = await Promise.all([
+    supabase.from('connect_room_viewers').select('user_id').eq('room_id', room.id),
+    supabase.from('connect_room_hosts').select('user_id').eq('room_id', room.id),
+    supabase.from('connect_room_visibility_roles').select('role_group').eq('room_id', room.id),
+    supabase.from('connect_room_visibility_departments').select('department').eq('room_id', room.id),
+  ]);
+  const viewerUserIds = new Set((viewerRows ?? []).map((r) => r.user_id));
+  const hostUserIds = new Set((hostRows ?? []).map((r) => r.user_id));
+  const allowedRoles = new Set((roleRows ?? []).map((r) => r.role_group));
+  const allowedDepts = new Set((deptRows ?? []).map((r) => r.department));
+  const expired = room.meeting_type === 'external' && room.expires_at && new Date(room.expires_at) <= new Date();
+
+  const audience = new Set<string>();
+  for (const member of directory) {
+    if (expired) continue; // Matches GET /api/connect/rooms: expired hides it from everyone, hosts included.
+    if (member.id === room.created_by || hostUserIds.has(member.id)) {
+      audience.add(member.id);
+      continue;
+    }
+    if (room.access_mode === 'private') {
+      if (viewerUserIds.has(member.id)) audience.add(member.id);
+      continue;
+    }
+    if (viewerUserIds.has(member.id)) continue; // public mode's permanent exclude list
+    if (room.public_all || allowedRoles.has(member.role_group) || member.departments.some((d) => allowedDepts.has(d))) {
+      audience.add(member.id);
+    }
+  }
+  return audience;
 }
 
 const ROOM_ACCESS_MODES = ['public', 'private'] as const;
@@ -2272,6 +2316,7 @@ router.post(
   '/api/connect/rooms/:roomId/recording/start',
   authenticate,
   requireRoomHost,
+  requirePermission('connect_recording', 'write'),
   async (req: Request, res: Response) => {
     const roomId = req.params.roomId;
     if (!isValidRoomName(roomId)) {
@@ -2347,8 +2392,11 @@ router.post(
 );
 
 // POST /api/connect/rooms/:roomId/recording/stop
-// Returns as soon as the egresses are stopped — compositing runs asynchronously, and the
-// row's status is how the frontend follows it from there.
+// Returns as soon as the egresses are stopped. The recording lands in `pending_review` —
+// temp files kept, compositor not started — until whoever stopped it (or started it, on
+// the webhook's end-of-call path) confirms or discards it from the recordings list.
+// Deliberately no `connect_recording.write` gate here, unlike start: any host can stop an
+// unwanted recording even if they don't personally hold record permission.
 router.post(
   '/api/connect/rooms/:roomId/recording/stop',
   authenticate,
@@ -2368,8 +2416,8 @@ router.post(
         return res.status(404).json({ error: 'このルームは録画中ではありません' });
       }
 
-      await finishRecording(roomService, roomId, recordingId);
-      return res.json({ recordingId, status: 'processing' });
+      await finishRecording(roomService, roomId, recordingId, req.user!.id);
+      return res.json({ recordingId, status: 'pending_review' });
     } catch (error: any) {
       console.error('[Connect] POST .../recording/stop failed:', error);
       return res.status(500).json({ error: error.message });
@@ -2413,7 +2461,7 @@ router.post('/api/connect/rooms/:roomId/recording/sync', authenticate, async (re
   }
 });
 
-// GET /api/connect/rooms/:roomId/recording -> { recording, startedAt }
+// GET /api/connect/rooms/:roomId/recording -> { recording, startedAt, pendingReviewRecordingId }
 // Intentionally only `authenticate`: everyone in the call needs to see that they're being
 // recorded, including participants who can't start or stop it themselves.
 router.get('/api/connect/rooms/:roomId/recording', authenticate, async (req: Request, res: Response) => {
@@ -2427,11 +2475,26 @@ router.get('/api/connect/rooms/:roomId/recording', authenticate, async (req: Req
 
   try {
     const session = await getRecordingSession(roomService, roomId);
-    return res.json(
-      session
+
+    // Lets someone who reloads or rejoins the call still find the review dialog for a
+    // recording they stopped (or started, on the end-of-call safety net) earlier — the
+    // in-memory pendingReviewRecordingId from useRecording's stop() call doesn't survive
+    // that. Only the person who can act on it needs to know it exists.
+    const { data: pendingRows } = await supabase
+      .from('connect_recordings')
+      .select('id')
+      .eq('room_id', roomId)
+      .eq('status', 'pending_review')
+      .or(`started_by.eq.${req.user!.id},stopped_by.eq.${req.user!.id}`)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    return res.json({
+      ...(session
         ? { recording: true, recordingId: session.recordingId, startedAt: session.startedAt }
-        : { recording: false },
-    );
+        : { recording: false }),
+      pendingReviewRecordingId: pendingRows?.[0]?.id ?? null,
+    });
   } catch (error: any) {
     console.error('[Connect] GET .../recording failed:', error);
     return res.status(500).json({ error: error.message });
@@ -2443,6 +2506,7 @@ async function serializeRecording(row: {
   id: string;
   room_id: string;
   room_title: string | null;
+  title: string | null;
   status: string;
   progress: number | null;
   r2_key: string | null;
@@ -2450,6 +2514,8 @@ async function serializeRecording(row: {
   duration_seconds: number | null;
   created_at: string;
   completed_at: string | null;
+  started_by: string;
+  stopped_by: string | null;
 }) {
   // Signed per request rather than stored: the URLs expire in an hour, so a cached one
   // would be dead by the time most people came back to it.
@@ -2462,35 +2528,91 @@ async function serializeRecording(row: {
     id: row.id,
     roomId: row.room_id,
     roomTitle: row.room_title,
+    title: row.title,
     status: row.status,
     progress: row.progress,
     durationSeconds: row.duration_seconds,
     createdAt: row.created_at,
     completedAt: row.completed_at,
+    startedBy: row.started_by,
+    stoppedBy: row.stopped_by,
     url,
     thumbnailUrl,
   };
 }
 
 const RECORDING_COLUMNS =
-  'id, room_id, room_title, status, progress, r2_key, thumbnail_key, duration_seconds, created_at, completed_at';
+  'id, room_id, room_title, title, status, progress, r2_key, thumbnail_key, duration_seconds, created_at, completed_at, started_by, stopped_by, viewers_restricted';
+
+/** Every user id currently holding `resource`/`action` (or better — admin, or write when
+ *  asking for read), via any of the 4 grant paths. Reverse of `get_user_permissions`. */
+async function resolvePermissionGranteeIds(resource: string, action: 'read' | 'write'): Promise<Set<string>> {
+  const { data, error } = await supabase.rpc('get_permission_grantee_user_ids', {
+    p_resource: resource,
+    p_action: action,
+  });
+  if (error) {
+    console.error(`[Connect] get_permission_grantee_user_ids(${resource}, ${action}) failed:`, error);
+    return new Set();
+  }
+  return new Set((data ?? []).map((row: { user_id: string }) => row.user_id));
+}
+
+/** Which of `recordingIds` (assumed all `viewers_restricted`) `userId` is an explicit
+ *  viewer of. Owners (started_by/stopped_by) are checked separately by the caller. */
+async function resolveViewableRecordingIds(recordingIds: string[], userId: string): Promise<Set<string>> {
+  if (recordingIds.length === 0) return new Set();
+  const { data, error } = await supabase
+    .from('connect_recording_viewers')
+    .select('recording_id')
+    .eq('user_id', userId)
+    .in('recording_id', recordingIds);
+  if (error) {
+    console.error('[Connect] Failed to load recording viewer rows:', error);
+    return new Set();
+  }
+  return new Set((data ?? []).map((row) => row.recording_id));
+}
+
+/** True if `userId` may see this recording: unrestricted, its owner, or an explicit viewer. */
+function canViewRecording(
+  row: { id: string; started_by: string; stopped_by: string | null; viewers_restricted: boolean },
+  userId: string,
+  viewableRecordingIds: Set<string>,
+): boolean {
+  if (!row.viewers_restricted) return true;
+  if (row.started_by === userId || row.stopped_by === userId) return true;
+  return viewableRecordingIds.has(row.id);
+}
 
 // GET /api/connect/recordings -> every recording across every room, newest first.
 // (Recordings live in one app-wide list now, not one per room — see RecordingsListPage.)
+//
+// `pending_review` recordings are excluded unless the caller started or stopped them: they
+// haven't been saved yet, so nobody else should even know they exist until that's decided.
+// Confirmed recordings with `viewers_restricted` are further narrowed to their explicit
+// viewer list (see the confirm route and get_permission_grantee_user_ids's comment).
 router.get(
   '/api/connect/recordings',
   authenticate,
   requirePermission('connect_recording', 'read'),
-  async (_req: Request, res: Response) => {
+  async (req: Request, res: Response) => {
     try {
+      const userId = req.user!.id;
       const { data, error } = await supabase
         .from('connect_recordings')
         .select(RECORDING_COLUMNS)
+        .or(`status.neq.pending_review,started_by.eq.${userId},stopped_by.eq.${userId}`)
         .order('created_at', { ascending: false })
         .limit(100);
       if (error) throw error;
 
-      const recordings = await Promise.all((data ?? []).map(serializeRecording));
+      const rows = data ?? [];
+      const restrictedIds = rows.filter((r) => r.viewers_restricted).map((r) => r.id);
+      const viewableIds = await resolveViewableRecordingIds(restrictedIds, userId);
+      const visible = rows.filter((r) => canViewRecording(r, userId, viewableIds));
+
+      const recordings = await Promise.all(visible.map(serializeRecording));
       return res.json({ recordings });
     } catch (error: any) {
       console.error('[Connect] GET /recordings failed:', error);
@@ -2513,10 +2635,173 @@ router.get(
         .maybeSingle();
       if (error) throw error;
       if (!data) return res.status(404).json({ error: '録画が見つかりません' });
+      // Same rule as the list: a not-yet-saved recording is invisible to everyone but
+      // whoever started or stopped it.
+      if (data.status === 'pending_review' && data.started_by !== req.user!.id && data.stopped_by !== req.user!.id) {
+        return res.status(404).json({ error: '録画が見つかりません' });
+      }
+      if (data.viewers_restricted) {
+        const viewableIds = await resolveViewableRecordingIds([data.id], req.user!.id);
+        if (!canViewRecording(data, req.user!.id, viewableIds)) {
+          return res.status(404).json({ error: '録画が見つかりません' });
+        }
+      }
 
       return res.json(await serializeRecording(data));
     } catch (error: any) {
       console.error('[Connect] GET /recordings/:id failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// GET /api/connect/recordings/:id/viewer-candidates -> who can be granted access, split into
+// the meeting's own audience (room-visibility rules) and everyone else — both already
+// narrowed to people who hold connect_recording.read, since adding someone without it
+// wouldn't actually let them see anything. Same ownership rule as confirm/discard: only the
+// person who started or stopped the recording is choosing who else gets to watch it.
+router.get(
+  '/api/connect/recordings/:id/viewer-candidates',
+  authenticate,
+  requirePermission('connect_recording', 'write'),
+  async (req: Request, res: Response) => {
+    try {
+      const recordingId = req.params.id as string;
+      const { data: recording, error: fetchError } = await supabase
+        .from('connect_recordings')
+        .select('id, room_id, started_by, stopped_by')
+        .eq('id', recordingId)
+        .maybeSingle();
+      if (fetchError) throw fetchError;
+      if (!recording) return res.status(404).json({ error: '録画が見つかりません' });
+      if (recording.started_by !== req.user!.id && recording.stopped_by !== req.user!.id) {
+        return res.status(403).json({ error: 'この録画の閲覧者を設定できるのは開始者または停止者のみです' });
+      }
+
+      const [{ members: directory }, readableIds] = await Promise.all([
+        getConnectMembersDirectory(),
+        resolvePermissionGranteeIds('connect_recording', 'read'),
+      ]);
+      const readableDirectory = directory.filter((m) => readableIds.has(m.id));
+
+      let roomAudienceIds = new Set<string>();
+      if (recording.room_id) {
+        const { data: room } = await supabase
+          .from('connect_rooms')
+          .select('*')
+          .eq('room_id', recording.room_id)
+          .maybeSingle();
+        if (room) roomAudienceIds = await resolveRoomAudienceUserIds(room, readableDirectory);
+      }
+
+      const toOption = (m: { id: string; name: string }) => ({ id: m.id, name: m.name });
+      return res.json({
+        roomAudience: readableDirectory.filter((m) => roomAudienceIds.has(m.id)).map(toOption),
+        others: readableDirectory.filter((m) => !roomAudienceIds.has(m.id)).map(toOption),
+      });
+    } catch (error: any) {
+      console.error('[Connect] GET /recordings/:id/viewer-candidates failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// POST /api/connect/recordings/:id/confirm -> save a pending_review recording (with an
+// optional title) and start compositing. Only the person who started or stopped it may do
+// this — same ownership rule as visibility, plus connect_recording.write.
+router.post(
+  '/api/connect/recordings/:id/confirm',
+  authenticate,
+  requirePermission('connect_recording', 'write'),
+  async (req: Request, res: Response) => {
+    try {
+      const recordingId = req.params.id as string;
+      const { data: recording, error: fetchError } = await supabase
+        .from('connect_recordings')
+        .select('id, room_id, status, started_by, stopped_by')
+        .eq('id', recordingId)
+        .maybeSingle();
+      if (fetchError) throw fetchError;
+      if (!recording) return res.status(404).json({ error: '録画が見つかりません' });
+      if (recording.status !== 'pending_review') {
+        return res.status(409).json({ error: 'この録画は確認待ちの状態ではありません' });
+      }
+      if (recording.started_by !== req.user!.id && recording.stopped_by !== req.user!.id) {
+        return res.status(403).json({ error: 'この録画を保存できるのは開始者または停止者のみです' });
+      }
+
+      const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 200) : '';
+
+      // Defense in depth: never trust the client's viewer list outright — the picker only
+      // ever offered people holding connect_recording.read, so re-check that here too.
+      const requestedViewerIds: string[] = Array.isArray(req.body?.viewerIds)
+        ? req.body.viewerIds.filter((v: unknown) => typeof v === 'string')
+        : [];
+      const readableIds = await resolvePermissionGranteeIds('connect_recording', 'read');
+      const viewerIds = Array.from(
+        new Set([
+          ...requestedViewerIds.filter((id) => readableIds.has(id)),
+          recording.started_by,
+          ...(recording.stopped_by ? [recording.stopped_by] : []),
+        ]),
+      );
+
+      const { error: updateError } = await supabase
+        .from('connect_recordings')
+        .update({ status: 'processing', title: title || null, viewers_restricted: true })
+        .eq('id', recordingId)
+        .eq('status', 'pending_review');
+      if (updateError) throw updateError;
+
+      await supabase.from('connect_recording_viewers').delete().eq('recording_id', recordingId);
+      if (viewerIds.length > 0) {
+        await supabase
+          .from('connect_recording_viewers')
+          .insert(viewerIds.map((uid) => ({ recording_id: recordingId, user_id: uid })));
+      }
+
+      await triggerCompositor(recording.room_id, recordingId);
+      return res.json({ status: 'processing' });
+    } catch (error: any) {
+      console.error('[Connect] POST /recordings/:id/confirm failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// POST /api/connect/recordings/:id/discard -> throw away a not-yet-composited recording:
+// its temp per-track R2 files and every DB row for it, nothing kept. Same ownership +
+// permission rule as confirm.
+router.post(
+  '/api/connect/recordings/:id/discard',
+  authenticate,
+  requirePermission('connect_recording', 'write'),
+  async (req: Request, res: Response) => {
+    try {
+      const recordingId = req.params.id as string;
+      const { data: recording, error: fetchError } = await supabase
+        .from('connect_recordings')
+        .select('id, room_id, status, started_by, stopped_by')
+        .eq('id', recordingId)
+        .maybeSingle();
+      if (fetchError) throw fetchError;
+      if (!recording) return res.status(404).json({ error: '録画が見つかりません' });
+      if (recording.status !== 'pending_review') {
+        return res.status(409).json({ error: 'この録画は確認待ちの状態ではありません' });
+      }
+      if (recording.started_by !== req.user!.id && recording.stopped_by !== req.user!.id) {
+        return res.status(403).json({ error: 'この録画を破棄できるのは開始者または停止者のみです' });
+      }
+
+      await deleteTempRecordingFiles(recording.room_id, recordingId);
+      await supabase.from('connect_recording_tracks').delete().eq('recording_id', recordingId);
+      await supabase.from('connect_recording_participants').delete().eq('recording_id', recordingId);
+      const { error: deleteError } = await supabase.from('connect_recordings').delete().eq('id', recordingId);
+      if (deleteError) throw deleteError;
+
+      return res.json({ success: true });
+    } catch (error: any) {
+      console.error('[Connect] POST /recordings/:id/discard failed:', error);
       return res.status(500).json({ error: error.message });
     }
   },
@@ -2561,9 +2846,13 @@ router.delete(
       }
       await Promise.all(deletePromises);
 
-      // 3. トラック一覧レコードを削除
+      // 3. トラック一覧・在室記録を削除
       await supabase
         .from('connect_recording_tracks')
+        .delete()
+        .eq('recording_id', recordingId);
+      await supabase
+        .from('connect_recording_participants')
         .delete()
         .eq('recording_id', recordingId);
 
@@ -3014,13 +3303,15 @@ router.post('/api/connect/webhook', async (req: Request, res: Response) => {
     // mini room finishing independently of the others). isMainRoomSessionEmpty checks
     // the whole family before anything gets deleted.
     if (maybeDone && event.room?.name && (await isMainRoomSessionEmpty(event.room.name))) {
-      // Before the room's state is torn down: if a recording is still running because the
-      // host left without stopping it, finish it here so the call still produces a video.
+      // Before the room's state is torn down: if a recording is still running because
+      // everyone left without stopping it, finish it here so it isn't left recording
+      // forever. Nobody pressed stop, so `stoppedBy` is null — only the person who started
+      // it will see it waiting for them in the recordings list.
       if (roomService) {
         try {
           const recordingId = await getActiveRecordingId(event.room.name);
           if (recordingId) {
-            await finishRecording(roomService, event.room.name, recordingId);
+            await finishRecording(roomService, event.room.name, recordingId, null);
           }
         } catch (e: any) {
           console.error(`[Connect] Failed to finish recording for ${event.room.name}:`, e?.message);

@@ -68,6 +68,7 @@ import {
   Image as ImageIcon,
   Users,
   Smile,
+  Clock,
 } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import PreJoinScreen, { type PreJoinChoices } from '../../components/Connect/PreJoinScreen';
@@ -96,6 +97,8 @@ import BackgroundEffectModal from '../../components/Connect/BackgroundEffectModa
 import AdvancedChat from '../../components/Connect/AdvancedChat';
 import ProfileSidebarPanel from '../../components/Connect/ProfileSidebarPanel';
 import LeaveConfirmModal from '../../components/Connect/LeaveConfirmModal';
+import RecordingReviewModal from '../../components/Connect/RecordingReviewModal';
+import { usePermission } from '../../hooks/usePermission';
 import HostLeaveWarningModal from '../../components/Connect/HostLeaveWarningModal';
 import ClaimHostModal from '../../components/Connect/ClaimHostModal';
 import GridLayoutView from '../../components/Connect/callLayout/GridLayoutView';
@@ -1715,26 +1718,88 @@ function MiniRoomMenuItem({ onClick }: { onClick: () => void }) {
   );
 }
 
-/** Starts/stops recording the call. Only rendered for users with the recording permission. */
+/** Small dropdown menu offering to reopen the save/discard dialog for a recording left
+ *  pending_review — the same shape as MicMenuDropdown/CameraMenuDropdown's popover. */
+function RecordingReviewMenuDropdown({
+  anchorRef,
+  onClose,
+  onOpenReview,
+}: {
+  anchorRef: RefObject<HTMLElement | null>;
+  onClose: () => void;
+  onOpenReview: () => void;
+}) {
+  return (
+    <DropdownPortal anchorRef={anchorRef} onClose={onClose} align="left">
+      <div className="w-64 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl p-1.5 text-white">
+        <button
+          onClick={() => {
+            onOpenReview();
+            onClose();
+          }}
+          className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors text-left"
+        >
+          <Clock className="w-4 h-4 text-amber-400 shrink-0" />
+          <span>確認待ちの録画を保存・破棄する</span>
+        </button>
+      </div>
+    </DropdownPortal>
+  );
+}
+
+/** Starts/stops recording the call. Only rendered for users with the recording permission.
+ *  Grows a chevron (same split-button shape as MicButton/CameraButton) whenever there's a
+ *  recording left pending_review in this room, opening a menu back into its review dialog. */
 function RecordingButton({
   isRecording,
   busy,
+  hasPendingReview,
   onClick,
+  onOpenReview,
 }: {
   isRecording: boolean;
   busy: boolean;
+  hasPendingReview: boolean;
   onClick: () => void;
+  onOpenReview: () => void;
 }) {
-  return (
+  const [menuOpen, setMenuOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  if (!hasPendingReview) {
+    return (
+      <button
+        onClick={onClick}
+        disabled={busy}
+        title={isRecording ? '録画を停止' : '録画を開始'}
+        className={
+          isRecording
+            ? 'flex flex-col items-center justify-center gap-0.5 min-w-[4.25rem] sm:min-w-[4.75rem] h-[52px] px-3.5 py-1.5 rounded-xl border transition-all duration-200 active:scale-95 shrink-0 bg-rose-950/80 text-rose-200 border-rose-500/50 hover:bg-rose-900/80 shadow-lg shadow-rose-950/30'
+            : controlButtonClass(false)
+        }
+      >
+        {busy ? (
+          <Loader2 className="w-5 h-5 animate-spin" />
+        ) : isRecording ? (
+          <StopCircle className="w-5 h-5 text-rose-400 animate-pulse fill-rose-500/20" />
+        ) : (
+          <CircleDot className="w-5 h-5" />
+        )}
+        <ControlButtonLabel>{isRecording ? '録画停止' : '録画'}</ControlButtonLabel>
+      </button>
+    );
+  }
+
+  // With a pending review to surface, the border moves to the shared container (below) —
+  // matching MicButton/CameraButton's split shape — so the main button itself goes borderless.
+  const mainButton = (
     <button
       onClick={onClick}
       disabled={busy}
       title={isRecording ? '録画を停止' : '録画を開始'}
-      className={
-        isRecording
-          ? 'flex flex-col items-center justify-center gap-0.5 min-w-[4.25rem] sm:min-w-[4.75rem] h-[52px] px-3.5 py-1.5 rounded-xl border transition-all duration-200 active:scale-95 shrink-0 bg-rose-950/80 text-rose-200 border-rose-500/50 hover:bg-rose-900/80 shadow-lg shadow-rose-950/30'
-          : controlButtonClass(false)
-      }
+      className={`flex flex-col items-center justify-center gap-0.5 min-w-[3.5rem] sm:min-w-[4rem] px-3.5 py-1.5 rounded-l-xl transition-colors active:scale-95 ${
+        isRecording ? 'bg-rose-950/80 text-rose-200 hover:bg-rose-900/80' : 'bg-gray-900/80 text-gray-200 hover:bg-gray-800'
+      }`}
     >
       {busy ? (
         <Loader2 className="w-5 h-5 animate-spin" />
@@ -1746,33 +1811,79 @@ function RecordingButton({
       <ControlButtonLabel>{isRecording ? '録画停止' : '録画'}</ControlButtonLabel>
     </button>
   );
+
+  return (
+    <div
+      ref={containerRef}
+      className={`relative inline-flex items-stretch h-[52px] rounded-xl border transition-all duration-200 shrink-0 ${
+        isRecording ? 'border-rose-500/50 shadow-lg shadow-rose-950/30' : 'border-gray-700/80'
+      }`}
+    >
+      {mainButton}
+      <button
+        onClick={() => setMenuOpen((prev) => !prev)}
+        title="確認待ちの録画"
+        className={`relative flex items-center justify-center px-2 border-l transition-colors rounded-r-xl ${
+          isRecording
+            ? 'border-rose-500/40 hover:bg-rose-900/60 text-rose-200'
+            : 'border-gray-700/80 hover:bg-gray-800 text-gray-400 hover:text-white'
+        }`}
+      >
+        <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-amber-400" />
+        <ChevronUp className={`w-3.5 h-3.5 transition-transform duration-200 ${menuOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {menuOpen && (
+        <RecordingReviewMenuDropdown
+          anchorRef={containerRef}
+          onClose={() => setMenuOpen(false)}
+          onOpenReview={onOpenReview}
+        />
+      )}
+    </div>
+  );
 }
 
 /** Same recording toggle, styled as a row inside `MoreMenu` for when the bar is too narrow. */
 function RecordingMenuItem({
   isRecording,
   busy,
+  hasPendingReview,
   onClick,
+  onOpenReview,
 }: {
   isRecording: boolean;
   busy: boolean;
+  hasPendingReview: boolean;
   onClick: () => void;
+  onOpenReview: () => void;
 }) {
   return (
-    <button
-      onClick={onClick}
-      disabled={busy}
-      className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors disabled:opacity-50"
-    >
-      {busy ? (
-        <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
-      ) : isRecording ? (
-        <StopCircle className="w-4 h-4 text-rose-400 animate-pulse" />
-      ) : (
-        <CircleDot className="w-4 h-4 text-sky-400" />
+    <>
+      <button
+        onClick={onClick}
+        disabled={busy}
+        className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors disabled:opacity-50"
+      >
+        {busy ? (
+          <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
+        ) : isRecording ? (
+          <StopCircle className="w-4 h-4 text-rose-400 animate-pulse" />
+        ) : (
+          <CircleDot className="w-4 h-4 text-sky-400" />
+        )}
+        <span>{isRecording ? '録画を停止' : '録画を開始'}</span>
+      </button>
+      {hasPendingReview && (
+        <button
+          onClick={onOpenReview}
+          className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
+        >
+          <Clock className="w-4 h-4 text-amber-400" />
+          <span>確認待ちの録画を保存・破棄する</span>
+        </button>
       )}
-      <span>{isRecording ? '録画を停止' : '録画を開始'}</span>
-    </button>
+    </>
   );
 }
 
@@ -1969,6 +2080,8 @@ function CustomVideoConference({
   mainRoomId,
   miniRooms,
   recording,
+  onStopRecording,
+  onOpenRecordingReview,
   isInternalMeeting,
   selectedProfileUserId,
   setSelectedProfileUserId,
@@ -1990,6 +2103,11 @@ function CustomVideoConference({
   mainRoomId: string;
   miniRooms: UseMiniRoomsResult;
   recording: ReturnType<typeof useRecording>;
+  /** Stops the recording, then opens the review dialog if that produced one to resolve —
+   *  wraps `recording.stop` so this component doesn't need to know about that dialog's state. */
+  onStopRecording: () => void;
+  /** Reopens the review dialog for a recording already left pending_review (the chevron menu). */
+  onOpenRecordingReview: () => void;
   isInternalMeeting?: boolean;
   selectedProfileUserId?: string | null;
   setSelectedProfileUserId?: (val: string | null) => void;
@@ -2033,9 +2151,14 @@ function CustomVideoConference({
   const [showReactionPicker, setShowReactionPicker] = useState(false);
   const reactionActions = useReactionActions();
 
-  // Starting/stopping is host-only, but the recording *state* is read by everyone:
-  // participants who can't touch the controls still need to see that they're being recorded.
-  const canRecord = isMiniRoomHost;
+  // Starting is host-only AND requires connect_recording.write (stopping doesn't — any host
+  // can stop an unwanted recording, see the /recording/stop route, which means a write-less
+  // host can still end up owning a pending review to resolve). The recording *state* is read
+  // by everyone: participants who can't touch the controls still need to see that they're
+  // being recorded.
+  const canStartRecording = usePermission('connect_recording', 'write');
+  const canRecord =
+    isMiniRoomHost && (recording.isRecording || canStartRecording || !!recording.pendingReviewRecordingId);
 
   // Host-only pending waiting-room requests — see the DB flag design: waitlist.pending is
   // always empty for non-hosts (the backend 403s these routes for them, this just skips
@@ -2163,6 +2286,7 @@ function CustomVideoConference({
   ];
 
   if (canRecord) {
+    const hasPendingReview = !!recording.pendingReviewRecordingId;
     overflowItems.push({
       key: 'recording',
       priority: 3,
@@ -2170,16 +2294,23 @@ function CustomVideoConference({
         <RecordingButton
           isRecording={recording.isRecording}
           busy={recording.busy}
-          onClick={recording.isRecording ? recording.stop : recording.start}
+          hasPendingReview={hasPendingReview}
+          onClick={recording.isRecording ? onStopRecording : recording.start}
+          onOpenReview={onOpenRecordingReview}
         />
       ),
       renderMenuItem: (close) => (
         <RecordingMenuItem
           isRecording={recording.isRecording}
           busy={recording.busy}
+          hasPendingReview={hasPendingReview}
           onClick={() => {
-            if (recording.isRecording) recording.stop();
+            if (recording.isRecording) onStopRecording();
             else recording.start();
+            close();
+          }}
+          onOpenReview={() => {
+            onOpenRecordingReview();
             close();
           }}
         />
@@ -2500,6 +2631,14 @@ function CallRoomInner({
   );
 
   const recording = useRecording(roomId);
+  // Whether the review dialog is actually open right now — distinct from
+  // `recording.pendingReviewRecordingId`, which just tracks that one exists (so the chevron
+  // menu can offer it without popping the dialog open on every reload/rejoin).
+  const [showRecordingReview, setShowRecordingReview] = useState(false);
+  const handleStopRecording = useCallback(async () => {
+    const id = await recording.stop();
+    if (id) setShowRecordingReview(true);
+  }, [recording]);
 
   // Safe to call inside <LiveKitRoom>. selfIdentity comes from the authenticated user id
   // (same value the backend issues as the LiveKit participant identity) rather than
@@ -2760,6 +2899,8 @@ function CallRoomInner({
             mainRoomId={roomId}
             miniRooms={miniRooms}
             recording={recording}
+            onStopRecording={handleStopRecording}
+            onOpenRecordingReview={() => setShowRecordingReview(true)}
             isInternalMeeting={isInternalMeeting}
             selectedProfileUserId={selectedProfileUserId}
             setSelectedProfileUserId={setSelectedProfileUserId}
@@ -2779,6 +2920,18 @@ function CallRoomInner({
             onClose={() => setShowClaimHostModal(false)}
             onSubmit={handleClaimHost}
             roomTitle={roomTitle}
+          />
+
+          <RecordingReviewModal
+            recordingId={showRecordingReview ? recording.pendingReviewRecordingId : null}
+            defaultTitle={roomTitle}
+            onDone={(resolved) => {
+              setShowRecordingReview(false);
+              // "later" leaves it pending_review — keep tracking it so the chevron menu
+              // (CustomVideoConference's hasPendingReview) shows up immediately, not just
+              // after a reload re-fetches it.
+              if (resolved) recording.clearPendingReview();
+            }}
           />
 
           {/* Render Document PiP Portal when active */}
