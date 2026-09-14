@@ -16,6 +16,9 @@ interface ChatRichEditorProps {
   onSend: (html: string, plainText: string) => void;
   placeholder?: string;
   disabled?: boolean;
+  initialContent?: string;
+  onCancel?: () => void;
+  submitLabel?: string;
 }
 
 export const chatContentStyles =
@@ -32,11 +35,16 @@ export default function ChatRichEditor({
   onSend,
   placeholder = 'メッセージを送信...',
   disabled = false,
+  initialContent = '',
+  onCancel,
+  submitLabel,
 }: ChatRichEditorProps) {
   const [, setForceUpdate] = useState(0);
-  const [isEmpty, setIsEmpty] = useState(true);
+  const [isEmpty, setIsEmpty] = useState(!initialContent.trim());
   const onSendRef = useRef(onSend);
   onSendRef.current = onSend;
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
 
   const editor = useEditor({
     extensions: [
@@ -49,6 +57,7 @@ export default function ChatRichEditor({
         placeholder,
       }),
     ],
+    content: initialContent,
     editorProps: {
       attributes: {
         class: `outline-none min-h-[38px] max-h-32 overflow-y-auto px-3 py-2 text-xs ${chatContentStyles}`,
@@ -57,6 +66,13 @@ export default function ChatRichEditor({
         // IME (Japanese input) composition handling
         if (event.isComposing || event.keyCode === 229) {
           return false;
+        }
+
+        // Escape cancels editing if onCancel is provided
+        if (event.key === 'Escape' && onCancelRef.current) {
+          event.preventDefault();
+          onCancelRef.current();
+          return true;
         }
 
         // Shift + Enter handling:
@@ -103,8 +119,10 @@ export default function ChatRichEditor({
 
     const html = editor.getHTML();
     onSendRef.current(html, text);
-    editor.commands.clearContent();
-    setIsEmpty(true);
+    if (!onCancel) {
+      editor.commands.clearContent();
+      setIsEmpty(true);
+    }
   };
 
   useEffect(() => {
@@ -225,17 +243,34 @@ export default function ChatRichEditor({
 
         {/* Send Button & Hint */}
         <div className="flex items-center gap-1.5">
-          <span className="hidden sm:inline text-[9px] text-gray-500">
-            Shift+Enterで改行
-          </span>
+          {onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="px-2.5 py-1 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-800 rounded-lg transition-colors font-medium"
+            >
+              キャンセル
+            </button>
+          )}
+          {!onCancel && (
+            <span className="hidden sm:inline text-[9px] text-gray-500">
+              Shift+Enterで改行
+            </span>
+          )}
           <button
             type="button"
             disabled={isEmpty || disabled}
             onClick={handleSendSubmit}
-            className="p-1.5 bg-sky-500 hover:bg-sky-400 disabled:opacity-30 disabled:hover:bg-sky-500 text-white rounded-lg shadow-sm transition-all active:scale-95"
-            title="送信 (Enter)"
+            className={`flex items-center gap-1 bg-sky-500 hover:bg-sky-400 disabled:opacity-30 disabled:hover:bg-sky-500 text-white rounded-lg shadow-sm transition-all active:scale-95 ${
+              submitLabel ? 'px-3 py-1 text-xs font-semibold' : 'p-1.5'
+            }`}
+            title={submitLabel || '送信 (Enter)'}
           >
-            <Send className="w-3 h-3" />
+            {submitLabel ? (
+              <span>{submitLabel}</span>
+            ) : (
+              <Send className="w-3 h-3" />
+            )}
           </button>
         </div>
       </div>

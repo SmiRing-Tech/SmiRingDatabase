@@ -1688,6 +1688,9 @@ router.get('/api/connect/rooms/:roomId/messages', authenticate, async (req: Requ
       },
       recipients: row.recipient_identities ?? [],
       timestamp: new Date(row.created_at).getTime(),
+      replyTo: row.reply_to ?? null,
+      isEdited: Boolean(row.is_edited),
+      reactions: row.reactions ?? {},
     }));
 
     return res.status(200).json({ messages });
@@ -1707,13 +1710,22 @@ router.post('/api/connect/rooms/:roomId/messages', authenticate, async (req: Req
       return res.status(400).json({ error: 'ルーム名が不正です' });
     }
 
-    const { text, recipientIdentities } = req.body ?? {};
+    const { text, recipientIdentities, replyTo } = req.body ?? {};
     if (typeof text !== 'string' || !text.trim()) {
       return res.status(400).json({ error: 'メッセージが空です' });
     }
     const recipients: string[] = Array.isArray(recipientIdentities)
       ? recipientIdentities.filter((id) => typeof id === 'string')
       : [];
+
+    const safeReplyTo =
+      replyTo && typeof replyTo.id === 'string' && typeof replyTo.text === 'string'
+        ? {
+            id: replyTo.id,
+            senderName: String(replyTo.senderName || '参加者'),
+            text: String(replyTo.text),
+          }
+        : null;
 
     const userId = req.user!.id;
     const fallbackName = req.user!.email?.split('@')[0] || userId;
@@ -1733,6 +1745,7 @@ router.post('/api/connect/rooms/:roomId/messages', authenticate, async (req: Req
           sender_avatar_url: avatarUrl,
           recipient_identities: recipients,
           text: text.trim(),
+          reply_to: safeReplyTo,
         },
       ])
       .select()
@@ -1754,11 +1767,199 @@ router.post('/api/connect/rooms/:roomId/messages', authenticate, async (req: Req
       },
       recipients: data.recipient_identities ?? [],
       timestamp: new Date(data.created_at).getTime(),
+      replyTo: data.reply_to ?? safeReplyTo,
+      isEdited: Boolean(data.is_edited),
+      reactions: data.reactions ?? {},
     };
 
     return res.status(201).json({ message });
   } catch (error: any) {
     console.error('[Connect] POST .../messages failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// PATCH /api/connect/rooms/:roomId/messages/:messageId - Edit a chat message (own message only)
+router.patch('/api/connect/rooms/:roomId/messages/:messageId', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { roomId, messageId } = req.params;
+    if (!isValidRoomName(roomId)) {
+      return res.status(400).json({ error: 'ルーム名が不正です' });
+    }
+
+    const { text } = req.body ?? {};
+    if (typeof text !== 'string' || !text.trim()) {
+      return res.status(400).json({ error: 'メッセージが空です' });
+    }
+
+    const userId = req.user!.id;
+
+    // Verify ownership and room
+    const { data: existing, error: findError } = await supabase
+      .from('connect_chat_messages')
+      .select('*')
+      .eq('id', messageId)
+      .eq('room_id', roomId)
+      .single();
+
+    if (findError || !existing) {
+      return res.status(404).json({ error: 'メッセージが見つかりません' });
+    }
+
+    if (existing.sender_identity !== userId) {
+      return res.status(403).json({ error: '自分のメッセージのみ編集できます' });
+    }
+
+    const { data: updated, error: updateError } = await supabase
+      .from('connect_chat_messages')
+      .update({
+        text: text.trim(),
+        is_edited: true,
+      })
+      .eq('id', messageId)
+      .select()
+      .single();
+
+    if (updateError || !updated) {
+      console.error('[Connect] Failed to update connect_chat_messages:', updateError);
+      return res.status(500).json({ error: updateError?.message || '更新に失敗しました' });
+    }
+
+    const message = {
+      id: updated.id,
+      threadId: updated.thread_id,
+      text: updated.text,
+      sender: {
+        identity: updated.sender_identity,
+        name: updated.sender_name,
+        avatarUrl: updated.sender_avatar_url,
+      },
+      recipients: updated.recipient_identities ?? [],
+      timestamp: new Date(updated.created_at).getTime(),
+      replyTo: updated.reply_to ?? null,
+      isEdited: Boolean(updated.is_edited),
+      reactions: updated.reactions ?? {},
+    };
+
+    return res.status(200).json({ message });
+  } catch (error: any) {
+    console.error('[Connect] PATCH .../messages/:messageId failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /api/connect/rooms/:roomId/messages/:messageId - Delete a chat message (own message only)
+router.delete('/api/connect/rooms/:roomId/messages/:messageId', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { roomId, messageId } = req.params;
+    if (!isValidRoomName(roomId)) {
+      return res.status(400).json({ error: 'ルーム名が不正です' });
+    }
+
+    const userId = req.user!.id;
+
+    // Verify ownership and room
+    const { data: existing, error: findError } = await supabase
+      .from('connect_chat_messages')
+      .select('id, thread_id, sender_identity')
+      .eq('id', messageId)
+      .eq('room_id', roomId)
+      .single();
+
+    if (findError || !existing) {
+      return res.status(404).json({ error: 'メッセージが見つかりません' });
+    }
+
+    if (existing.sender_identity !== userId) {
+      return res.status(403).json({ error: '自分のメッセージのみ削除できます' });
+    }
+
+    const { error: deleteError } = await supabase
+      .from('connect_chat_messages')
+      .delete()
+      .eq('id', messageId);
+
+    if (deleteError) {
+      console.error('[Connect] Failed to delete connect_chat_messages:', deleteError);
+      return res.status(500).json({ error: deleteError.message });
+    }
+
+    return res.status(200).json({ success: true, messageId, threadId: existing.thread_id });
+  } catch (error: any) {
+    console.error('[Connect] DELETE .../messages/:messageId failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/rooms/:roomId/messages/:messageId/reactions - Toggle reaction on a message
+router.post('/api/connect/rooms/:roomId/messages/:messageId/reactions', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { roomId, messageId } = req.params;
+    if (!isValidRoomName(roomId)) {
+      return res.status(400).json({ error: 'ルーム名が不正です' });
+    }
+
+    const { emoji } = req.body ?? {};
+    if (typeof emoji !== 'string' || !emoji.trim()) {
+      return res.status(400).json({ error: '絵文字が指定されていません' });
+    }
+    const cleanEmoji = emoji.trim();
+    const userId = req.user!.id;
+
+    // Fetch existing message to get current reactions
+    const { data: existing, error: findError } = await supabase
+      .from('connect_chat_messages')
+      .select('id, thread_id, room_id, reactions')
+      .eq('id', messageId)
+      .eq('room_id', roomId)
+      .single();
+
+    if (findError || !existing) {
+      return res.status(404).json({ error: 'メッセージが見つかりません' });
+    }
+
+    const currentReactions: Record<string, string[]> =
+      existing.reactions && typeof existing.reactions === 'object' && !Array.isArray(existing.reactions)
+        ? { ...existing.reactions }
+        : {};
+
+    const userList: string[] = Array.isArray(currentReactions[cleanEmoji])
+      ? [...currentReactions[cleanEmoji]]
+      : [];
+
+    const existingIndex = userList.indexOf(userId);
+    if (existingIndex > -1) {
+      // Toggle off
+      userList.splice(existingIndex, 1);
+    } else {
+      // Toggle on
+      userList.push(userId);
+    }
+
+    if (userList.length > 0) {
+      currentReactions[cleanEmoji] = userList;
+    } else {
+      delete currentReactions[cleanEmoji];
+    }
+
+    const { error: updateError } = await supabase
+      .from('connect_chat_messages')
+      .update({ reactions: currentReactions })
+      .eq('id', messageId);
+
+    if (updateError) {
+      console.error('[Connect] Failed to update reactions:', updateError);
+      return res.status(500).json({ error: updateError.message });
+    }
+
+    return res.status(200).json({
+      success: true,
+      messageId,
+      threadId: existing.thread_id,
+      reactions: currentReactions,
+    });
+  } catch (error: any) {
+    console.error('[Connect] POST .../reactions failed:', error);
     return res.status(500).json({ error: error.message });
   }
 });

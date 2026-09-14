@@ -4,6 +4,12 @@ export interface ChatSender {
   avatarUrl?: string | null;
 }
 
+export interface ChatReplyTarget {
+  id: string;
+  senderName: string;
+  text: string;
+}
+
 export interface ChatMessage {
   id: string;
   threadId: string;
@@ -11,6 +17,9 @@ export interface ChatMessage {
   sender: ChatSender;
   recipients: string[]; // Destination identities. Empty array means everyone/broadcast.
   timestamp: number;
+  replyTo?: ChatReplyTarget | null;
+  isEdited?: boolean;
+  reactions?: Record<string, string[]>; // { [emoji: string]: userId[] }
 }
 
 export interface ChatThread {

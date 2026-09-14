@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParticipants, useRoomContext } from '@livekit/components-react';
 import { RoomEvent } from 'livekit-client';
 import { apiClient } from '../lib/apiClient';
-import type { ChatMessage, ChatThread } from '../types/chat';
+import type { ChatMessage, ChatThread, ChatReplyTarget } from '../types/chat';
 
 const CHAT_TOPIC = 'advanced_chat';
 
@@ -263,7 +263,7 @@ export function useAdvancedChat({ roomId, selfIdentity, isOpen = false }: UseAdv
   // identity + threadId), then broadcast the exact same payload over LiveKit for
   // realtime delivery to currently-connected peers.
   const sendMessage = useCallback(
-    async (text: string, targetThreadId?: string) => {
+    async (text: string, targetThreadId?: string, replyTo?: ChatReplyTarget | null) => {
       const trimmed = text.trim();
       if (!trimmed || !roomId) return;
 
@@ -278,6 +278,7 @@ export function useAdvancedChat({ roomId, selfIdentity, isOpen = false }: UseAdv
         const res = await apiClient.post(`/api/connect/rooms/${roomId}/messages`, {
           text: trimmed,
           recipientIdentities: recipients,
+          replyTo: replyTo || undefined,
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -287,7 +288,9 @@ export function useAdvancedChat({ roomId, selfIdentity, isOpen = false }: UseAdv
         const message: ChatMessage = body.message;
 
         if (room) {
-          const payload = new TextEncoder().encode(JSON.stringify(message));
+          const payload = new TextEncoder().encode(
+            JSON.stringify({ type: 'message', message }),
+          );
           await room.localParticipant.publishData(payload, {
             destinationIdentities: isEveryone ? undefined : recipients,
             topic: CHAT_TOPIC,
@@ -300,6 +303,174 @@ export function useAdvancedChat({ roomId, selfIdentity, isOpen = false }: UseAdv
       }
     },
     [activeThreadId, threads, selfIdentity, roomId, room, ingestMessage],
+  );
+
+  // Edit a message (author-only)
+  const editMessage = useCallback(
+    async (messageId: string, newText: string) => {
+      const trimmed = newText.trim();
+      if (!trimmed || !roomId) return;
+
+      try {
+        const res = await apiClient.patch(`/api/connect/rooms/${roomId}/messages/${messageId}`, {
+          text: trimmed,
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `編集に失敗しました (${res.status})`);
+        }
+        const body = await res.json();
+        const updatedMessage: ChatMessage = body.message;
+
+        // Update local message list
+        setMessages((prev) => prev.map((m) => (m.id === messageId ? updatedMessage : m)));
+
+        // Update thread lastMessage if it matches
+        setThreads((prev) =>
+          prev.map((t) =>
+            t.lastMessage?.id === messageId ? { ...t, lastMessage: updatedMessage } : t,
+          ),
+        );
+
+        // Broadcast over LiveKit
+        if (room) {
+          const thread = threads.find((t) => t.id === updatedMessage.threadId) || threads[0];
+          const isEveryone = thread.isEveryone || updatedMessage.threadId === 'everyone';
+          const recipients = isEveryone
+            ? []
+            : thread.participantIdentities.filter((id) => id !== selfIdentity);
+
+          const payload = new TextEncoder().encode(
+            JSON.stringify({ type: 'edit', message: updatedMessage }),
+          );
+          await room.localParticipant.publishData(payload, {
+            destinationIdentities: isEveryone ? undefined : recipients,
+            topic: CHAT_TOPIC,
+          });
+        }
+      } catch (err) {
+        console.error('[AdvancedChat] Failed to edit message:', err);
+      }
+    },
+    [roomId, threads, selfIdentity, room],
+  );
+
+  // Delete a message (author-only)
+  const deleteMessage = useCallback(
+    async (messageId: string, threadId: string) => {
+      if (!roomId) return;
+
+      try {
+        const res = await apiClient.delete(`/api/connect/rooms/${roomId}/messages/${messageId}`);
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `削除に失敗しました (${res.status})`);
+        }
+
+        // Delete from local message list
+        setMessages((prev) => prev.filter((m) => m.id !== messageId));
+
+        // Clear thread lastMessage if it was this message
+        setThreads((prev) =>
+          prev.map((t) => {
+            if (t.lastMessage?.id === messageId) {
+              return { ...t, lastMessage: undefined };
+            }
+            return t;
+          }),
+        );
+
+        // Broadcast over LiveKit
+        if (room) {
+          const thread = threads.find((t) => t.id === threadId) || threads[0];
+          const isEveryone = thread.isEveryone || threadId === 'everyone';
+          const recipients = isEveryone
+            ? []
+            : thread.participantIdentities.filter((id) => id !== selfIdentity);
+
+          const payload = new TextEncoder().encode(
+            JSON.stringify({ type: 'delete', messageId, threadId }),
+          );
+          await room.localParticipant.publishData(payload, {
+            destinationIdentities: isEveryone ? undefined : recipients,
+            topic: CHAT_TOPIC,
+          });
+        }
+      } catch (err) {
+        console.error('[AdvancedChat] Failed to delete message:', err);
+      }
+    },
+    [roomId, threads, selfIdentity, room],
+  );
+
+  // Toggle emoji reaction on a message
+  const toggleReaction = useCallback(
+    async (messageId: string, emoji: string) => {
+      if (!roomId) return;
+      const cleanEmoji = emoji.trim();
+      if (!cleanEmoji) return;
+
+      const targetMsg = messages.find((m) => m.id === messageId);
+      if (!targetMsg) return;
+
+      // Optimistic update
+      const currentReactions: Record<string, string[]> = { ...(targetMsg.reactions || {}) };
+      const userList: string[] = currentReactions[cleanEmoji] ? [...currentReactions[cleanEmoji]] : [];
+      const existingIndex = userList.indexOf(selfIdentity);
+
+      if (existingIndex > -1) {
+        userList.splice(existingIndex, 1);
+      } else {
+        userList.push(selfIdentity);
+      }
+
+      if (userList.length > 0) {
+        currentReactions[cleanEmoji] = userList;
+      } else {
+        delete currentReactions[cleanEmoji];
+      }
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === messageId ? { ...m, reactions: currentReactions } : m)),
+      );
+
+      try {
+        const res = await apiClient.post(
+          `/api/connect/rooms/${roomId}/messages/${messageId}/reactions`,
+          { emoji: cleanEmoji },
+        );
+        if (!res.ok) {
+          throw new Error('リアクションの更新に失敗しました');
+        }
+        const body = await res.json();
+        const serverReactions = body.reactions;
+
+        // Broadcast over LiveKit
+        if (room) {
+          const thread = threads.find((t) => t.id === targetMsg.threadId) || threads[0];
+          const isEveryone = thread.isEveryone || targetMsg.threadId === 'everyone';
+          const recipients = isEveryone
+            ? []
+            : thread.participantIdentities.filter((id) => id !== selfIdentity);
+
+          const payload = new TextEncoder().encode(
+            JSON.stringify({
+              type: 'reaction',
+              messageId,
+              threadId: targetMsg.threadId,
+              reactions: serverReactions,
+            }),
+          );
+          await room.localParticipant.publishData(payload, {
+            destinationIdentities: isEveryone ? undefined : recipients,
+            topic: CHAT_TOPIC,
+          });
+        }
+      } catch (err) {
+        console.error('[AdvancedChat] Failed to toggle reaction:', err);
+      }
+    },
+    [roomId, messages, selfIdentity, room, threads],
   );
 
   // Mark thread as read
@@ -318,7 +489,47 @@ export function useAdvancedChat({ roomId, selfIdentity, isOpen = false }: UseAdv
 
       try {
         const str = new TextDecoder().decode(payload);
-        const msg: ChatMessage = JSON.parse(str);
+        const data = JSON.parse(str);
+        if (!data) return;
+
+        // Case 1: Message deleted
+        if (data.type === 'delete' && data.messageId) {
+          setMessages((prev) => prev.filter((m) => m.id !== data.messageId));
+          setThreads((prev) =>
+            prev.map((t) => {
+              if (t.lastMessage?.id === data.messageId) {
+                return { ...t, lastMessage: undefined };
+              }
+              return t;
+            }),
+          );
+          return;
+        }
+
+        // Case 2: Message edited
+        if (data.type === 'edit' && data.message) {
+          const updated: ChatMessage = data.message;
+          setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+          setThreads((prev) =>
+            prev.map((t) =>
+              t.lastMessage?.id === updated.id ? { ...t, lastMessage: updated } : t,
+            ),
+          );
+          return;
+        }
+
+        // Case 3: Message reaction updated
+        if (data.type === 'reaction' && data.messageId && data.reactions) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === data.messageId ? { ...m, reactions: data.reactions } : m,
+            ),
+          );
+          return;
+        }
+
+        // Case 4: Message added (regular or legacy format)
+        const msg: ChatMessage = data.type === 'message' ? data.message : data;
         if (!msg || !msg.text || !msg.threadId) return;
         ingestMessage(msg);
       } catch (e) {
@@ -359,6 +570,9 @@ export function useAdvancedChat({ roomId, selfIdentity, isOpen = false }: UseAdv
     activeThreadId,
     setActiveThreadId,
     sendMessage,
+    editMessage,
+    deleteMessage,
+    toggleReaction,
     createOrOpenDmThread,
     markThreadAsRead,
     totalUnreadCount,
