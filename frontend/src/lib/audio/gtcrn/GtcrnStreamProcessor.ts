@@ -47,6 +47,18 @@ export class GtcrnStreamProcessor {
   // Samples handed to push() that haven't yet accumulated into a full HOP.
   private carry = new Float32Array(0);
 
+  // Scratch buffers for processOneHop, allocated once and overwritten in full on every call
+  // (never partially — see each use site) rather than reallocated 62.5x/sec (every 16ms hop).
+  // fft.js's own createComplexArray() returns a plain (boxed-number) Array each time it's
+  // called, so calling it fresh per hop was 3 extra boxed-array allocations/hop on top of the
+  // typed-array ones below — pure GC churn for buffers whose contents don't need to survive
+  // between hops.
+  private readonly windowedBuf = new Float32Array(N_FFT);
+  private readonly specBuf = this.fft.createComplexArray();
+  private readonly mixDataBuf = new Float32Array(FREQ_BINS * 2);
+  private readonly fullSpecBuf = this.fft.createComplexArray();
+  private readonly timeComplexBuf = this.fft.createComplexArray();
+
   private readonly session: OrtSessionLike;
   private readonly makeTensor: MakeTensor;
 
@@ -85,14 +97,17 @@ export class GtcrnStreamProcessor {
     this.inputRing.copyWithin(0, HOP);
     this.inputRing.set(newHop, N_FFT - HOP);
 
-    const windowed = new Float32Array(N_FFT);
+    const windowed = this.windowedBuf;
     for (let i = 0; i < N_FFT; i++) windowed[i] = this.inputRing[i] * this.window[i];
 
-    const spec = this.fft.createComplexArray();
-    this.fft.realTransform(spec, Array.from(windowed));
+    const spec = this.specBuf;
+    // realTransform only ever reads `data` by index, so the Float32Array can be passed
+    // directly — no need to first copy it into a plain (boxed) Array just to satisfy fft.js's
+    // own usual createComplexArray()-shaped inputs.
+    this.fft.realTransform(spec, windowed);
     // spec[0 .. 2*FREQ_BINS-1] now holds bins 0..256 as interleaved [re,im] — exactly the
     // (F, 2) layout GTCRN's `mix` input expects for a single T=1 frame.
-    const mixData = new Float32Array(FREQ_BINS * 2);
+    const mixData = this.mixDataBuf;
     for (let i = 0; i < mixData.length; i++) mixData[i] = spec[i];
 
     const feeds: Record<string, OrtTensorLike> = {
@@ -108,14 +123,14 @@ export class GtcrnStreamProcessor {
 
     const enh = results.enh.data; // (1, FREQ_BINS, 1, 2) flat == interleaved [re,im] per bin
 
-    const fullSpec = this.fft.createComplexArray();
+    const fullSpec = this.fullSpecBuf;
     for (let k = 0; k < FREQ_BINS; k++) {
       fullSpec[2 * k] = enh[2 * k];
       fullSpec[2 * k + 1] = enh[2 * k + 1];
     }
     this.fft.completeSpectrum(fullSpec);
 
-    const timeComplex = this.fft.createComplexArray();
+    const timeComplex = this.timeComplexBuf;
     this.fft.inverseTransform(timeComplex, fullSpec);
 
     // Synthesis window, then overlap-add. sqrt-Hann analysis+synthesis at exactly 50% hop is

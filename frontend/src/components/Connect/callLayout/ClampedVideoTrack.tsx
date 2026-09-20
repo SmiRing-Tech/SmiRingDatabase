@@ -4,7 +4,7 @@ import {
   isTrackReference,
   type TrackReferenceOrPlaceholder,
 } from '@livekit/components-react';
-import { RemoteTrackPublication, Track, VideoQuality } from 'livekit-client';
+import { Track } from 'livekit-client';
 
 /** Zoom/pan transform applied on top of the fitted video box. Purely local. */
 export interface ZoomTransform {
@@ -68,17 +68,21 @@ export default function ClampedVideoTrack({
   const isRef = isTrackReference(trackRef);
   const isScreenShare = trackRef.source === Track.Source.ScreenShare;
 
-  // 画面共有トラックは文字の鮮明さが重要なので、受信側でも最高品質（HIGH）レイヤーを要求
-  useEffect(() => {
-    if (
-      isRef &&
-      isScreenShare &&
-      trackRef.publication instanceof RemoteTrackPublication
-    ) {
-      trackRef.publication.setVideoQuality(VideoQuality.HIGH);
-    }
-  }, [isRef, isScreenShare, trackRef]);
-
+  // 画面共有の文字の鮮明さについて:
+  //
+  // ここには以前 `publication.setVideoQuality(VideoQuality.HIGH)` の呼び出しがあったが、
+  // adaptiveStream が有効な間はこれは何もしていなかったので削除した。livekit-client の
+  // RemoteTrackPublication.emitTrackUpdate() は、setVideoQuality() が設定する
+  // requestedMaxQuality と adaptiveStream が要素サイズから算出した寸法を比較し、常に
+  // **小さい方** を採用する（SDK 自身のコメントどおり "the highest quality the client can
+  // accept" = 上限であって下限ではない）。しかも未指定時のデフォルト上限も HIGH なので、
+  // この呼び出しは設定済みの値を同じ値で上書きしていただけだった。
+  //
+  // 実際に鮮明さを決めているのは CallRoomPage の adaptiveStream.pixelDensity と、この
+  // 要素自身の CSS サイズ。ステージ表示のように要素が大きければ上位レイヤーが選ばれ、
+  // 小さいサムネイルでは screenShareSimulcastLayers の h720fps5 に落ちる — という、
+  // 帯域の観点でも本来望ましい挙動になる。鮮明さを上げたい場合に触るべきは pixelDensity
+  // であって、ここではない。
   useEffect(() => {
     if (!containerEl) return;
 

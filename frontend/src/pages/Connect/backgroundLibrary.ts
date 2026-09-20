@@ -136,11 +136,21 @@ export function detectSegmentationQuality(): SegmentationQuality {
  * than the GL compositing passes — so on top of always picking the lightest
  * model (see `detectSegmentationQuality`), phones also run it less often. 10Hz
  * still tracks a moving subject closely enough (the temporal smoothing and
- * edge feather cover the gap between inferences); the desktop default of 30Hz
- * is unchanged.
+ * edge feather cover the gap between inferences).
+ *
+ * Desktop's 20Hz (down from 30) is deliberately matched to the encoder's actual send
+ * framerate (see DESKTOP_VIDEO_ENCODING in CallRoomPage.tsx) and the capture frameRate
+ * (VIDEO_CAPTURE_CONSTRAINTS in PreJoinScreen.tsx) — all three need to move together.
+ * Segmenting *slower* than the camera renders (the mistake made once already, going
+ * straight to 10Hz on desktop) reproduces the "background peeks through around a moving
+ * subject" artifact: the matte lags a beat behind where the subject actually is, and
+ * temporal smoothing/feathering can't fully hide that gap during real motion. Segmenting
+ * at the same rate the encoder sends has no such mismatch — every frame that actually
+ * goes out has a freshly computed matte for it — so this is a pure win alongside the
+ * capture/encode framerate drop, not a separate quality/battery tradeoff of its own.
  */
 export function detectSegmentationFps(): number {
-  return isMobileDevice() ? 10 : 30;
+  return isMobileDevice() ? 10 : 20;
 }
 
 /** Loads, uploads and deletes the user's saved backgrounds. */

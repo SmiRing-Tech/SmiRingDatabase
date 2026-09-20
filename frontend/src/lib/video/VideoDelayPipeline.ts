@@ -69,11 +69,24 @@ export class VideoDelayPipeline {
     this.ticker = new Worker(new URL('./videoDelayTicker.worker.ts', import.meta.url), { type: 'module' });
     this.ticker.onmessage = () => {
       const now = performance.now();
-      this.waiters = this.waiters.filter((w) => {
-        if (now < w.at) return true;
-        w.resolve();
-        return false;
-      });
+      // In-place compaction instead of .filter(): the old version allocated a fresh array on
+      // every single tick (previously 100x/sec — see videoDelayTicker.worker.ts's TICK_MS)
+      // even on the (overwhelmingly common) tick where nothing was actually ready to resolve.
+      // transform() only ever awaits one waitUntil() at a time (TransformStream's own
+      // backpressure means the next frame's transform() can't start until this one enqueues),
+      // so `waiters` realistically never holds more than one entry — but this doesn't assume
+      // that, or that entries are in `at` order: it's the exact same behavior as the old
+      // .filter(), just without reallocating when there's nothing to remove.
+      let keep = 0;
+      for (let i = 0; i < this.waiters.length; i++) {
+        const w = this.waiters[i];
+        if (now < w.at) {
+          this.waiters[keep++] = w;
+        } else {
+          w.resolve();
+        }
+      }
+      this.waiters.length = keep;
     };
     this.ticker.postMessage('start');
 

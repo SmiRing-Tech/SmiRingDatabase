@@ -225,6 +225,45 @@ const GATE_DELAY_MS = 200;
 // Gain is ramped rather than stepped: an instant 0<->1 jump on a live signal is an audible click.
 const GATE_RAMP_MS = 15;
 
+/**
+ * Whether outgoing camera video is held back to stay level with the audio pipeline's own
+ * latency (see useVideoDelay). OFF.
+ *
+ * What turning it off costs: remote viewers — and composited recordings, which place tracks by
+ * wall-clock arrival — get audio trailing lips by however much the audio path is delaying,
+ * i.e. ~192ms in the default configuration (noise-cancel on, VAD gate off) and ~392ms with the
+ * VAD gate also on. That is past the point where a critical viewer *can* notice, and well
+ * inside the tolerance this call's participants actually asked for.
+ *
+ * What it buys: VideoDelayPipeline is skipped entirely (`delayMs <= 0` is its no-op path), so
+ * every outgoing camera frame stops making a second trip through a
+ * MediaStreamTrackProcessor -> TransformStream -> MediaStreamTrackGenerator hop on the main
+ * thread, ~16 frames' worth of VideoFrames stop being held as a delay line, and the pacing
+ * worker stops waking 20x/sec for the whole call. That is the entire second stage of the
+ * outgoing video pipeline, removed — strictly more than merging it into the first stage would
+ * have saved.
+ *
+ * The better end state is to not need it: the ~192ms is capture buffering (64ms) plus GTCRN's
+ * PRIME_MS anti-stall cushion (128ms), and that cushion was sized when inference ran on the
+ * main thread. Now that it runs in a worker behind an AudioWorklet capture, it can very likely
+ * come down a long way — at which point the residual A/V offset is negligible and this stays
+ * off because there is nothing left to compensate for. Flip this back to true to restore the
+ * old behaviour; nothing else needs to change.
+ */
+const LIP_SYNC_VIDEO_DELAY_ENABLED = false;
+
+// Desktop's encoded framerate, dropped from VideoPresets.h720's default 30fps to 20fps —
+// matched to VIDEO_CAPTURE_CONSTRAINTS' capture frameRate (PreJoinScreen) and
+// detectSegmentationFps's desktop value (backgroundLibrary) so all three move together.
+// Capturing/segmenting faster than the encoder actually sends (or segmenting slower than the
+// encoder sends — see detectSegmentationFps's doc comment on the "background peeks through
+// during motion" artifact that mismatch causes) both waste battery for no benefit: there's no
+// viewer-visible difference between "captured smooth, encoded down to 20fps" and "captured at
+// 20fps in the first place", except that the latter also means the segmenter and encoder each
+// do less work per second. bitrate/resolution/priority are otherwise unchanged from the stock
+// h720 preset.
+const DESKTOP_VIDEO_ENCODING = { ...VideoPresets.h720.encoding, maxFramerate: 20 };
+
 // Whatever stage currently feeds the sender: a LiveKit processor's output when one is attached
 // (the background effect, for video — nothing attaches one for audio anymore now that Krisp is
 // gone), the raw capture otherwise. Deliberately NOT sender.track — once the gate graph below is
@@ -234,7 +273,10 @@ function resolveUpstreamTrack(track: LocalAudioTrack | LocalVideoTrack): MediaSt
 }
 
 function vadLog(msg: string, data?: Record<string, unknown>) {
-  console.log(`[Connect VAD] ${msg}`, data ?? '');
+  // Dev-only: this fires at up to ~2x/sec (every VAD frame's health check, the self-heal
+  // interval, hijack detection, ...) for the entire duration of every call, which is wasted
+  // console/string-formatting work in production with no one watching it.
+  if (import.meta.env.DEV) console.log(`[Connect VAD] ${msg}`, data ?? '');
 }
 
 /**
@@ -546,7 +588,10 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
 
       if (noiseCancelEnabled) {
         try {
-          noiseCancelTrack = await GtcrnNoiseCancelTrack.create(track.mediaStreamTrack);
+          noiseCancelTrack = await GtcrnNoiseCancelTrack.create(
+            track.mediaStreamTrack,
+            () => isMicrophoneEnabledRef.current,
+          );
         } catch (e) {
           console.error('[Connect] failed to start noise cancellation, falling back to raw mic:', e);
           noiseCancelTrack = null;
@@ -613,7 +658,7 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
             // frame (~32ms) regardless of which specific event caused a hijack, or whether one
             // fired at all.
             if (micTrack) reassertSenderTrack(micTrack);
-            if (frameCount % VAD_LOG_FRAME_EVERY === 0) {
+            if (import.meta.env.DEV && frameCount % VAD_LOG_FRAME_EVERY === 0) {
               // peakAmplitude is the raw signal Silero actually saw for this frame (post-
               // resample, pre-model), independent of what the model made of it. If this stays
               // ~0 during clear speech, nothing's reaching the model at all — a capture/
@@ -994,7 +1039,9 @@ function useMediaEnhancementsState() {
   // Video is only delayed to stay level with however much the audio side is currently delaying
   // audio — zero, one, or both of these stages may be contributing at any given moment.
   useVideoDelay(
-    (autoGateEnabled ? GATE_DELAY_MS : 0) + (noiseCancelEnabled ? GTCRN_PIPELINE_LATENCY_MS : 0),
+    LIP_SYNC_VIDEO_DELAY_ENABLED
+      ? (autoGateEnabled ? GATE_DELAY_MS : 0) + (noiseCancelEnabled ? GTCRN_PIPELINE_LATENCY_MS : 0)
+      : 0,
   );
 
   return {
@@ -3428,7 +3475,23 @@ export default function CallRoomPage({
   const roomOptions: RoomOptions = useMemo(
     () => ({
       adaptiveStream: {
-        pixelDensity: 'screen',
+        // 1, not 'screen'. adaptiveStream asks the SFU for the smallest simulcast layer whose
+        // dimensions cover (tile CSS size x pixelDensity), so 'screen' — which resolves to
+        // devicePixelRatio, i.e. 2 on any Retina display — was asking for roughly twice the
+        // width and height actually being displayed. For a 400px-wide grid tile that's the
+        // difference between requesting 400px (satisfied by the 360p layer, ~450kbps) and
+        // 800px (forces the 720p layer, ~1.7Mbps) — close to 4x the downlink per tile, times
+        // however many tiles are on screen. On a connection with any headroom that's merely
+        // wasteful; on a marginal one it's the whole problem, since the client keeps demanding
+        // layers the link can't carry and bandwidth estimation oscillates instead of settling.
+        //
+        // Note this is also the only real lever on screen-share sharpness (see
+        // ClampedVideoTrack's comment): a large stage-view share still lands on the top layer
+        // because the element itself is big, while small share thumbnails now correctly drop
+        // to screenShareSimulcastLayers' h720fps5 instead of pulling full 1080p. If shared
+        // text turns out to read too softly in practice, 1.5 is the middle setting — don't go
+        // back to 'screen' without re-measuring the bandwidth cost above.
+        pixelDensity: 1,
       },
       dynacast: true,
       publishDefaults: {
@@ -3440,7 +3503,7 @@ export default function CallRoomPage({
         // — encoding 720p there just to immediately encode it back down to 360p would waste
         // exactly the budget this is meant to save. The tradeoff: anyone who pins or
         // fullscreens a phone participant sees 360p blown up, not switchable-to-720p.
-        videoEncoding: isMobileDevice() ? VideoPresets.h360.encoding : VideoPresets.h720.encoding,
+        videoEncoding: isMobileDevice() ? VideoPresets.h360.encoding : DESKTOP_VIDEO_ENCODING,
         simulcast: !isMobileDevice(),
         videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360],
         // LiveKit's own default here is 'balanced', which — per Chromium's

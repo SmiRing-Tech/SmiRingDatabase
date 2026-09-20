@@ -211,6 +211,9 @@ let instanceCounter = 0;
  * a little longer, and DevTools' console filter hides it in one search.
  */
 function bgLog(id: number, msg: string, data?: Record<string, unknown>) {
+  // Dev-only: several call sites log per-frame (every N frames of a 30fps pipeline) for the
+  // entire lifetime of the background effect, which is wasted string/object work in production.
+  if (!import.meta.env.DEV) return;
   const t = typeof performance !== 'undefined' ? performance.now().toFixed(0) : '?';
   console.log(`[mediapipe-bg #${id} t=${t}ms] ${msg}`, data ?? '');
 }

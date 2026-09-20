@@ -37,7 +37,11 @@ const VIDEO_CAPTURE_CONSTRAINTS: MediaTrackConstraints = isMobileDevice()
       width: { ideal: 1280 },
       height: { ideal: 720 },
       aspectRatio: { ideal: 16 / 9 },
-      frameRate: { ideal: 30 },
+      // 20fps, matching the publish-side maxFramerate override in CallRoomPage's roomOptions
+      // and the background effect's segmentationFps — see DESKTOP_VIDEO_ENCODING's comment for
+      // why all three need to move together (capturing/segmenting faster than the encoder
+      // actually sends just burns battery encoding frames simulcast will never transmit).
+      frameRate: { ideal: 20 },
     };
 
 export interface PreJoinChoices {
