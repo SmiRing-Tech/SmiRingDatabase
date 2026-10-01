@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiClient } from '../../lib/apiClient';
-import type { SegmentationQuality } from '../../lib/video/MediapipeBackgroundProcessor';
+import {
+  loadSegmentationModel,
+  type SegmentationQuality,
+} from '../../lib/video/MediapipeBackgroundProcessor';
 
 /**
  * The parts of the background feature that have nothing to do with where the
@@ -162,6 +165,42 @@ export function detectSegmentationQuality(): SegmentationQuality {
 export function detectSegmentationFps(): number {
   return isMobileDevice() ? 10 : 20;
 }
+
+/**
+ * How long the 'high' model's 15.6 MB download gets before we stop waiting and build a
+ * 'balanced' processor instead. A download that slow means either a poor connection or a
+ * machine already too busy to keep up — either way the heavier model is the wrong call for
+ * this session, and the person is otherwise left staring at a blank preview (or, mid-call,
+ * keeps the old effect) for as long as the download happens to take.
+ */
+export const HIGH_MODEL_LOAD_TIMEOUT_MS = 3000;
+
+/**
+ * The quality to actually build: `quality` itself, unless it's 'high' and its model can't be
+ * in memory within HIGH_MODEL_LOAD_TIMEOUT_MS (or fails to download at all), in which case
+ * 'balanced'. Call this *before* tearing down whatever processor is currently running, so a
+ * mid-call upgrade attempt keeps the existing effect live while the download runs, and a
+ * failed one never touches it.
+ *
+ * Only the download is time-boxed. The model's WASM/graph setup after that can't be cancelled
+ * once started (see loadSegmentationModel) and isn't covered — it's local CPU/GPU work, not the
+ * network-bound part, and a machine that's genuinely too slow for it is what the runtime
+ * slow-frame downgrade (onSustainedSlowFrames) is for.
+ */
+export async function qualityWithinLoadDeadline(quality: SegmentationQuality): Promise<SegmentationQuality> {
+  if (quality !== 'high') return quality;
+  try {
+    await loadSegmentationModel('high', HIGH_MODEL_LOAD_TIMEOUT_MS);
+    return 'high';
+  } catch (e) {
+    console.warn('[Background] high-quality model not available in time, using balanced:', e);
+    return 'balanced';
+  }
+}
+
+/** Shown when qualityWithinLoadDeadline had to fall back. */
+export const HIGH_MODEL_FALLBACK_MESSAGE =
+  '通信環境または端末の負荷により、背景エフェクトを標準画質に切り替えました。';
 
 /** Loads, uploads and deletes the user's saved backgrounds. */
 export function useBackgroundLibrary(enabled: boolean) {

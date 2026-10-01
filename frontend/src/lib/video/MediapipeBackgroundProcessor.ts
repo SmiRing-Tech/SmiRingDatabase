@@ -59,6 +59,78 @@ const MODELS: Record<SegmentationQuality, string> = {
   high: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite',
 };
 
+/** Thrown by `loadSegmentationModel` when the download misses the caller's deadline. */
+export class SegmentationModelTimeoutError extends Error {
+  constructor(quality: SegmentationQuality, timeoutMs: number) {
+    super(`segmentation model '${quality}' did not finish downloading within ${timeoutMs}ms`);
+    this.name = 'SegmentationModelTimeoutError';
+  }
+}
+
+type ModelDownload = { promise: Promise<Uint8Array>; controller: AbortController; done: boolean };
+
+/** One download per model for the whole page, shared by every processor and caller. */
+const modelDownloads = new Map<SegmentationQuality, ModelDownload>();
+
+function startModelDownload(quality: SegmentationQuality): ModelDownload {
+  const controller = new AbortController();
+  const entry: ModelDownload = { controller, done: false, promise: Promise.resolve(new Uint8Array()) };
+  entry.promise = fetch(MODELS[quality], { signal: controller.signal })
+    .then(async (res) => {
+      if (!res.ok) throw new Error(`segmentation model '${quality}' download failed (${res.status})`);
+      const buffer = new Uint8Array(await res.arrayBuffer());
+      entry.done = true;
+      return buffer;
+    })
+    .catch((err) => {
+      // Never cache a failure (including an abort) — the next attempt should hit the network again.
+      if (modelDownloads.get(quality) === entry) modelDownloads.delete(quality);
+      throw err;
+    });
+  modelDownloads.set(quality, entry);
+  return entry;
+}
+
+/**
+ * Downloads a model's bytes ourselves rather than handing MediaPipe a URL, so the slow part
+ * of a model load — on 'high', a 15.6 MB download — can be given a deadline and *cancelled*.
+ * MediaPipe's own loader has no cancellation at all, and LiveKit holds the track's change lock
+ * for the whole of `setProcessor()` → `init()`, so once a processor has started loading there
+ * is no way to give up on it early: `stopProcessor()` just queues behind it. Fetching the bytes
+ * up front, before any processor or segmenter exists, makes "give up" a plain fetch abort with
+ * no GL state involved — see MediapipeBackgroundProcessor.init()'s doc comment for why two
+ * segmenters must never overlap.
+ *
+ * With `timeoutMs`, rejects with `SegmentationModelTimeoutError` and aborts the download if it
+ * isn't done by then. Aborted rather than left to finish in the background: on a connection
+ * slow enough to miss the deadline, the rest of a 15 MB download would be competing with the
+ * call's own audio/video for that same bandwidth. The abort applies to the shared download, so
+ * any other caller waiting on the same model at that moment gets the rejection too.
+ *
+ * Kept in memory once loaded, so rebuilding a processor later in the page (a quality toggle,
+ * a re-publish) never downloads again.
+ */
+export function loadSegmentationModel(quality: SegmentationQuality, timeoutMs?: number): Promise<Uint8Array> {
+  const entry = modelDownloads.get(quality) ?? startModelDownload(quality);
+  if (timeoutMs === undefined || entry.done) return entry.promise;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      entry.controller.abort();
+      reject(new SegmentationModelTimeoutError(quality, timeoutMs));
+    }, timeoutMs);
+    entry.promise.then(
+      (buffer) => {
+        clearTimeout(timer);
+        resolve(buffer);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 /**
  * Which way each bundled model's confidence mask reads — 1 when it scores
  * *background* (so the shader needs to invert it to get subject alpha), 0 when
@@ -183,6 +255,9 @@ export function supportsMediapipeBackground(): boolean {
     'captureStream' in HTMLCanvasElement.prototype;
   return canRender && canPipe;
 }
+
+/** Rolling-average state for one of trackFramePerf's windows (see pushPerfWindow). */
+type PerfWindowState = { durations: number[]; sum: number };
 
 type Programs = {
   alpha: GLProgram<'u_mask' | 'u_history' | 'u_invert' | 'u_lo' | 'u_hi' | 'u_history_weight'>;
@@ -345,9 +420,24 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   /** Above this average ms/frame, compositing alone is already eating most of a 30fps budget. */
   private static readonly PERF_SLOW_AVG_MS = 20;
 
-  private slowFrameDurations: number[] = [];
+  private slowWindow: PerfWindowState = { durations: [], sum: 0 };
 
-  private slowFrameDurationSum = 0;
+  /**
+   * Second, shorter/stricter window alongside PERF_SLOW_WINDOW — a genuine but shorter-lived
+   * heavy patch (a busy CPU for a couple of seconds, not the whole call) averages out inside
+   * the 90-frame/~4.5s window above before ever crossing PERF_SLOW_AVG_MS, since most
+   * individual frames are cheap GL-only work between segmentations (see trackFramePerf's
+   * comment) and dilute the average. ~1.5s at 20fps is short enough that a real stutter of
+   * that length isn't hidden by cheaper neighboring frames, and 33ms/frame (sub-30fps) is a
+   * level a background effect alone has no business sustaining for that long. Reuses the same
+   * `slowCallbackFired` latch as PERF_SLOW_WINDOW — whichever trips first wins, there is only
+   * ever one downgrade.
+   */
+  private static readonly PERF_SPIKE_WINDOW = 30;
+
+  private static readonly PERF_SPIKE_AVG_MS = 33;
+
+  private spikeWindow: PerfWindowState = { durations: [], sum: 0 };
 
   private slowCallbackFired = false;
 
@@ -711,10 +801,14 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
         `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`,
     );
 
+    // Normally already in memory: callers that care about load time fetch it first, with a
+    // deadline, before building this processor at all — see loadSegmentationModel.
+    const modelAssetPath = this.options.assetPaths?.modelAssetPath;
     this.segmenter = await ImageSegmenter.createFromOptions(fileset, {
       baseOptions: {
-        modelAssetPath:
-          this.options.assetPaths?.modelAssetPath ?? MODELS[this.options.quality],
+        ...(modelAssetPath
+          ? { modelAssetPath }
+          : { modelAssetBuffer: await loadSegmentationModel(this.options.quality) }),
         delegate: this.options.delegate,
       },
       canvas: this.canvas,
@@ -989,27 +1083,57 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   }
 
   /**
-   * Averages over a rolling window rather than reacting to any single frame — segmentForVideo
+   * Feeds one rolling window and reports its average once the window is full — shared by both
+   * the long/lenient and short/strict slow-frame windows below (and the fast-frame one), so the
+   * two don't duplicate the push/trim/average bookkeeping with only their constants differing.
+   * Returns null until the window has enough samples to mean anything.
+   */
+  private static pushPerfWindow(state: PerfWindowState, windowSize: number, durationMs: number): number | null {
+    state.durations.push(durationMs);
+    state.sum += durationMs;
+    if (state.durations.length > windowSize) {
+      state.sum -= state.durations.shift()!;
+    }
+    if (state.durations.length < windowSize) return null;
+    return state.sum / state.durations.length;
+  }
+
+  /**
+   * Averages over rolling windows rather than reacting to any single frame — segmentForVideo
    * only actually runs on the fraction of frames allowed by segmentationFps, so most
    * individual frames are cheap GL-only work and a one-off spike or dip (a GC pause, a
    * dropped frame) is not the same thing as this processor genuinely being too heavy, or
    * comfortably light, for the device.
+   *
+   * Two windows feed the same slow-frame callback: PERF_SLOW_WINDOW catches a steady, lower-grade
+   * cost held for the whole ~4.5s window, and PERF_SPIKE_WINDOW catches a shorter but more severe
+   * patch (~1.5s) that the longer window would otherwise average away — see PERF_SPIKE_WINDOW's
+   * comment. Whichever crosses its own threshold first fires; there is only ever one downgrade.
    */
   private trackFramePerf(durationMs: number) {
     const slowCb = this.options.onSustainedSlowFrames;
     if (slowCb && !this.slowCallbackFired) {
-      this.slowFrameDurations.push(durationMs);
-      this.slowFrameDurationSum += durationMs;
-      if (this.slowFrameDurations.length > MediapipeBackgroundProcessor.PERF_SLOW_WINDOW) {
-        this.slowFrameDurationSum -= this.slowFrameDurations.shift()!;
-      }
-      if (this.slowFrameDurations.length >= MediapipeBackgroundProcessor.PERF_SLOW_WINDOW) {
-        const avg = this.slowFrameDurationSum / this.slowFrameDurations.length;
-        if (avg > MediapipeBackgroundProcessor.PERF_SLOW_AVG_MS) {
-          this.slowCallbackFired = true;
-          this.log('sustained slow frames detected', { avgFrameMs: Math.round(avg) });
-          slowCb(avg);
-        }
+      const sustainedAvg = MediapipeBackgroundProcessor.pushPerfWindow(
+        this.slowWindow,
+        MediapipeBackgroundProcessor.PERF_SLOW_WINDOW,
+        durationMs,
+      );
+      const spikeAvg = MediapipeBackgroundProcessor.pushPerfWindow(
+        this.spikeWindow,
+        MediapipeBackgroundProcessor.PERF_SPIKE_WINDOW,
+        durationMs,
+      );
+      const triggeredBy =
+        sustainedAvg !== null && sustainedAvg > MediapipeBackgroundProcessor.PERF_SLOW_AVG_MS
+          ? ('sustained' as const)
+          : spikeAvg !== null && spikeAvg > MediapipeBackgroundProcessor.PERF_SPIKE_AVG_MS
+            ? ('spike' as const)
+            : null;
+      if (triggeredBy) {
+        const avg = triggeredBy === 'sustained' ? sustainedAvg! : spikeAvg!;
+        this.slowCallbackFired = true;
+        this.log('sustained slow frames detected', { avgFrameMs: Math.round(avg), triggeredBy });
+        slowCb(avg);
       }
     }
 

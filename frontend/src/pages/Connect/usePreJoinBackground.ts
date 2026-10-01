@@ -13,6 +13,8 @@ import {
   detectSegmentationQuality,
   detectSegmentationFps,
   isMobileDevice,
+  qualityWithinLoadDeadline,
+  HIGH_MODEL_FALLBACK_MESSAGE,
   type BackgroundMode,
 } from './backgroundLibrary';
 import type { BackgroundEffectState } from './useBackgroundEffect';
@@ -92,26 +94,62 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
   }, []);
 
   /**
+   * 'high' was asked for but its model didn't arrive in time (see qualityWithinLoadDeadline):
+   * settle on 'balanced' as if the person had picked it, including for future joins on this
+   * device. Also latches autoUpgradedRef so the balanced processor's own headroom check doesn't
+   * go straight back to retrying the same download every few seconds. Deliberately not routed
+   * through setQuality('balanced'), which would reset that latch; a manual toggle to 'high'
+   * doesn't consult it at all, so the person can still retry by hand.
+   */
+  const handleHighModelFallback = useCallback((fallbackMode: BackgroundMode, fallbackImageId: string | undefined) => {
+    autoUpgradedRef.current = true;
+    writeStoredChoice({ mode: fallbackMode, imageId: fallbackImageId, quality: 'balanced' });
+    setQualityState('balanced');
+    setError(HIGH_MODEL_FALLBACK_MESSAGE);
+  }, []);
+
+  /**
    * Brings the track in line with the requested effect. Reuses the running
    * processor where it can — rebuilding one means reloading the segmentation
    * model, which is a visible stall (and a 16 MB download on the 'high' model).
+   *
+   * Resolves to the quality actually applied, which is 'balanced' instead of a
+   * requested 'high' whenever that model couldn't be loaded in time — callers that
+   * persist the choice afterwards must store this, not what they asked for.
    */
   const applyEffect = useCallback(
-    async (nextMode: BackgroundMode, nextImageId: string | undefined, nextQuality: SegmentationQuality) => {
+    async (
+      nextMode: BackgroundMode,
+      nextImageId: string | undefined,
+      nextQuality: SegmentationQuality,
+    ): Promise<SegmentationQuality> => {
       hookLog('applyEffect() called', { nextMode, nextImageId, nextQuality, hasTrack: !!track });
-      if (!track) return;
+      if (!track) return nextQuality;
 
       if (nextMode === 'off') {
         if (track.getProcessor()) await track.stopProcessor();
         processorRef.current = null;
         hookLog('applyEffect() mode=off, isReady=true immediately');
         setIsReady(true);
-        return;
+        return nextQuality;
       }
 
       const imageUrl = nextMode === 'image' ? imageUrlFor(nextImageId) : undefined;
       if (nextMode === 'image' && !imageUrl) {
         throw new Error('選択した背景画像が見つかりませんでした。');
+      }
+
+      // Get the 'high' model into memory (or give up on it) *before* touching whatever is
+      // currently running — a processor that's already 'high' has nothing to load.
+      let effectiveQuality = nextQuality;
+      const attachedBefore = track.getProcessor();
+      if (
+        nextQuality === 'high' &&
+        !(attachedBefore instanceof MediapipeBackgroundProcessor && attachedBefore.quality === 'high')
+      ) {
+        effectiveQuality = await qualityWithinLoadDeadline('high');
+        hookLog('applyEffect() high model deadline result', { effectiveQuality });
+        if (effectiveQuality !== nextQuality) handleHighModelFallback(nextMode, nextImageId);
       }
 
       // Ask the track itself rather than trusting processorRef alone, and adopt
@@ -122,7 +160,7 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
       const current =
         existingOnTrack instanceof MediapipeBackgroundProcessor ? existingOnTrack : processorRef.current;
       const isAttached = !!current && track.getProcessor() === current;
-      const qualityMatches = current?.quality === nextQuality;
+      const qualityMatches = current?.quality === effectiveQuality;
       hookLog('applyEffect() decision', { isAttached, qualityMatches, currentQuality: current?.quality });
 
       if (isAttached && qualityMatches) {
@@ -138,7 +176,7 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
         await current!.waitUntilReady();
         hookLog('applyEffect() reuse path done, isReady=true');
         setIsReady(true);
-        return;
+        return effectiveQuality;
       }
 
       // A different quality (only reachable via the manual toggle now — see
@@ -164,7 +202,7 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
       await track.setProcessor(new BlankFrameProcessor());
 
       const processor = new MediapipeBackgroundProcessor({
-        quality: nextQuality,
+        quality: effectiveQuality,
         mode: nextMode === 'image' ? 'image' : 'blur',
         imageUrl: imageUrl ?? null,
         blurRadius: 16,
@@ -175,8 +213,8 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
         segmentationFps: detectSegmentationFps(),
         // Only 'high' has anywhere lighter to fall back to, and only 'balanced' has
         // anywhere heavier to try — never both on the same processor.
-        onSustainedSlowFrames: nextQuality === 'high' ? handlePerfDowngrade : undefined,
-        onSustainedFastFrames: nextQuality === 'balanced' ? handlePerfUpgrade : undefined,
+        onSustainedSlowFrames: effectiveQuality === 'high' ? handlePerfDowngrade : undefined,
+        onSustainedFastFrames: effectiveQuality === 'balanced' ? handlePerfUpgrade : undefined,
       });
       hookLog('applyEffect() calling track.setProcessor()');
       const tSetProcessor = performance.now();
@@ -193,8 +231,9 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
         ms: Math.round(performance.now() - tWait),
       });
       setIsReady(true);
+      return effectiveQuality;
     },
-    [track, imageUrlFor, handlePerfDowngrade, handlePerfUpgrade],
+    [track, imageUrlFor, handlePerfDowngrade, handlePerfUpgrade, handleHighModelFallback],
   );
 
   const commit = useCallback(
@@ -235,8 +274,11 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
       try {
         writeStoredChoice({ mode, imageId, quality: nextQuality });
         setQualityState(nextQuality);
-        await applyEffect(mode, imageId, nextQuality);
-        return true;
+        const applied = await applyEffect(mode, imageId, nextQuality);
+        // A 'high' that fell back to 'balanced' isn't a success for the caller's purposes
+        // (handlePerfUpgrade would otherwise announce an upgrade that didn't happen) —
+        // handleHighModelFallback has already said what actually happened.
+        return applied === nextQuality;
       } catch (e) {
         console.error('[PreJoin] failed to change segmentation quality:', e);
         setError(e instanceof Error ? e.message : '画質の変更に失敗しました');
@@ -315,10 +357,10 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
       try {
         const uploaded = await uploadBackground(file);
         // Select it immediately — uploading a background and not using it is not a thing.
-        await applyEffect('image', uploaded.id, quality);
+        const applied = await applyEffect('image', uploaded.id, quality);
         setMode('image');
         setImageId(uploaded.id);
-        writeStoredChoice({ mode: 'image', imageId: uploaded.id, quality });
+        writeStoredChoice({ mode: 'image', imageId: uploaded.id, quality: applied });
       } catch (e) {
         console.error('[PreJoin] background upload failed:', e);
         setError(e instanceof Error ? e.message : 'アップロードに失敗しました');
@@ -337,10 +379,10 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
         await deleteBackground(id);
         // Deleting the background currently on screen leaves nothing to show.
         if (imageId === id) {
-          await applyEffect('blur', undefined, quality);
+          const applied = await applyEffect('blur', undefined, quality);
           setMode('blur');
           setImageId(undefined);
-          writeStoredChoice({ mode: 'blur', quality });
+          writeStoredChoice({ mode: 'blur', quality: applied });
         }
       } catch (e) {
         console.error('[PreJoin] background delete failed:', e);
