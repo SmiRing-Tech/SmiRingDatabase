@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import type { User } from '@supabase/supabase-js';
 import crypto from 'crypto';
-import { AccessToken, RoomServiceClient, WebhookReceiver, DataPacket_Kind } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient, WebhookReceiver, DataPacket_Kind, TokenVerifier } from 'livekit-server-sdk';
 import { ParticipantInfo_Kind } from '@livekit/protocol';
 import { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import multer from 'multer';
@@ -148,6 +149,52 @@ async function mintLiveKitToken(userId: string, room: string, usernameOverride?:
   });
   at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true });
   return at.toJwt();
+}
+
+/**
+ * Chat needs a caller identity, but an external invite-link guest never holds a Supabase
+ * session — only the LiveKit access token minted for them by /anonymous-token (or a
+ * mini-room move). This accepts either credential:
+ *  - a normal Supabase JWT, exactly like `authenticate`; or
+ *  - that LiveKit token, verified against LIVEKIT_API_SECRET so it can't be forged.
+ * A LiveKit token is only trusted here for a `guest_` identity scoped to *this* route's
+ * :roomId — an internal member's own LiveKit token is never accepted, so logged-in users
+ * always go through the Supabase path, and a guest's token from one room can't be replayed
+ * as chat auth for a different room.
+ */
+async function authenticateChatCaller(req: Request, res: Response, next: NextFunction) {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) {
+    return res.status(401).json({ error: '認証トークンがありません' });
+  }
+
+  const { data: { user } } = await supabase.auth.getUser(token);
+  if (user) {
+    req.user = user;
+    return next();
+  }
+
+  if (LIVEKIT_API_KEY && LIVEKIT_API_SECRET) {
+    try {
+      const grants = await new TokenVerifier(LIVEKIT_API_KEY, LIVEKIT_API_SECRET).verify(token);
+      const identity = grants.sub;
+      const roomId = req.params.roomId;
+      if (identity && identity.startsWith('guest_') && grants.video?.room === roomId) {
+        req.user = {
+          id: identity,
+          app_metadata: {},
+          user_metadata: { guest_name: grants.name || identity },
+          aud: 'guest',
+          created_at: new Date().toISOString(),
+        } as unknown as User;
+        return next();
+      }
+    } catch {
+      // Invalid/expired LiveKit token — fall through to the 401 below.
+    }
+  }
+
+  return res.status(401).json({ error: '認証に失敗しました' });
 }
 
 /** Look up display name + avatar for a user, falling back gracefully. */
@@ -420,17 +467,23 @@ function getPendingAssignment(mainRoomId: string, identity: string): PendingMini
   return item;
 }
 
-/** Finds which of the given LiveKit rooms an identity is currently connected to. */
-async function findParticipantCurrentRoom(
+/** Finds which of the candidate rooms a participant is currently in, and hands back their
+ *  *current* LiveKit name — needed when re-minting their token for a different room (a
+ *  mini-room move), since `mintLiveKitToken` only knows a profile-backed name for logged-in
+ *  members; an external guest's display name only ever existed in the token they already
+ *  hold, so it has to be carried forward explicitly or it decays to their raw identity
+ *  (`guest_...`) on every subsequent move. */
+async function findParticipantWithCurrentRoom(
   candidateRoomIds: string[],
   identity: string,
-): Promise<string | null> {
+): Promise<{ roomId: string; name: string } | null> {
   if (!roomService) return null;
   const results = await Promise.all(
     candidateRoomIds.map(async (roomId) => {
       try {
         const participants = await roomService!.listParticipants(roomId);
-        return participants.some((p) => p.identity === identity) ? roomId : null;
+        const match = participants.find((p) => p.identity === identity);
+        return match ? { roomId, name: match.name || match.identity } : null;
       } catch {
         return null;
       }
@@ -1651,7 +1704,7 @@ router.patch('/api/connect/rooms/:id', authenticate, async (req: Request, res: R
 });
 
 // GET /api/connect/rooms/:roomId/messages - Fetch chat history for a room (server is source of truth)
-router.get('/api/connect/rooms/:roomId/messages', authenticate, async (req: Request, res: Response) => {
+router.get('/api/connect/rooms/:roomId/messages', authenticateChatCaller, async (req: Request, res: Response) => {
   try {
     const { roomId } = req.params;
     if (!isValidRoomName(roomId)) {
@@ -1703,7 +1756,7 @@ router.get('/api/connect/rooms/:roomId/messages', authenticate, async (req: Requ
 // POST /api/connect/rooms/:roomId/messages - Send a chat message.
 // The server (not the client) decides sender identity/name/avatar and the canonical threadId,
 // so all connected clients converge on the same values regardless of local LiveKit connection state.
-router.post('/api/connect/rooms/:roomId/messages', authenticate, async (req: Request, res: Response) => {
+router.post('/api/connect/rooms/:roomId/messages', authenticateChatCaller, async (req: Request, res: Response) => {
   try {
     const { roomId } = req.params;
     if (!isValidRoomName(roomId)) {
@@ -1728,7 +1781,12 @@ router.post('/api/connect/rooms/:roomId/messages', authenticate, async (req: Req
         : null;
 
     const userId = req.user!.id;
-    const fallbackName = req.user!.email?.split('@')[0] || userId;
+    // Guests (see authenticateChatCaller) have no email/profile row — their display name
+    // came from their LiveKit token instead and was stashed here at auth time.
+    const fallbackName =
+      (req.user!.user_metadata?.guest_name as string | undefined) ||
+      req.user!.email?.split('@')[0] ||
+      userId;
     const { displayName, avatarUrl } = await getDisplayProfile(userId, fallbackName);
 
     const isEveryone = recipients.length === 0;
@@ -1780,7 +1838,7 @@ router.post('/api/connect/rooms/:roomId/messages', authenticate, async (req: Req
 });
 
 // PATCH /api/connect/rooms/:roomId/messages/:messageId - Edit a chat message (own message only)
-router.patch('/api/connect/rooms/:roomId/messages/:messageId', authenticate, async (req: Request, res: Response) => {
+router.patch('/api/connect/rooms/:roomId/messages/:messageId', authenticateChatCaller, async (req: Request, res: Response) => {
   try {
     const { roomId, messageId } = req.params;
     if (!isValidRoomName(roomId)) {
@@ -1849,7 +1907,7 @@ router.patch('/api/connect/rooms/:roomId/messages/:messageId', authenticate, asy
 });
 
 // DELETE /api/connect/rooms/:roomId/messages/:messageId - Delete a chat message (own message only)
-router.delete('/api/connect/rooms/:roomId/messages/:messageId', authenticate, async (req: Request, res: Response) => {
+router.delete('/api/connect/rooms/:roomId/messages/:messageId', authenticateChatCaller, async (req: Request, res: Response) => {
   try {
     const { roomId, messageId } = req.params;
     if (!isValidRoomName(roomId)) {
@@ -1892,7 +1950,7 @@ router.delete('/api/connect/rooms/:roomId/messages/:messageId', authenticate, as
 });
 
 // POST /api/connect/rooms/:roomId/messages/:messageId/reactions - Toggle reaction on a message
-router.post('/api/connect/rooms/:roomId/messages/:messageId/reactions', authenticate, async (req: Request, res: Response) => {
+router.post('/api/connect/rooms/:roomId/messages/:messageId/reactions', authenticateChatCaller, async (req: Request, res: Response) => {
   try {
     const { roomId, messageId } = req.params;
     if (!isValidRoomName(roomId)) {
@@ -2345,8 +2403,11 @@ router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req
       }
 
       // Self-initiated: apply immediately, no notify/delay — the client already knows
-      // it asked for this, it just needs a token for the destination room.
-      const token = await mintLiveKitToken(userId, destinationRoomId);
+      // it asked for this, it just needs a token for the destination room. Carry the
+      // current display name forward explicitly (see findParticipantWithCurrentRoom) so an
+      // external guest doesn't lose their entered name and fall back to their raw identity.
+      const self = await findParticipantWithCurrentRoom([roomId], userId);
+      const token = await mintLiveKitToken(userId, destinationRoomId, self?.name);
       return res.status(200).json({ ok: true, token, url: LIVEKIT_URL, destinationRoomId });
     }
 
@@ -2354,13 +2415,14 @@ router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req
       return res.status(403).json({ error: '他の参加者を移動させるにはホスト権限が必要です' });
     }
 
-    const fromRoom = await findParticipantCurrentRoom(
+    const target = await findParticipantWithCurrentRoom(
       [roomId, ...miniRooms.map((r) => r.id)],
       targetIdentity,
     );
-    if (!fromRoom) {
+    if (!target) {
       return res.status(404).json({ error: '対象の参加者が見つかりません' });
     }
+    const fromRoom = target.roomId;
     if (fromRoom === destinationRoomId) {
       return res.status(200).json({ ok: true, alreadyThere: true });
     }
@@ -2377,7 +2439,7 @@ router.post('/api/connect/rooms/:roomId/miniroom/move', authenticate, async (req
     }
 
     const delayMs = 4000;
-    const targetToken = await mintLiveKitToken(targetIdentity, destinationRoomId);
+    const targetToken = await mintLiveKitToken(targetIdentity, destinationRoomId, target.name);
     const notifyPayload = Buffer.from(
       JSON.stringify({
         type: 'miniroom_notify',

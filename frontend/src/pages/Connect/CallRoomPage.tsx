@@ -70,7 +70,7 @@ import {
   Smile,
   Clock,
 } from 'lucide-react';
-import { apiClient } from '../../lib/apiClient';
+import { apiClient, setGuestAuthToken } from '../../lib/apiClient';
 import PreJoinScreen, { type PreJoinChoices } from '../../components/Connect/PreJoinScreen';
 import MiniRoomPanel from '../../components/Connect/MiniRoomPanel';
 import ParticipantsPanel from '../../components/Connect/ParticipantsPanel';
@@ -1030,8 +1030,8 @@ function DropdownPortal({
  * apply/sync effect here: the two booleans below just flow straight into that hook's params,
  * and it owns the entire lifecycle reactively.
  */
-function useMediaEnhancementsState() {
-  const background = useBackgroundEffect();
+function useMediaEnhancementsState(isGuest: boolean) {
+  const background = useBackgroundEffect(isGuest);
   const [autoGateEnabled, setAutoGateEnabled] = useState(false);
   const [vadSensitivity, setVadSensitivity] = useState(VAD_POSITIVE_SPEECH_THRESHOLD);
   const [noiseCancelEnabled, setNoiseCancelEnabled] = useState(true);
@@ -2161,13 +2161,15 @@ function CustomVideoConference({
   onOpenProfile?: (userId: string) => void;
 }) {
   const { localParticipant } = useLocalParticipant();
-  const mediaEnhancements = useMediaEnhancementsState();
   // Prefer the authenticated user id (matches useAdvancedChat's selfIdentity and the
   // backend's LiveKit identity for logged-in joiners; localParticipant.identity is empty
   // until the connection completes — see useAdvancedChat's comment). Anonymous guests have
   // no user.id, so they fall back to localParticipant.identity (their guest_* identity).
   const { user } = useAuth();
   const selfIdentity = user?.id || localParticipant.identity;
+  // No account at all (not merely "not the internal room type") is what actually means
+  // "external invite-link guest" — see useMediaEnhancementsState/firstTimeDefault.
+  const mediaEnhancements = useMediaEnhancementsState(!user);
 
   // Forces exactly one remount of the grid/stage layout the moment the local
   // camera's publication first appears. Under investigation: the local camera
@@ -2628,6 +2630,11 @@ function CallRoomInner({
   const [selectedProfileUserId, setSelectedProfileUserId] = useState<string | null>(null);
   const [showClaimHostModal, setShowClaimHostModal] = useState(false);
   const { user } = useAuth();
+  // Prefer the authenticated user id (matches the backend's LiveKit identity for logged-in
+  // joiners). Anonymous guests have no user.id, so they fall back to localParticipant.identity
+  // (their guest_* identity) — see the same pattern in GridLayoutView's selfIdentity above.
+  const { localParticipant } = useLocalParticipant();
+  const selfIdentity = user?.id || localParticipant.identity;
 
   const isMiniRoomHost = isHost;
 
@@ -2639,7 +2646,7 @@ function CallRoomInner({
 
   const miniRooms = useMiniRooms({
     mainRoomId: roomId,
-    selfIdentity: user?.id || '',
+    selfIdentity,
     isHost: isMiniRoomHost,
     onReconnect,
     onBeforeReconnectDisconnect,
@@ -2687,18 +2694,15 @@ function CallRoomInner({
     if (id) setShowRecordingReview(true);
   }, [recording]);
 
-  // Safe to call inside <LiveKitRoom>. selfIdentity comes from the authenticated user id
-  // (same value the backend issues as the LiveKit participant identity) rather than
-  // localParticipant.identity, which is empty until the LiveKit connection completes.
   // Keyed off the *current* room (main or mini room) so each mini room gets its own
+  // thread/unread state when the participant is moved between rooms.
   const chat = useAdvancedChat({
     roomId: miniRooms.currentRoomId,
-    selfIdentity: user?.id || '',
+    selfIdentity,
     isOpen: showChat,
   });
 
-  const { localParticipant } = useLocalParticipant();
-  const reactions = useReactions({ selfIdentity: user?.id || localParticipant?.identity || '' });
+  const reactions = useReactions({ selfIdentity });
   const room = useRoomContext();
 
   // Listen for host_granted message via LiveKit data channel
@@ -3170,6 +3174,7 @@ function PreJoinStage({
               avatarUrl={myAvatarUrl}
               joinLabel="このルームに参加"
               requireUsername={anonymous}
+              isGuest={anonymous}
               submitDisabled={submitDisabled}
               submitDisabledLabel={submitDisabledLabel}
               onSubmit={onJoin}
@@ -3213,6 +3218,13 @@ export default function CallRoomPage({
   const [errorMsg, setErrorMsg] = useState('');
   const [isDisconnected, setIsDisconnected] = useState(false);
   const [waitlistId, setWaitlistId] = useState<string | null>(null);
+
+  // Clears apiClient's guest credential fallback (see setGuestAuthToken) once this
+  // anonymous-invite call unmounts, so it can't leak into whatever this tab/window shows next.
+  useEffect(() => {
+    if (!anonymousInvite) return;
+    return () => setGuestAuthToken(null);
+  }, [anonymousInvite]);
 
   // Warn user with native browser dialog when trying to close the tab or leave during active call
   useEffect(() => {
@@ -3300,6 +3312,9 @@ export default function CallRoomPage({
 
         const data = await res.json();
         setToken(data.token);
+        // Guests have no Supabase session — apiClient falls back to this LiveKit token as
+        // their chat/mini-room API credential (see authenticateChatCaller on the backend).
+        setGuestAuthToken(data.token);
         setServerUrl(data.url);
         if (data.roomTitle) setRoomTitle(data.roomTitle);
         setIsHost(!!data.is_host);
@@ -3581,9 +3596,12 @@ export default function CallRoomPage({
   const handleReconnect = useCallback((target: ReconnectTarget) => {
     console.log('[CallRoomPage] handleReconnect: setting new token/url', { url: target.url });
     setToken(target.token);
+    // A mini-room move re-mints the LiveKit token; guests' chat/mini-room API credential
+    // (see setGuestAuthToken in claimAnonymousToken) has to move with it or it goes stale.
+    if (anonymousInvite) setGuestAuthToken(target.token);
     setServerUrl(target.url);
     setChoices((prev) => (prev ? { ...prev, audioEnabled: target.audio, videoEnabled: target.video } : prev));
-  }, []);
+  }, [anonymousInvite]);
 
   const postCallPath = anonymousInvite ? '/' : '/connect';
 

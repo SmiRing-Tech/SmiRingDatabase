@@ -34,9 +34,9 @@ function hookLog(msg: string, data?: Record<string, unknown>) {
  * Choices are written to localStorage as they are made, which is what the call
  * reads on join — so this screen configures the call, it does not just preview it.
  */
-export function usePreJoinBackground(track: LocalVideoTrack | null) {
+export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = false) {
   const supported = useMemo(() => supportsMediapipeBackground(), []);
-  const stored = useMemo(readStoredChoice, []);
+  const stored = useMemo(() => readStoredChoice(isGuest), [isGuest]);
 
   const [mode, setMode] = useState<BackgroundMode>(stored.mode);
   const [imageId, setImageId] = useState<string | undefined>(stored.imageId);

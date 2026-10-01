@@ -32,7 +32,7 @@ export { PRESETS } from './backgroundLibrary';
  * The picture library and the remembered choice live in `backgroundLibrary`,
  * shared with the pre-join preview so the two cannot drift apart.
  */
-export function useBackgroundEffect() {
+export function useBackgroundEffect(isGuest = false) {
   const { localParticipant } = useLocalParticipant();
   const processorRef = useRef<MediapipeBackgroundProcessor | null>(null);
   // Guards the automatic high -> balanced fallback (see handlePerfDowngrade) so
@@ -49,7 +49,7 @@ export function useBackgroundEffect() {
   const setQualityRef = useRef<((q: SegmentationQuality) => Promise<boolean>) | undefined>(undefined);
 
   const supported = useMemo(() => supportsMediapipeBackground(), []);
-  const stored = useMemo(readStoredChoice, []);
+  const stored = useMemo(() => readStoredChoice(isGuest), [isGuest]);
 
   const [mode, setMode] = useState<BackgroundMode>(stored.mode);
   const [imageId, setImageId] = useState<string | undefined>(stored.imageId);

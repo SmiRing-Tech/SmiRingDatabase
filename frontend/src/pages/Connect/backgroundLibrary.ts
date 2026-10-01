@@ -49,9 +49,16 @@ export type StoredChoice = {
  * a battery budget that can't really absorb it — so unlike desktop, a phone's
  * first join opts out rather than in. Anyone who wants it can still turn it
  * on from the panel, and that choice is what gets remembered from then on.
+ *
+ * An external invite-link guest gets blur rather than the SmiRing brand image:
+ * showing a SmiRing-branded background behind someone outside the organization
+ * reads as if they belong to it, which isn't the intent — blur hides the room
+ * without implying an affiliation. Only affects the *first* join on a given
+ * device; once someone (guest or not) picks something themselves, that sticks.
  */
-function firstTimeDefault(): StoredChoice {
+function firstTimeDefault(isGuest: boolean): StoredChoice {
   if (isMobileDevice()) return { mode: 'off' };
+  if (isGuest) return { mode: 'blur' };
   return { mode: 'image', imageId: 'preset:smiring-brand' };
 }
 
@@ -59,21 +66,24 @@ function firstTimeDefault(): StoredChoice {
  * The choice lives in localStorage rather than on the server: it is a property
  * of "this laptop's camera and GPU", not of the account, so a phone joining the
  * same call should not inherit what was picked on a desktop.
+ *
+ * `isGuest` only affects the very first join on a device (see firstTimeDefault) —
+ * a device with an already-remembered choice keeps it regardless of who's using it.
  */
-export function readStoredChoice(): StoredChoice {
+export function readStoredChoice(isGuest = false): StoredChoice {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return firstTimeDefault();
+    if (!raw) return firstTimeDefault(isGuest);
     const parsed = JSON.parse(raw) as StoredChoice;
     if (parsed.mode !== 'off' && parsed.mode !== 'blur' && parsed.mode !== 'image') {
-      return firstTimeDefault();
+      return firstTimeDefault(isGuest);
     }
     if (parsed.quality !== 'balanced' && parsed.quality !== 'high') {
       parsed.quality = undefined;
     }
     return parsed;
   } catch {
-    return firstTimeDefault();
+    return firstTimeDefault(isGuest);
   }
 }
 

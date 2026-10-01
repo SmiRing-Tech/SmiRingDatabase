@@ -58,6 +58,10 @@ interface PreJoinScreenProps {
   joinLabel?: string;
   /** アカウントを持たない参加者向け。trueの場合、表示名が空欄のまま参加しようとするとエラーを出し、'guest'等への暗黙のフォールバックはしない。 */
   requireUsername?: boolean;
+  /** 招待URL経由の外部ゲストかどうか。背景エフェクトの初回デフォルトを決める
+   *  usePreJoinBackground に渡す — 外部ゲストにはSmiRingブランド画像ではなくぼかしを
+   *  初期選択させたい（既に何か選んだことがある端末では、この値に関係なくそれを尊重する）。 */
+  isGuest?: boolean;
   /** trueの場合、参加ボタンを押せなくする（例: 既に入室リクエスト送信済みで待機中）。カメラ・マイク・背景の調整は引き続き行える。 */
   submitDisabled?: boolean;
   /** submitDisabled=true のときにボタンへ表示する文言。 */
@@ -99,6 +103,7 @@ export default function PreJoinScreen({
   avatarUrl,
   joinLabel = 'このルームに参加',
   requireUsername = false,
+  isGuest = false,
   submitDisabled = false,
   submitDisabledLabel,
   onSubmit,
@@ -194,7 +199,7 @@ export default function PreJoinScreen({
     };
   }, [videoTrack]);
 
-  const { state: backgroundState, isReady: isBackgroundReady } = usePreJoinBackground(videoTrack);
+  const { state: backgroundState, isReady: isBackgroundReady } = usePreJoinBackground(videoTrack, isGuest);
   const [backgroundPanelOpen, setBackgroundPanelOpen] = useState(false);
 
   // Preloads the noise-cancel ONNX model while the user is still looking at this screen — see
