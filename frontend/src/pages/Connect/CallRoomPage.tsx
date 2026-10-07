@@ -81,6 +81,7 @@ import MiniRoomAssignDialog from '../../components/Connect/MiniRoomAssignDialog'
 import { useAuth } from '../../context/AuthContext';
 import { useRecording } from './useRecording';
 import { useRecordingSync } from './useRecordingSync';
+import { useParticipantPresenceSounds } from './useParticipantPresenceSounds';
 import { useMiniRooms, type UseMiniRoomsResult, type ReconnectTarget } from '../../hooks/useMiniRooms';
 import { useDocumentPiP } from '../../hooks/useDocumentPiP';
 import { useActiveSpeakerVideoPip } from '../../hooks/useActiveSpeakerVideoPip';
@@ -2685,6 +2686,7 @@ function CallRoomInner({
   );
 
   const recording = useRecording(roomId);
+  useParticipantPresenceSounds();
   // Whether the review dialog is actually open right now — distinct from
   // `recording.pendingReviewRecordingId`, which just tracks that one exists (so the chevron
   // menu can offer it without popping the dialog open on every reload/rejoin).

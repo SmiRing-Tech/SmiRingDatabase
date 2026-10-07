@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRoomInfo } from '@livekit/components-react';
 import { apiClient } from '../../lib/apiClient';
-import { playRecordingStartSound, playRecordingStopSound } from './recordingSound';
+import { playRecordingStartSound, playRecordingStopSound } from './callSounds';
 
 interface RecordingSession {
   recordingId: string;
