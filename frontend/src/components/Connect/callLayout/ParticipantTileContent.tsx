@@ -108,9 +108,12 @@ export function ParticipantTileContent({
 
   const [imgError, setImgError] = useState(false);
 
-  const showVideo = isVideo && renderVideo;
   const isCameraOff =
-    !showVideo || trackReference.publication?.isMuted || !trackReference.publication?.isSubscribed;
+    !isVideo ||
+    !renderVideo ||
+    trackReference.publication?.isMuted ||
+    !trackReference.publication?.isSubscribed;
+  const showVideo = !isCameraOff;
   // A live screen share never shows the avatar, but a windowed-out one must — the
   // alternative is a black rectangle.
   const showPlaceholder = isCameraOff && (!isScreenShare || !renderVideo);
