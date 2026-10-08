@@ -82,6 +82,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useRecording } from './useRecording';
 import { useRecordingSync } from './useRecordingSync';
 import { useParticipantPresenceSounds } from './useParticipantPresenceSounds';
+import { useCallStatsLogger } from './useCallStatsLogger';
 import { useMiniRooms, type UseMiniRoomsResult, type ReconnectTarget } from '../../hooks/useMiniRooms';
 import { useDocumentPiP } from '../../hooks/useDocumentPiP';
 import { useActiveSpeakerVideoPip } from '../../hooks/useActiveSpeakerVideoPip';
@@ -1471,27 +1472,52 @@ function CameraButton({ mediaEnhancements }: { mediaEnhancements: MediaEnhanceme
   );
 }
 
+/**
+ * Debug-only screen-share codec override, for comparing VP8 (libvpx, CPU) against H.264
+ * (hardware encoder where the machine has one) on a real machine alongside the stats logger
+ * (useCallStatsLogger). Set in DevTools before starting a share:
+ *   localStorage.setItem('smiring.debug.shareCodec', 'h264')   // or 'vp8'
+ *   localStorage.removeItem('smiring.debug.shareCodec')        // back to the room default
+ */
+function debugScreenShareCodec(): 'h264' | 'vp8' | undefined {
+  try {
+    const value = localStorage.getItem('smiring.debug.shareCodec');
+    return value === 'h264' || value === 'vp8' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function useScreenShareToggle() {
   const isSupported = useMemo(() => supportsScreenSharing(), []);
   const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
 
   const toggleShare = useCallback(async () => {
     try {
-      await localParticipant.setScreenShareEnabled(!isScreenShareEnabled, {
-        // Capped at 1080p rather than captured at the display's native size
-        // (`ScreenSharePresets.original`, which is literally "don't resize"). Capping makes
-        // small text *sharper*, not softer: a Retina panel hands over something like
-        // 3174x2410, and spreading `screenShareEncoding.maxBitrate` across 7.6 megapixels
-        // leaves about 0.05 bits per pixel — nowhere near enough for legible glyphs. The
-        // same stream at 1920x1080 gets roughly 2.5x that, and no viewer displays the share
-        // wider than this anyway (the recording composites it into 960px — see
-        // recording-compositor/src/layout.ts). It also drops the sharer's own encoder from
-        // 7.6 to 2.1 megapixels per frame, which is what makes laptops audible mid-share.
-        resolution: ScreenSharePresets.h1080fps15.resolution,
-        // Tells the encoder to spend bits on sharpness over motion — the right trade for
-        // slides and code, and the reason a static share stays readable at 15fps.
-        contentHint: 'detail',
-      });
+      const codec = isScreenShareEnabled ? undefined : debugScreenShareCodec();
+      if (codec) console.info(`[share] debug codec override: ${codec}`);
+      await localParticipant.setScreenShareEnabled(
+        !isScreenShareEnabled,
+        {
+          // Capped at 1080p rather than captured at the display's native size
+          // (`ScreenSharePresets.original`, which is literally "don't resize"). Capping makes
+          // small text *sharper*, not softer: a Retina panel hands over something like
+          // 3174x2410, and spreading `screenShareEncoding.maxBitrate` across 7.6 megapixels
+          // leaves about 0.05 bits per pixel — nowhere near enough for legible glyphs. The
+          // same stream at 1920x1080 gets roughly 2.5x that, and no viewer displays the share
+          // wider than this anyway (the recording composites it into 960px — see
+          // recording-compositor/src/layout.ts). It also drops the sharer's own encoder from
+          // 7.6 to 2.1 megapixels per frame, which is what makes laptops audible mid-share.
+          resolution: ScreenSharePresets.h1080fps15.resolution,
+          // Tells the encoder to spend bits on sharpness over motion — the right trade for
+          // slides and code, and the reason a static share stays readable at 15fps.
+          contentHint: 'detail',
+        },
+        // No backup codec on the override: every browser can decode both, and a backup
+        // would mean encoding the screen in a second codec too — polluting exactly the
+        // encoder-cost comparison this override exists for.
+        codec ? { videoCodec: codec, backupCodec: false } : undefined,
+      );
     } catch (e) {
       console.error('Failed to toggle screen share:', e);
     }
@@ -2687,6 +2713,7 @@ function CallRoomInner({
 
   const recording = useRecording(roomId);
   useParticipantPresenceSounds();
+  useCallStatsLogger();
   // Whether the review dialog is actually open right now — distinct from
   // `recording.pendingReviewRecordingId`, which just tracks that one exists (so the chevron
   // menu can offer it without popping the dialog open on every reload/rejoin).
@@ -3546,6 +3573,16 @@ export default function CallRoomPage({
         // `h1080fps15` layer duplicated it. Dropping it means the sharer's machine encodes
         // the screen twice instead of three times. `h720fps5` stays for anyone viewing the
         // share in a small tile.
+        //
+        // Known issue (2026-10-07 stats session): this fallback is what everyone viewing the
+        // share smaller than ~720p actually receives — every phone, PiP, grid thumbnail, a
+        // half-width window — and its 5fps measured as exactly what those viewers got, i.e. a
+        // share stuttering for most of the audience no matter how well the sharer's top layer
+        // was doing. Don't just bump this layer's fps in isolation: the real fix pairs it with
+        // making adaptiveStream actually prefer the top layer for a screen share at a normal
+        // display size (today's pixelDensity-based selection drops to this layer too eagerly
+        // for screen share specifically, unlike camera tiles) — see the Connect screen-share
+        // perf thread for the full plan.
         screenShareSimulcastLayers: [ScreenSharePresets.h720fps5],
         audioPreset: { maxBitrate: 32_000 },
         dtx: true,
