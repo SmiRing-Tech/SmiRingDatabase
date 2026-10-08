@@ -17,16 +17,18 @@ type Props = {
   formId?: string;
   /** Rendered inside another screen (e.g. a call): fills its container and offers "閉じる" instead of navigating home. */
   embedded?: { onClose: () => void; onSubmitted?: () => void };
+  /** Preview without saving or submitting, same as the `?mode=preview` URL. */
+  preview?: boolean;
 };
 
-export default function FormAnswerPage({ guest, formId, embedded }: Props = {}) {
+export default function FormAnswerPage({ guest, formId, embedded, preview = false }: Props = {}) {
   const { showFeedback } = useFeedback();
   const params = useParams();
   const id = formId ?? params.id;
   const pageHeightClass = embedded ? 'min-h-full' : 'min-h-screen';
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const isPreviewMode = searchParams.get('mode') === 'preview';
+  const isPreviewMode = preview || searchParams.get('mode') === 'preview';
   const currentMode = isPreviewMode ? 'preview' : 'live';
 
   const [title, setTitle] = useState('');

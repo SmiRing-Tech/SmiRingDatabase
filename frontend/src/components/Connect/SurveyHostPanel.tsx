@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, ClipboardList, Loader2, Play, Square, CheckCircle2, Circle, Globe } from 'lucide-react';
+import { X, ClipboardList, Loader2, Play, Square, CheckCircle2, Circle, Globe, Eye, Check } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import type { UseConnectSurveyResult } from '../../hooks/useConnectSurvey';
+import FormAnswerPage from '../../pages/Form/Answer/FormAnswerPage';
 
 interface SurveyFormOption {
   id: string;
@@ -76,6 +77,7 @@ function FormPickerView({ mainRoomId, onStart }: { mainRoomId: string; onStart: 
   const [forms, setForms] = useState<SurveyFormOption[] | null>(null);
   const [requiresPublic, setRequiresPublic] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [previewForm, setPreviewForm] = useState<SurveyFormOption | null>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState('');
 
@@ -130,27 +132,51 @@ function FormPickerView({ mainRoomId, onStart }: { mainRoomId: string; onStart: 
           </p>
         ) : (
           forms?.map((f) => (
-            <button
+            <div
               key={f.id}
-              type="button"
-              onClick={() => setSelectedId(f.id)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left text-xs font-bold border transition-colors ${
+              className={`flex items-stretch rounded-xl border text-xs font-bold transition-colors ${
                 selectedId === f.id
                   ? 'bg-sky-600/25 border-sky-500/60 text-white'
                   : 'bg-gray-800/40 border-gray-700/60 text-gray-200 hover:bg-gray-800'
               }`}
             >
-              <span className="flex-1 min-w-0 truncate">{f.title || '無題のフォーム'}</span>
-              {f.access_mode === 'public' && (
-                <span className="inline-flex items-center gap-1 text-[10px] text-sky-300 shrink-0">
-                  <Globe className="w-3 h-3" />
-                  外部公開
-                </span>
-              )}
-            </button>
+              <button
+                type="button"
+                onClick={() => setSelectedId(f.id)}
+                className="flex-1 min-w-0 flex items-center gap-2.5 pl-3 py-2.5 text-left"
+              >
+                <span className="flex-1 min-w-0 truncate">{f.title || '無題のフォーム'}</span>
+                {f.access_mode === 'public' && (
+                  <span className="inline-flex items-center gap-1 text-[10px] text-sky-300 shrink-0">
+                    <Globe className="w-3 h-3" />
+                    外部公開
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPreviewForm(f)}
+                title="プレビュー"
+                className="flex items-center gap-1 px-3 text-[10px] text-gray-400 hover:text-white shrink-0"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                プレビュー
+              </button>
+            </div>
           ))
         )}
       </div>
+
+      {previewForm && (
+        <FormPreviewModal
+          form={previewForm}
+          onClose={() => setPreviewForm(null)}
+          onSelect={() => {
+            setSelectedId(previewForm.id);
+            setPreviewForm(null);
+          }}
+        />
+      )}
 
       {error && <p className="text-xs text-rose-400 font-semibold mt-3 shrink-0">{error}</p>}
 
@@ -263,5 +289,50 @@ function ProgressView({
         <span>アンケートを終了する</span>
       </button>
     </>
+  );
+}
+
+/** Read-only look at a form before showing it to everyone: preview mode never saves or submits. */
+function FormPreviewModal({
+  form,
+  onClose,
+  onSelect,
+}: {
+  form: SurveyFormOption;
+  onClose: () => void;
+  onSelect: () => void;
+}) {
+  return createPortal(
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-2 sm:p-4">
+      <div onClick={onClose} className="fixed inset-0 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200" />
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="relative w-full max-w-3xl h-full max-h-[92vh] bg-blue-50 rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200 z-10"
+      >
+        <div className="shrink-0 flex items-center gap-2 px-4 py-2.5 bg-gray-900 text-white">
+          <Eye className="w-4 h-4 text-sky-400 shrink-0" />
+          <span className="flex-1 min-w-0 truncate text-xs font-bold">プレビュー: {form.title || '無題のフォーム'}</span>
+          <button
+            onClick={onSelect}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-sky-600 hover:bg-sky-500 transition-colors shrink-0"
+          >
+            <Check className="w-3.5 h-3.5" />
+            このフォームを選ぶ
+          </button>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800 transition-colors shrink-0"
+            title="閉じる"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <FormAnswerPage formId={form.id} preview embedded={{ onClose }} />
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
