@@ -8,8 +8,14 @@ import FormAnswerUI from './components/FormAnswerUI';
 import { supabase } from '../../../lib/supabase';
 import { CheckCircle2, Home, Edit2, PlusCircle } from 'lucide-react';
 import { apiClient } from '../../../lib/apiClient';
+import { formGuestRequestOptions, type FormGuest } from '../../../lib/formGuest';
 
-export default function FormAnswerPage() {
+type Props = {
+  /** Set when a not-logged-in visitor answers a public form. */
+  guest?: FormGuest;
+};
+
+export default function FormAnswerPage({ guest }: Props = {}) {
   const { showFeedback } = useFeedback();
   const { id } = useParams();
   const navigate = useNavigate();
@@ -36,6 +42,9 @@ export default function FormAnswerPage() {
   const [allowEdit, setAllowEdit] = useState(true);
   const [guardState, setGuardState] = useState<'none' | 'blocked' | 'choice'>('none');
   const [pastResponses, setPastResponses] = useState<any[]>([]);
+
+  const guestOptions = formGuestRequestOptions(guest);
+  const guestInfo = guest ? { name: guest.name } : undefined;
 
   // 1. フォームデータ ＆ 自分の回答状況の取得
   const cleanAnswers = (qs: QuestionData[], rawAns: Record<string, any>) => {
@@ -93,13 +102,13 @@ export default function FormAnswerPage() {
       if (!id) return;
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        const userId = session?.user?.id;
+        const canHaveResponses = !!session?.user?.id || !!guest;
 
         // 🌟 修正：Promise.all を使って並列でリクエストを投げる
         const [formRes, draftRes] = await Promise.all([
-          apiClient.get(`/api/forms/${id}`),
-          userId && !isPreviewMode 
-            ? apiClient.get(`/api/forms/${id}/my-responses`)
+          apiClient.get(`/api/forms/${id}`, guestOptions),
+          canHaveResponses && !isPreviewMode
+            ? apiClient.get(`/api/forms/${id}/my-responses`, guestOptions)
             : Promise.resolve(null)
         ]);
 
@@ -163,7 +172,7 @@ export default function FormAnswerPage() {
       }
     };
     fetchAllData();
-  }, [id, isPreviewMode]);
+  }, [id, isPreviewMode, guest?.key]);
 
   // 🌟 2. 自動保存（下書き）のロジック
   useEffect(() => {
@@ -180,12 +189,13 @@ export default function FormAnswerPage() {
 
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        if (!session?.user?.id) return; // 匿名の場合は下書き保存スキップ（必要に応じて調整）
+        if (!session?.user?.id && !guest) return;
 
         const res = await apiClient.post(`/api/forms/${id}/responses/save`, {
           response_id: responseId,
           content: answers,
-        });
+          guest_info: guestInfo,
+        }, guestOptions);
 
         if (res.ok) {
           const resData = await res.json();
@@ -202,7 +212,7 @@ export default function FormAnswerPage() {
     }, 1500);
 
     return () => clearTimeout(timer); // 1.5秒以内に入力があったらタイマーをキャンセル
-  }, [answers, hasUnsavedChanges, id, isPreviewMode, isSubmitted, guardState, responseId]);
+  }, [answers, hasUnsavedChanges, id, isPreviewMode, isSubmitted, guardState, responseId, guest?.key, guest?.name]);
 
 
   // 3. 送信ボタンを押した時のメイン処理
@@ -219,7 +229,8 @@ export default function FormAnswerPage() {
         response_id: responseId,
         answers: answersToSubmit,
         turnstileToken,
-      });
+        guest_info: guestInfo,
+      }, guestOptions);
 
       if (!response.ok) {
         const errorData = await response.json();
@@ -308,13 +319,15 @@ export default function FormAnswerPage() {
           <p className="text-gray-500 mb-8 leading-relaxed">
             このフォームにはすでに回答しています。<br/>重複して回答することはできません。
           </p>
-          <button 
-            onClick={() => navigate('/home')}
-            className="w-full py-4 bg-gray-800 text-white rounded-xl font-bold hover:bg-gray-900 transition-all shadow-md flex items-center justify-center gap-2"
-          >
-            <Home className="w-5 h-5" />
-            ホームに戻る
-          </button>
+          {!guest && (
+            <button
+              onClick={() => navigate('/home')}
+              className="w-full py-4 bg-gray-800 text-white rounded-xl font-bold hover:bg-gray-900 transition-all shadow-md flex items-center justify-center gap-2"
+            >
+              <Home className="w-5 h-5" />
+              ホームに戻る
+            </button>
+          )}
         </div>
       </div>
     );
@@ -332,13 +345,15 @@ export default function FormAnswerPage() {
           <p className="text-gray-500 mb-8 leading-relaxed">
             フォームへの回答が正常に送信されました。<br/>ご協力ありがとうございました。
           </p>
-          <button 
-            onClick={() => navigate('/home')}
-            className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg hover:shadow-blue-200 flex items-center justify-center gap-2"
-          >
-            <Home className="w-5 h-5" />
-            ホームに戻る
-          </button>
+          {!guest && (
+            <button
+              onClick={() => navigate('/home')}
+              className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg hover:shadow-blue-200 flex items-center justify-center gap-2"
+            >
+              <Home className="w-5 h-5" />
+              ホームに戻る
+            </button>
+          )}
         </div>
       </div>
     );
@@ -380,6 +395,7 @@ export default function FormAnswerPage() {
         timezone={timezone}
         onTimezoneChange={setTimezone}
         formId={id}
+        guest={guest}
       />
     </div>
   );

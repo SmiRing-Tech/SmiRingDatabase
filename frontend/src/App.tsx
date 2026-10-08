@@ -22,6 +22,7 @@ import SurveyPage from './pages/Survey/SurveyPage';
 import FormEditorPage from './pages/Form/FormEditor/FormEditorPage';
 import FormListPage from './pages/Form/FormList/FormListPage';
 import FormAnswerPage from './pages/Form/Answer/FormAnswerPage';
+import PublicFormPage from './pages/Form/Answer/PublicFormPage';
 import FeedbackPage from './pages/Form/Answer/FeedbackPage';
 import FormResponseDetailPage from './pages/Form/Response/FormResponseDetailPage';
 import SearchPage from './pages/Search/SearchPage';
@@ -197,6 +198,9 @@ const router = createBrowserRouter([
 
   // 1-2. 招待URL経由の外部ミーティング参加（DBアカウント不要・完全公開・レイアウト無し）
   { path: '/j/:token', element: <JoinExternalMeetingPage /> },
+
+  // 1-3. 共有用フォームURL（ログイン不要。公開フォームならログインせずに回答できる・レイアウト無し）
+  { path: '/f/:id', element: <PublicFormPage /> },
 
   // 2. オンボーディング（ログイン必須・レイアウト無し）
   {

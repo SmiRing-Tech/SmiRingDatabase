@@ -7,7 +7,9 @@ import sharp from 'sharp';
 import { analyzeImageWithGemini } from '../lib/ai';
 import { queueGalleryImageIndexWork, deleteSearchIndex } from '../lib/vectorIndexer';
 import { authenticate } from '../middleware/authenticate';
+import { authenticateFormRespondent } from '../middleware/authenticateFormRespondent';
 import { ensureJpegBuffer } from '../lib/imageInput';
+import crypto from 'crypto';
 
 const router = Router();
 
@@ -421,16 +423,22 @@ router.delete('/api/gallery/:id', authenticate, async (req: Request, res: Respon
 // ==========================================
 // 📎 フォーム添付ファイルアップロード API
 // ==========================================
-router.post('/api/forms/attachments/upload', authenticate, attachmentUpload.single('file'), async (req: Request, res: Response) => {
+// ゲストは multipart 本体を受け取る前に公開フォームか検証したいので、form_id をクエリでも受け取る
+router.post('/api/forms/attachments/upload', authenticateFormRespondent((req) => req.query.form_id), attachmentUpload.single('file'), async (req: Request, res: Response) => {
   try {
 
     if (!req.file) return res.status(400).json({ error: 'ファイルがありません' });
 
-    const { form_id, auto_gallery } = req.body;
+    const isGuest = !req.user;
+    const form_id = isGuest ? req.query.form_id : req.body.form_id;
+    // ギャラリーはメンバー所有の組織内公開データなので、ゲストの画像は登録しない
+    const auto_gallery = isGuest ? 'false' : req.body.auto_gallery;
     if (!form_id) return res.status(400).json({ error: 'form_id が指定されていません' });
 
     const file = req.file;
     const timestamp = Date.now();
+    // guest_key は本人の下書きを読める秘密なので、閲覧者に見えるパスには入れない
+    const uploaderSegment = isGuest ? `guests/${crypto.randomUUID()}` : req.user!.id;
     
     // HEICの場合、ブラウザによってはmimetypeが空やapplication/octet-streamになることがあるため拡張子も見る
     const isHeic = file.mimetype === 'image/heic' || file.mimetype === 'image/heif' || file.originalname.toLowerCase().endsWith('.heic') || file.originalname.toLowerCase().endsWith('.heif');
@@ -441,8 +449,8 @@ router.post('/api/forms/attachments/upload', authenticate, attachmentUpload.sing
       // 🌟 バックエンドでの HEIC フォールバック変換
       const processedBuffer = await ensureJpegBuffer(file.buffer, file.mimetype, file.originalname);
 
-      const largeKey = `gallery/large/${req.user!.id}/${timestamp}.jpg`;
-      const thumbKey = `gallery/thumbnails/${req.user!.id}/${timestamp}.webp`;
+      const largeKey = `gallery/large/${uploaderSegment}/${timestamp}.jpg`;
+      const thumbKey = `gallery/thumbnails/${uploaderSegment}/${timestamp}.webp`;
 
       // Step 1: ラージ画像 (1920px) & サムネイル (400px) 生成
       const largeBuffer = await sharp(processedBuffer)
@@ -517,7 +525,7 @@ router.post('/api/forms/attachments/upload', authenticate, attachmentUpload.sing
     } else {
       // 📎 画像以外は通常の添付ファイルとして処理
       const safeFileName = file.originalname.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
-      const storagePath = `form_attachments/${form_id}/${req.user!.id}/${timestamp}_${safeFileName}`;
+      const storagePath = `form_attachments/${form_id}/${uploaderSegment}/${timestamp}_${safeFileName}`;
 
       await r2.send(new PutObjectCommand({
         Bucket: BUCKET_NAME,

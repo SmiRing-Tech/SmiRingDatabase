@@ -3,7 +3,7 @@ import { useFeedback } from '../../../context/FeedbackContext';
 import { useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom';
 import QuestionBox from './components/QuestionBox';
 import { FileText, Eye, Send, Globe, AlertTriangle, Users, X } from 'lucide-react';
-import SendSettings from './components/SendSettings';
+import SendSettings, { type FormAccessMode } from './components/SendSettings';
 import { supabase } from '../../../lib/supabase';
 import { DragDropContext, Droppable, Draggable, type DropResult } from '@hello-pangea/dnd';
 import FormAnswerUI from '../Answer/components/FormAnswerUI';
@@ -130,6 +130,7 @@ export default function FormEditorPage() {
   const [currentAssignedUsers, setCurrentAssignedUsers] = useState<string[]>([]);
   const [currentAllowMultiple, setCurrentAllowMultiple] = useState(false);
   const [currentAllowEdit, setCurrentAllowEdit] = useState(true);
+  const [currentAccessMode, setCurrentAccessMode] = useState<FormAccessMode>('members');
   const [currentTimezone, setCurrentTimezone] = useState<string | undefined>(undefined);
   const [initialDefaultQuestion] = useState(() => createDefaultQuestion());
   const [questions, setQuestions] = useState<QuestionData[]>([initialDefaultQuestion]);
@@ -258,6 +259,7 @@ export default function FormEditorPage() {
           setCurrentAssignedUsers(form.publish_settings?.assigned_user_ids || []);
           setCurrentAllowMultiple(form.allow_multiple_responses || false);
           setCurrentAllowEdit(form.allow_edit_responses !== false); // default to true if undefined
+          setCurrentAccessMode(form.access_mode === 'public' ? 'public' : 'members');
           setCurrentTimezone(form.timezone || form.publish_settings?.timezone);
 
           if (form.questions && form.questions.length > 0) {
@@ -503,7 +505,8 @@ export default function FormEditorPage() {
     isAnonymous: boolean,
     timezone: string,
     allowMultipleResponses: boolean,
-    allowEditResponses: boolean
+    allowEditResponses: boolean,
+    accessMode: FormAccessMode
   }) => {
     setIsSaving(true);
     try {
@@ -527,7 +530,8 @@ export default function FormEditorPage() {
           finalDeadline = localDateTime;
         }
       }
-      const newStatus = settings.assignedUsers.length === 0 ? 'draft' : 'published';
+      // 公開フォームはURLで回答を集めるので、依頼メンバーが0人でも公開状態にする
+      const newStatus = settings.assignedUsers.length === 0 && settings.accessMode !== 'public' ? 'draft' : 'published';
 
       const response = await apiClient.post(`/api/forms/${formId}/publish`, {
         assigned_user_ids: settings.assignedUsers,
@@ -536,7 +540,8 @@ export default function FormEditorPage() {
         allow_multiple_responses: settings.allowMultipleResponses,
         allow_edit_responses: settings.allowEditResponses,
         timezone: settings.timezone,
-        status: newStatus
+        status: newStatus,
+        access_mode: settings.accessMode
       });
 
       if (!response.ok) throw new Error('更新に失敗しました');
@@ -547,6 +552,7 @@ export default function FormEditorPage() {
       setCurrentIsAnonymous(settings.isAnonymous);
       setCurrentAllowMultiple(settings.allowMultipleResponses);
       setCurrentAllowEdit(settings.allowEditResponses);
+      setCurrentAccessMode(settings.accessMode);
       setCurrentTimezone(settings.timezone);
 
       const message = newStatus === 'draft'
@@ -652,6 +658,8 @@ export default function FormEditorPage() {
             initialAssignedUsers={currentAssignedUsers}
             initialDueDate={currentDueDate}
             initialIsAnonymous={currentIsAnonymous}
+            initialAccessMode={currentAccessMode}
+            formId={formId}
             initialAllowMultipleResponses={currentAllowMultiple}
             initialAllowEditResponses={currentAllowEdit}
             initialTimezone={currentTimezone}

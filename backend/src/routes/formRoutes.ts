@@ -4,14 +4,45 @@ import { resolveAvatarUrl, getSignedFileUrl } from '../lib/r2';
 import { getLocalEmbedding, getGeminiEmbedding, answerToText } from '../lib/ai';
 import { queueIndexWork, deleteSearchIndexByMetadata } from '../lib/vectorIndexer';
 import { authenticate } from '../middleware/authenticate';
+import { authenticateFormRespondent } from '../middleware/authenticateFormRespondent';
 
 const router = Router();
+
+const MAX_GUEST_NAME_LENGTH = 100;
+
+/** Who is answering: a logged-in user, or a guest identified by their browser-held key. */
+type Respondent = { userId: string; guestKey: null } | { userId: null; guestKey: string };
+
+function getRespondent(req: Request): Respondent {
+  return req.user
+    ? { userId: req.user.id, guestKey: null }
+    : { userId: null, guestKey: req.formGuestKey! };
+}
+
+/** Narrows a form_response_mappings query to rows owned by the respondent. */
+function whereOwnedBy<Q>(query: Q, respondent: Respondent): Q {
+  // Postgrest filter methods return `this`; typing that generically blows up TS instantiation depth.
+  const q = query as any;
+  return respondent.userId
+    ? q.eq('user_id', respondent.userId)
+    : q.is('user_id', null).eq('guest_key', respondent.guestKey);
+}
+
+function parseGuestInfo(raw: unknown): { name: string } | null {
+  const name = typeof (raw as any)?.name === 'string' ? (raw as any).name.trim().slice(0, MAX_GUEST_NAME_LENGTH) : '';
+  return name ? { name } : null;
+}
+
+function guestDisplayName(guestInfo: { name?: string } | null): string {
+  return guestInfo?.name ? `${guestInfo.name}（ゲスト）` : 'ゲスト';
+}
 
 // ==========================================
 // 📖 フォーム＆質問の取得 API
 // ==========================================
-router.get('/api/forms/:id', authenticate, async (req: Request, res: Response) => {
+router.get('/api/forms/:id', authenticateFormRespondent(), async (req: Request, res: Response) => {
   const { id: formId } = req.params;
+  const isGuest = !req.user;
 
   try {
     const { data: form, error: formError } = await supabase
@@ -22,7 +53,7 @@ router.get('/api/forms/:id', authenticate, async (req: Request, res: Response) =
 
     if (formError || !form) return res.status(404).json({ error: 'フォームが見つかりません' });
 
-    const includeDeleted = req.query.includeDeleted === 'true';
+    const includeDeleted = !isGuest && req.query.includeDeleted === 'true';
 
     let query = supabase
       .from('form_question_mappings')
@@ -60,6 +91,12 @@ router.get('/api/forms/:id', authenticate, async (req: Request, res: Response) =
         isDeleted: link.is_deleted || false
       };
     }) || [];
+
+    if (isGuest) {
+      // The member assignee list and creator aren't for outside eyes.
+      const { publish_settings, created_by, ...publicForm } = form;
+      return res.json({ ...publicForm, questions });
+    }
 
     res.json({ ...form, questions });
 
@@ -218,9 +255,13 @@ router.post('/api/forms/:id/save', authenticate, async (req: Request, res: Respo
 // ==========================================
 router.post('/api/forms/:id/publish', authenticate, async (req: Request, res: Response) => {
   const { id: formId } = req.params;
-  const { assigned_user_ids, due_date, allow_anonymous, allow_multiple_responses, allow_edit_responses, timezone, status } = req.body;
+  const { assigned_user_ids, due_date, allow_anonymous, allow_multiple_responses, allow_edit_responses, timezone, status, access_mode } = req.body;
 
   try {
+    if (access_mode !== undefined && access_mode !== 'members' && access_mode !== 'public') {
+      return res.status(400).json({ error: 'access_mode が不正です' });
+    }
+
     const publish_settings = {
       visibility: "restricted",
       assigned_user_ids: assigned_user_ids,
@@ -237,7 +278,8 @@ router.post('/api/forms/:id/publish', authenticate, async (req: Request, res: Re
         allow_anonymous: allow_anonymous,
         allow_multiple_responses: allow_multiple_responses ?? false,
         allow_edit_responses: allow_edit_responses ?? true,
-        publish_settings: publish_settings
+        publish_settings: publish_settings,
+        ...(access_mode !== undefined && { access_mode }),
       })
       .eq('id', formId);
 
@@ -253,31 +295,38 @@ router.post('/api/forms/:id/publish', authenticate, async (req: Request, res: Re
 // ==========================================
 // 💾 フォーム回答の「下書き」保存 API
 // ==========================================
-router.post('/api/forms/:id/responses/save', authenticate, async (req: Request, res: Response) => {
+router.post('/api/forms/:id/responses/save', authenticateFormRespondent(), async (req: Request, res: Response) => {
   const { id: formId } = req.params;
-  const { content, response_id } = req.body;
+  const { content, response_id, guest_info } = req.body;
 
   try {
-    const user_id = req.user!.id;
+    const respondent = getRespondent(req);
+    const guestInfo = respondent.guestKey ? parseGuestInfo(guest_info) : null;
 
     let resultId = response_id;
 
     if (response_id) {
-      const { error } = await supabase
-        .from('form_response_mappings')
-        .update({
-          content: content,
-          status: 'draft'
-        })
-        .eq('id', response_id)
-        .eq('user_id', user_id);
+      const { error } = await whereOwnedBy(
+        supabase
+          .from('form_response_mappings')
+          .update({
+            content: content,
+            status: 'draft',
+            ...(respondent.guestKey && { guest_info: guestInfo }),
+          })
+          .eq('id', response_id)
+          .eq('form_id', formId),
+        respondent
+      );
       if (error) throw error;
     } else {
       const { data, error } = await supabase
         .from('form_response_mappings')
         .insert({
           form_id: formId,
-          user_id: user_id,
+          user_id: respondent.userId,
+          guest_key: respondent.guestKey,
+          guest_info: guestInfo,
           content: content,
           status: 'draft'
         })
@@ -297,12 +346,13 @@ router.post('/api/forms/:id/responses/save', authenticate, async (req: Request, 
 // ==========================================
 // 📥 フォーム回答の送信 API
 // ==========================================
-router.post('/api/forms/:id/submit', authenticate, async (req: Request, res: Response) => {
+router.post('/api/forms/:id/submit', authenticateFormRespondent(), async (req: Request, res: Response) => {
   const { id: formId } = req.params;
-  const { answers, turnstileToken, response_id } = req.body;
+  const { answers, turnstileToken, response_id, guest_info } = req.body;
 
   try {
-    const user_id = req.user!.id;
+    const respondent = getRespondent(req);
+    const user_id = respondent.userId;
 
     // 1. フォーム設定を取得して複数回答と匿名設定の可否を確認
     const { data: form } = await supabase.from('forms').select('allow_multiple_responses, allow_anonymous').eq('id', formId).single();
@@ -320,16 +370,33 @@ router.post('/api/forms/:id/submit', authenticate, async (req: Request, res: Res
 
     let finalResponseId = response_id;
 
-    // 3. 複数回答不可の場合、既存の回答（下書き含む）がないか念のため再確認してIDを特定する
+    // 3-a. 指定された回答IDが本人のものか確認（他人の回答の上書きを防ぐ）
+    if (finalResponseId) {
+      const { data: owned, error: ownedError } = await whereOwnedBy(
+        supabase
+          .from('form_response_mappings')
+          .select('id')
+          .eq('id', finalResponseId)
+          .eq('form_id', formId),
+        respondent
+      ).maybeSingle();
+      if (ownedError) throw ownedError;
+      if (!owned) return res.status(404).json({ error: '回答が見つかりません' });
+    }
+
+    // 3-b. 複数回答不可の場合、既存の回答（下書き含む）がないか念のため再確認してIDを特定する
     if (!allowMultiple && !finalResponseId) {
-      const { data: existing } = await supabase
-        .from('form_response_mappings')
-        .select('id')
-        .eq('form_id', formId)
-        .eq('user_id', user_id)
-        .order('created_at', { ascending: false })
+      const { data: existing, error: existingError } = await whereOwnedBy(
+        supabase
+          .from('form_response_mappings')
+          .select('id')
+          .eq('form_id', formId),
+        respondent
+      )
+        .order('updated_at', { ascending: false })
         .limit(1)
-        .single();
+        .maybeSingle();
+      if (existingError) throw existingError;
 
       if (existing) {
         finalResponseId = existing.id;
@@ -340,6 +407,8 @@ router.post('/api/forms/:id/submit', authenticate, async (req: Request, res: Res
     const upsertData: any = {
       form_id: formId,
       user_id: user_id,
+      guest_key: respondent.guestKey,
+      guest_info: respondent.guestKey ? parseGuestInfo(guest_info) : null,
       content: answers,
       status: 'submitted',
       submitted_at: new Date().toISOString(),
@@ -358,6 +427,11 @@ router.post('/api/forms/:id/submit', authenticate, async (req: Request, res: Res
 
     if (responseError) throw responseError;
     const submittedResponseId = responseData.id;
+
+    // ゲスト回答は answers（メンバーのAI検索用）にもインデックスにも載せない
+    if (!user_id) {
+      return res.json({ message: "回答を受け付けました！ありがとうございます。" });
+    }
 
     // 5. 個別の回答データ(answersテーブル)の同期
     // 上書きの場合は、一度このユーザーのこのフォームへの古い回答を削除する（重複防止）
@@ -561,16 +635,17 @@ router.get('/api/assigned-forms', authenticate, async (req: Request, res: Respon
 // ==========================================
 // 📋 特定のフォームに対する自分の回答を取得する API
 // ==========================================
-router.get('/api/forms/:id/my-responses', authenticate, async (req: Request, res: Response) => {
+router.get('/api/forms/:id/my-responses', authenticateFormRespondent(), async (req: Request, res: Response) => {
   const { id: formId } = req.params;
   try {
 
-    const { data, error } = await supabase
-      .from('form_response_mappings')
-      .select('*')
-      .eq('form_id', formId)
-      .eq('user_id', req.user!.id)
-      .order('updated_at', { ascending: false });
+    const { data, error } = await whereOwnedBy(
+      supabase
+        .from('form_response_mappings')
+        .select('*')
+        .eq('form_id', formId),
+      getRespondent(req)
+    ).order('updated_at', { ascending: false });
 
     if (error) throw error;
     res.json(data);
@@ -611,7 +686,7 @@ router.get('/api/forms/:id/responses', authenticate, async (req: Request, res: R
   try {
     const { data: responses, error: responseError } = await supabase
       .from('form_response_mappings')
-      .select('id, user_id, status, submitted_at, updated_at, content, is_anonymous')
+      .select('id, user_id, guest_info, status, submitted_at, updated_at, content, is_anonymous')
       .eq('form_id', formId)
       .eq('status', 'submitted')
       .order('submitted_at', { ascending: true });
@@ -644,6 +719,7 @@ router.get('/api/forms/:id/responses', authenticate, async (req: Request, res: R
 
     const result = await Promise.all(responses.map(async r => {
       const isAnon = r.is_anonymous;
+      const isGuest = !r.user_id;
       const profile = isAnon ? null : profileMap.get(r.user_id);
 
       const content = { ...(r.content || {}) };
@@ -660,11 +736,13 @@ router.get('/api/forms/:id/responses', authenticate, async (req: Request, res: R
 
       return {
         response_id: r.id,
-        user_id: isAnon ? `anon_${r.id}` : r.user_id,
+        user_id: isAnon ? `anon_${r.id}` : isGuest ? `guest_${r.id}` : r.user_id,
         is_anonymous: isAnon,
         submitted_at: r.submitted_at,
         updated_at: r.updated_at,
-        name_english: isAnon ? '匿名ユーザー' : (profile?.name_english || '不明なユーザー'),
+        name_english: isAnon
+          ? '匿名ユーザー'
+          : isGuest ? guestDisplayName(r.guest_info) : (profile?.name_english || '不明なユーザー'),
         name_kanji: isAnon ? '' : (profile?.name_kanji || ''),
         avatar_link: isAnon ? null : (profile?.avatar_link || null),
         content: content,
@@ -688,7 +766,7 @@ router.get('/api/form-responses/:responseId', authenticate, async (req: Request,
     // 1. 回答本体を取得
     const { data: response, error: responseError } = await supabase
       .from('form_response_mappings')
-      .select('id, form_id, user_id, content, status, submitted_at, is_anonymous')
+      .select('id, form_id, user_id, guest_info, content, status, submitted_at, is_anonymous')
       .eq('id', responseId)
       .single();
 
@@ -748,7 +826,9 @@ router.get('/api/form-responses/:responseId', authenticate, async (req: Request,
       submitted_at: response.submitted_at,
       user: {
         id: user_id,
-        name_english: is_anonymous ? '匿名ユーザー' : (profile?.name_english || '不明なユーザー'),
+        name_english: is_anonymous
+          ? '匿名ユーザー'
+          : !user_id ? guestDisplayName(response.guest_info) : (profile?.name_english || '不明なユーザー'),
         name_kanji: is_anonymous ? '' : (profile?.name_kanji || ''),
         avatar_link: is_anonymous ? null : avatarUrl,
       },

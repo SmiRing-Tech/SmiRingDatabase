@@ -8,6 +8,7 @@ import { Turnstile } from '@marsidev/react-turnstile';
 import type { FileItem } from './FileUploadField';
 import { supabase } from '../../../../lib/supabase';
 import { apiClient } from '../../../../lib/apiClient';
+import { formGuestRequestOptions, type FormGuest } from '../../../../lib/formGuest';
 
 type ReadonlyInfo = {
   displayName: string;
@@ -32,14 +33,15 @@ type Props = {
   timezone?: string;
   onTimezoneChange?: (timezone: string) => void;
   formId?: string;
+  guest?: FormGuest;
 };
 
-export default function FormAnswerUI({ 
+export default function FormAnswerUI({
   title, description, questions, answers,
   onAnswerChange, onSubmit, mode, isLoading = false,
   onOpenFullScreen, onClearAnswers,
   isSaving = false, lastSavedTime = null,
-  readonlyInfo, timezone, onTimezoneChange, formId,
+  readonlyInfo, timezone, onTimezoneChange, formId, guest,
 }: Props) {
   const { showFeedback } = useFeedback();
 
@@ -111,7 +113,7 @@ export default function FormAnswerUI({
     try {
       const finalAnswers = { ...answers };
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error('認証が必要です');
+      if (!session && !guest) throw new Error('認証が必要です');
 
       for (const q of questions) {
         if (q.type === 'file_upload' && Array.isArray(finalAnswers[q.id])) {
@@ -137,7 +139,11 @@ export default function FormAnswerUI({
               formData.append('form_id', formId || '');
               formData.append('auto_gallery', q.fileUploadSettings?.autoGallery !== false ? 'true' : 'false');
 
-              const res = await apiClient.post('/api/forms/attachments/upload', formData);
+              const res = await apiClient.post(
+                `/api/forms/attachments/upload?form_id=${encodeURIComponent(formId || '')}`,
+                formData,
+                formGuestRequestOptions(guest)
+              );
 
               if (!res.ok) {
                 const errData = await res.json();

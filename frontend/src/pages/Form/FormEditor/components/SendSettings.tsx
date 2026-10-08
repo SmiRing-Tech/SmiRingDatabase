@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { ArrowLeft, Send, Search, Users, Square, X, Settings } from 'lucide-react';
+import { ArrowLeft, Send, Search, Users, Square, X, Settings, Globe, Copy, Check } from 'lucide-react';
 import { apiClient } from '../../../../lib/apiClient';
 import { SmartDateTimePicker } from '../../../../components/ui/SmartDateTimePicker';
 import countries from 'i18n-iso-countries';
@@ -36,6 +36,8 @@ type Member = {
   last_sign_in_at?: string | null;
 };
 
+export type FormAccessMode = 'members' | 'public';
+
 type Props = {
   onBackToEdit: () => void;
   onSend: (settings: {
@@ -45,7 +47,8 @@ type Props = {
     isAnonymous: boolean,
     timezone: string,
     allowMultipleResponses: boolean,
-    allowEditResponses: boolean
+    allowEditResponses: boolean,
+    accessMode: FormAccessMode
   }) => void;
   initialTimezone?: string;
   isPublished?: boolean;
@@ -54,6 +57,8 @@ type Props = {
   initialIsAnonymous?: boolean;
   initialAllowMultipleResponses?: boolean;
   initialAllowEditResponses?: boolean;
+  initialAccessMode?: FormAccessMode;
+  formId?: string;
 };
 
 export default function SendSettings({
@@ -64,7 +69,9 @@ export default function SendSettings({
   initialIsAnonymous = false,
   initialTimezone,
   initialAllowMultipleResponses = false,
-  initialAllowEditResponses = true
+  initialAllowEditResponses = true,
+  initialAccessMode = 'members',
+  formId
 }: Props) {
   const [members, setMembers] = useState<Member[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -103,7 +110,20 @@ export default function SendSettings({
   const [isAnonymous, setIsAnonymous] = useState(initialIsAnonymous);
   const [allowMultipleResponses, setAllowMultipleResponses] = useState(initialAllowMultipleResponses);
   const [allowEditResponses, setAllowEditResponses] = useState(initialAllowEditResponses);
+  const [accessMode, setAccessMode] = useState<FormAccessMode>(initialAccessMode);
+  const [isUrlCopied, setIsUrlCopied] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+
+  const publicUrl = formId ? `${window.location.origin}/f/${formId}` : '';
+  const copyPublicUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(publicUrl);
+      setIsUrlCopied(true);
+      setTimeout(() => setIsUrlCopied(false), 2000);
+    } catch (e) {
+      console.error('URLのコピーに失敗しました', e);
+    }
+  };
 
   // --- 🌟 追加：デフォルトのタイムゾーンを固定 ---
   const defaultTimezone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
@@ -200,11 +220,12 @@ export default function SendSettings({
     selectedTimezone !== (initialTimezone || defaultTimezone) ||
     isAnonymous !== initialIsAnonymous ||
     allowMultipleResponses !== initialAllowMultipleResponses ||
-    allowEditResponses !== initialAllowEditResponses;
+    allowEditResponses !== initialAllowEditResponses ||
+    accessMode !== initialAccessMode;
 
   const isButtonDisabled = isPublished
     ? !hasChanges
-    : selectedUserIds.length === 0;
+    : selectedUserIds.length === 0 && accessMode !== 'public';
 
   return (
     <div className="w-full h-full bg-white p-8 border-l border-gray-200 flex flex-col overflow-y-auto">
@@ -393,6 +414,52 @@ export default function SendSettings({
           )}
         </div>
 
+        {/* 🌟 ログイン不要（外部公開）設定 */}
+        <div className="space-y-3">
+          <label className="flex items-start gap-3 cursor-pointer p-4 bg-gray-50 rounded-xl border border-gray-200 hover:border-blue-300 transition-colors group">
+            <input
+              type="checkbox"
+              checked={accessMode === 'public'}
+              onChange={(e) => setAccessMode(e.target.checked ? 'public' : 'members')}
+              className="w-5 h-5 accent-blue-600 mt-0.5 flex-shrink-0"
+            />
+            <div className="flex-1">
+              <span className="block text-sm font-bold text-gray-700 group-hover:text-blue-900 transition-colors">ログインなしでの回答を許可する（外部公開）</span>
+              <span className="block text-xs text-gray-500 mt-0.5">共有URLを知っている人は、アカウントがなくても回答できます。回答時にログインするかどうかを選べます。</span>
+              {accessMode === 'public' && (
+                <span className="inline-flex items-center gap-1 mt-2 px-2 py-0.5 bg-blue-600 text-white text-[10px] font-bold rounded-full">
+                  <Globe className="w-3 h-3" /> 外部公開フォーム
+                </span>
+              )}
+            </div>
+          </label>
+
+          {accessMode === 'public' && publicUrl && (
+            <div className="ml-2 pl-6 border-l-2 border-blue-100 space-y-1.5">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={publicUrl}
+                  onFocus={(e) => e.target.select()}
+                  className="flex-1 min-w-0 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs text-gray-700 outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={copyPublicUrl}
+                  className="px-3 py-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  {isUrlCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  {isUrlCopied ? 'コピーしました' : 'コピー'}
+                </button>
+              </div>
+              {!(isPublished && initialAccessMode === 'public') && (
+                <span className="block text-[11px] text-gray-500">このURLは設定を保存（公開）した後に有効になります。</span>
+              )}
+            </div>
+          )}
+        </div>
+
         <label className="flex items-start gap-3 cursor-pointer p-4 bg-gray-50 rounded-xl border border-gray-200 hover:border-blue-300 transition-colors group">
           <input type="checkbox" checked={isAnonymous} onChange={(e) => setIsAnonymous(e.target.checked)} className="w-5 h-5 accent-blue-600 mt-0.5 flex-shrink-0" />
 
@@ -436,7 +503,8 @@ export default function SendSettings({
             isAnonymous,
             timezone: selectedTimezone,
             allowMultipleResponses,
-            allowEditResponses
+            allowEditResponses,
+            accessMode
           })}
           disabled={isButtonDisabled}
           className={`w-full text-white py-3.5 rounded-xl font-bold shadow-md transition-all transform hover:scale-[1.02] flex justify-center items-center gap-2 disabled:opacity-50 disabled:hover:scale-100 disabled:cursor-not-allowed ${isPublished ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
@@ -444,7 +512,11 @@ export default function SendSettings({
           {isPublished ? (
             <><Settings className="w-5 h-5" />設定を更新</>
           ) : (
-            <><Send className="w-5 h-5" />{selectedUserIds.length > 0 ? `${selectedUserIds.length}人に送信する` : '送信先を選択'}</>
+            <><Send className="w-5 h-5" />{
+              selectedUserIds.length > 0
+                ? `${selectedUserIds.length}人に送信する`
+                : accessMode === 'public' ? '外部公開する' : '送信先を選択'
+            }</>
           )}
         </button>
       </div>
