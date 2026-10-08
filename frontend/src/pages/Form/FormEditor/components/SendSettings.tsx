@@ -480,6 +480,11 @@ export default function SendSettings({
           <div className="flex-1">
             <span className="block text-sm font-bold text-gray-700 group-hover:text-blue-900 transition-colors">複数回答を許可する</span>
             <span className="block text-xs text-gray-500 mt-0.5">同じユーザーが何度も新しく回答できるようになります。</span>
+            {accessMode === 'public' && !allowMultipleResponses && (
+              <span className="block text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mt-2">
+                ログインせずに回答する人は、別のブラウザや端末からなら再回答できてしまいます。1人1回を厳密に守りたい場合は「ログインなしでの回答を許可する」をオフにしてください。
+              </span>
+            )}
           </div>
         </label>
 

@@ -1,8 +1,8 @@
 import type { Request, Response, NextFunction } from 'express';
 import { supabase } from '../lib/supabase';
+import { isGuestKey } from '../lib/guestIdentity';
 
 export const FORM_GUEST_KEY_HEADER = 'X-Form-Guest-Key';
-const GUEST_KEY_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Like `authenticate`, but a caller without a Supabase session is also let through as a guest
@@ -23,7 +23,7 @@ export function authenticateFormRespondent(getFormId: (req: Request) => unknown 
 
     const guestKey = req.get(FORM_GUEST_KEY_HEADER);
     const formId = getFormId(req);
-    if (!guestKey || !GUEST_KEY_RE.test(guestKey) || typeof formId !== 'string' || !formId) {
+    if (!isGuestKey(guestKey) || typeof formId !== 'string' || !formId) {
       return res.status(401).json({ error: '認証に失敗しました' });
     }
 

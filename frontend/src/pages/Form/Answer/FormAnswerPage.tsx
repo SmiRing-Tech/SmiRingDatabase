@@ -13,11 +13,17 @@ import { formGuestRequestOptions, type FormGuest } from '../../../lib/formGuest'
 type Props = {
   /** Set when a not-logged-in visitor answers a public form. */
   guest?: FormGuest;
+  /** Overrides the :id route param, for rendering outside the form routes. */
+  formId?: string;
+  /** Rendered inside another screen (e.g. a call): fills its container and offers "閉じる" instead of navigating home. */
+  embedded?: { onClose: () => void; onSubmitted?: () => void };
 };
 
-export default function FormAnswerPage({ guest }: Props = {}) {
+export default function FormAnswerPage({ guest, formId, embedded }: Props = {}) {
   const { showFeedback } = useFeedback();
-  const { id } = useParams();
+  const params = useParams();
+  const id = formId ?? params.id;
+  const pageHeightClass = embedded ? 'min-h-full' : 'min-h-screen';
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const isPreviewMode = searchParams.get('mode') === 'preview';
@@ -40,11 +46,12 @@ export default function FormAnswerPage({ guest }: Props = {}) {
   const [responseId, setResponseId] = useState<string | null>(null);
   const [allowMultiple, setAllowMultiple] = useState(false);
   const [allowEdit, setAllowEdit] = useState(true);
+  const [isAnonymousForm, setIsAnonymousForm] = useState(false);
   const [guardState, setGuardState] = useState<'none' | 'blocked' | 'choice'>('none');
   const [pastResponses, setPastResponses] = useState<any[]>([]);
 
   const guestOptions = formGuestRequestOptions(guest);
-  const guestInfo = guest ? { name: guest.name } : undefined;
+  const guestInfo = guest && !isAnonymousForm ? { name: guest.name } : undefined;
 
   // 1. フォームデータ ＆ 自分の回答状況の取得
   const cleanAnswers = (qs: QuestionData[], rawAns: Record<string, any>) => {
@@ -144,6 +151,7 @@ export default function FormAnswerPage({ guest }: Props = {}) {
         const allowEd = formData.allow_edit_responses !== false; // default true
         setAllowMultiple(allowMult);
         setAllowEdit(allowEd);
+        setIsAnonymousForm(!!formData.allow_anonymous);
 
         setPastResponses(pResponses);
         
@@ -239,6 +247,7 @@ export default function FormAnswerPage({ guest }: Props = {}) {
 
       showFeedback('回答ありがとうございました！', { mode: 'splash', type: 'success', emoji: '🎉' });
       setIsSubmitted(true);
+      embedded?.onSubmitted?.();
     } catch (err: any) {
       showFeedback(err.message || 'エラーが発生しました。もう一度お試しください。', { type: 'error', mode: 'banner' });
     } finally {
@@ -266,10 +275,27 @@ export default function FormAnswerPage({ guest }: Props = {}) {
   // UIのレンダリング
   // ----------------------------------------------------
 
+  const renderExitButton = (className: string) => {
+    if (embedded) {
+      return (
+        <button onClick={embedded.onClose} className={className}>
+          閉じる
+        </button>
+      );
+    }
+    if (guest) return null;
+    return (
+      <button onClick={() => navigate('/home')} className={className}>
+        <Home className="w-5 h-5" />
+        ホームに戻る
+      </button>
+    );
+  };
+
   // 🌟 A-1. ガード画面: 選択画面 (Edit or New)
   if (guardState === 'choice') {
     return (
-      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-gray-50 p-6">
+      <div className={`${pageHeightClass} w-full flex flex-col items-center justify-center bg-gray-50 p-6`}>
         <div className="bg-white p-10 rounded-3xl shadow-xl text-center max-w-md">
           <div className="w-20 h-20 bg-blue-100 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-6">
             <CheckCircle2 className="w-12 h-12" />
@@ -310,7 +336,7 @@ export default function FormAnswerPage({ guest }: Props = {}) {
   // 🌟 A-2. ガード画面: ブロック (Both disabled)
   if (guardState === 'blocked') {
     return (
-      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-gray-50 p-6">
+      <div className={`${pageHeightClass} w-full flex flex-col items-center justify-center bg-gray-50 p-6`}>
         <div className="bg-white p-10 rounded-3xl shadow-xl text-center max-w-md">
           <div className="w-20 h-20 bg-gray-100 text-gray-500 rounded-full flex items-center justify-center mx-auto mb-6">
             <CheckCircle2 className="w-12 h-12" />
@@ -319,15 +345,7 @@ export default function FormAnswerPage({ guest }: Props = {}) {
           <p className="text-gray-500 mb-8 leading-relaxed">
             このフォームにはすでに回答しています。<br/>重複して回答することはできません。
           </p>
-          {!guest && (
-            <button
-              onClick={() => navigate('/home')}
-              className="w-full py-4 bg-gray-800 text-white rounded-xl font-bold hover:bg-gray-900 transition-all shadow-md flex items-center justify-center gap-2"
-            >
-              <Home className="w-5 h-5" />
-              ホームに戻る
-            </button>
-          )}
+          {renderExitButton('w-full py-4 bg-gray-800 text-white rounded-xl font-bold hover:bg-gray-900 transition-all shadow-md flex items-center justify-center gap-2')}
         </div>
       </div>
     );
@@ -336,7 +354,7 @@ export default function FormAnswerPage({ guest }: Props = {}) {
   // B. 送信完了後のサンクス画面
   if (isSubmitted) {
     return (
-      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-blue-50 p-6">
+      <div className={`${pageHeightClass} w-full flex flex-col items-center justify-center bg-blue-50 p-6`}>
         <div className="bg-white p-10 rounded-3xl shadow-xl text-center max-w-md">
           <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6">
             <CheckCircle2 className="w-12 h-12" />
@@ -345,15 +363,7 @@ export default function FormAnswerPage({ guest }: Props = {}) {
           <p className="text-gray-500 mb-8 leading-relaxed">
             フォームへの回答が正常に送信されました。<br/>ご協力ありがとうございました。
           </p>
-          {!guest && (
-            <button
-              onClick={() => navigate('/home')}
-              className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg hover:shadow-blue-200 flex items-center justify-center gap-2"
-            >
-              <Home className="w-5 h-5" />
-              ホームに戻る
-            </button>
-          )}
+          {renderExitButton('w-full py-4 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg hover:shadow-blue-200 flex items-center justify-center gap-2')}
         </div>
       </div>
     );
@@ -362,7 +372,7 @@ export default function FormAnswerPage({ guest }: Props = {}) {
   // C. ローディング画面
   if (isLoading) {
     return (
-      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-blue-50">
+      <div className={`${pageHeightClass} w-full flex flex-col items-center justify-center bg-blue-50`}>
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
         <p className="text-gray-500 font-medium">読み込み中...</p>
       </div>
@@ -371,7 +381,7 @@ export default function FormAnswerPage({ guest }: Props = {}) {
 
   // D. メインの回答画面
   return (
-    <div className="min-h-screen w-full bg-blue-50 overflow-y-auto">
+    <div className={`${pageHeightClass} w-full bg-blue-50 overflow-y-auto`}>
       <FormAnswerUI 
         title={title}
         description={description}

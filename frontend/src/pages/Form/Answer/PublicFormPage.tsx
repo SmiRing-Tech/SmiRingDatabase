@@ -14,7 +14,7 @@ import FormAnswerPage from './FormAnswerPage';
 
 type ProbeState =
   | { status: 'loading' }
-  | { status: 'public'; title: string }
+  | { status: 'public'; title: string; isAnonymous: boolean }
   | { status: 'login_required' }
   | { status: 'error' };
 
@@ -44,7 +44,7 @@ export default function PublicFormPage() {
         if (res.status === 401) return setProbe({ status: 'login_required' });
         if (!res.ok) return setProbe({ status: 'error' });
         const form = await res.json();
-        setProbe({ status: 'public', title: form.title || '無題のフォーム' });
+        setProbe({ status: 'public', title: form.title || '無題のフォーム', isAnonymous: !!form.allow_anonymous });
       })
       .catch(() => isMounted && setProbe({ status: 'error' }));
     return () => {
@@ -85,6 +85,10 @@ export default function PublicFormPage() {
   }
 
   const startAsGuest = () => {
+    if (probe.isAnonymous) {
+      setGuest({ key: guestKey, name: '' });
+      return;
+    }
     const name = guestName.trim();
     saveFormGuestName(name);
     setGuest({ key: guestKey, name });
@@ -110,18 +114,24 @@ export default function PublicFormPage() {
           <span className="flex-1 border-t border-gray-200" />
         </div>
 
-        <label className="text-sm font-bold text-gray-700" htmlFor="guest-name">
-          お名前（任意）
-        </label>
-        <input
-          id="guest-name"
-          type="text"
-          value={guestName}
-          maxLength={100}
-          onChange={(e) => setGuestName(e.target.value)}
-          placeholder="例: 山田 太郎"
-          className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-sm"
-        />
+        {probe.isAnonymous ? (
+          <p className="text-xs text-gray-500 text-center">このフォームは匿名で回答されます</p>
+        ) : (
+          <>
+            <label className="text-sm font-bold text-gray-700" htmlFor="guest-name">
+              お名前（任意）
+            </label>
+            <input
+              id="guest-name"
+              type="text"
+              value={guestName}
+              maxLength={100}
+              onChange={(e) => setGuestName(e.target.value)}
+              placeholder="例: 山田 太郎"
+              className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-sm"
+            />
+          </>
+        )}
         <button
           onClick={startAsGuest}
           className="w-full py-4 bg-white border-2 border-gray-200 text-gray-700 rounded-xl font-bold hover:bg-gray-50 transition-all flex items-center justify-center gap-2"

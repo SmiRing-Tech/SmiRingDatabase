@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useFeedback } from '../../../../context/FeedbackContext';
 import type { QuestionData } from '../../FormEditor/FormEditorPage';
 import { richTextStyles } from '../../../../components/ui/RichTextEditor';
 import AnswerBox from './AnswerBox';
 import { Send, ExternalLink, User, Loader2 } from 'lucide-react';
-import { Turnstile } from '@marsidev/react-turnstile';
+import { Turnstile, type TurnstileInstance } from '@marsidev/react-turnstile';
 import type { FileItem } from './FileUploadField';
 import { supabase } from '../../../../lib/supabase';
 import { apiClient } from '../../../../lib/apiClient';
@@ -47,6 +47,7 @@ export default function FormAnswerUI({
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileRef = useRef<TurnstileInstance>(null);
   const [turnstileError, setTurnstileError] = useState(false);
   const [isUploadingFiles, setIsUploadingFiles] = useState(false);
 
@@ -173,6 +174,9 @@ export default function FormAnswerUI({
       showFeedback(err.message || 'エラーが発生しました', { type: 'error', mode: 'banner' });
     } finally {
       setIsUploadingFiles(false);
+      // Turnstileのトークンは1回きり。送信が失敗して再送するときに使い回さないよう、毎回取り直す
+      setTurnstileToken(null);
+      turnstileRef.current?.reset();
     }
   };
   
@@ -267,8 +271,11 @@ export default function FormAnswerUI({
           <>
             <div id="turnstile-widget" className="pt-4 flex flex-col items-end">
               <Turnstile
+                ref={turnstileRef}
                 siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY}
                 onSuccess={(token) => { setTurnstileToken(token); setTurnstileError(false); }}
+                onExpire={() => setTurnstileToken(null)}
+                onError={() => setTurnstileToken(null)}
                 options={{ theme: 'light' }}
               />
               {turnstileError && (

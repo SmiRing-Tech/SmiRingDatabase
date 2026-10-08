@@ -69,8 +69,14 @@ import {
   Users,
   Smile,
   Clock,
+  ClipboardList,
 } from 'lucide-react';
 import { apiClient, setGuestAuthToken } from '../../lib/apiClient';
+import { getOrCreateFormGuestKey, type FormGuest } from '../../lib/formGuest';
+import { useConnectSurvey } from '../../hooks/useConnectSurvey';
+import SurveyHostPanel from '../../components/Connect/SurveyHostPanel';
+import { SurveyReopenPill, SurveyStagePanel } from '../../components/Connect/SurveyParticipantView';
+import { useSurveyParticipantView } from '../../hooks/useSurveyParticipantView';
 import PreJoinScreen, { type PreJoinChoices } from '../../components/Connect/PreJoinScreen';
 import MiniRoomPanel from '../../components/Connect/MiniRoomPanel';
 import ParticipantsPanel from '../../components/Connect/ParticipantsPanel';
@@ -1792,6 +1798,29 @@ function MiniRoomMenuItem({ onClick }: { onClick: () => void }) {
   );
 }
 
+/** Host-only: opens the in-call survey panel (start a form / watch progress). */
+function SurveyButton({ isActive, onClick }: { isActive: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} title="アンケート" className={controlButtonClass(isActive)}>
+      <ClipboardList className="w-5 h-5" />
+      <ControlButtonLabel>{isActive ? '実施中' : 'アンケート'}</ControlButtonLabel>
+    </button>
+  );
+}
+
+/** Same survey entry point, styled as a row inside `MoreMenu` for when the bar is too narrow. */
+function SurveyMenuItem({ isActive, onClick }: { isActive: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-gray-200 hover:bg-gray-800 transition-colors"
+    >
+      <ClipboardList className="w-4 h-4 text-sky-400" />
+      <span>{isActive ? 'アンケート（実施中）' : 'アンケート'}</span>
+    </button>
+  );
+}
+
 /** Small dropdown menu offering to reopen the save/discard dialog for a recording left
  *  pending_review — the same shape as MicMenuDropdown/CameraMenuDropdown's popover. */
 function RecordingReviewMenuDropdown({
@@ -2160,6 +2189,9 @@ function CustomVideoConference({
   selectedProfileUserId,
   setSelectedProfileUserId,
   onOpenProfile,
+  isSurveyActive,
+  onOpenSurveyPanel,
+  surveyStage,
 }: {
   layout: CallLayout;
   onOpenPip: () => void;
@@ -2186,6 +2218,10 @@ function CustomVideoConference({
   selectedProfileUserId?: string | null;
   setSelectedProfileUserId?: (val: string | null) => void;
   onOpenProfile?: (userId: string) => void;
+  isSurveyActive: boolean;
+  onOpenSurveyPanel: () => void;
+  /** When set, takes over the stage (everyone's tiles, screen share included, move to the strip). */
+  surveyStage?: ReactNode;
 }) {
   const { localParticipant } = useLocalParticipant();
   // Prefer the authenticated user id (matches useAdvancedChat's selfIdentity and the
@@ -2394,6 +2430,23 @@ function CustomVideoConference({
     });
   }
 
+  if (isMiniRoomHost) {
+    overflowItems.push({
+      key: 'survey',
+      priority: 0.8,
+      renderBar: () => <SurveyButton isActive={isSurveyActive} onClick={onOpenSurveyPanel} />,
+      renderMenuItem: (close) => (
+        <SurveyMenuItem
+          isActive={isSurveyActive}
+          onClick={() => {
+            onOpenSurveyPanel();
+            close();
+          }}
+        />
+      ),
+    });
+  }
+
   if (isPipSupported) {
     overflowItems.push({
       key: 'pip',
@@ -2493,7 +2546,21 @@ function CustomVideoConference({
             with a 69px control bar, while ours is ~57px, so they left 12px unused. */}
         <div className="lk-video-conference-inner h-full min-h-0">
           <div className="flex-1 min-h-0 relative">
-            {layout.mode === 'grid' ? (
+            {surveyStage ? (
+              <StageLayoutView
+                key={layoutKey}
+                stageTracks={[]}
+                stripTracks={layout.gridTracks}
+                pinned={layout.pinned}
+                onTogglePin={layout.togglePin}
+                isHost={isMiniRoomHost}
+                onRequestClaimHost={onRequestClaimHost}
+                onRequestGrantHost={onRequestGrantHost}
+                isInternalMeeting={isInternalMeeting}
+                onOpenProfile={onOpenProfile}
+                stageContent={surveyStage}
+              />
+            ) : layout.mode === 'grid' ? (
               <GridLayoutView
                 key={layoutKey}
                 tracks={layout.gridTracks}
@@ -2733,6 +2800,16 @@ function CallRoomInner({
 
   const reactions = useReactions({ selfIdentity });
   const room = useRoomContext();
+
+  const survey = useConnectSurvey({ mainRoomId: roomId, currentRoomId: miniRooms.currentRoomId });
+  const [showSurveyPanel, setShowSurveyPanel] = useState(false);
+  const surveyView = useSurveyParticipantView(isMiniRoomHost ? null : survey.activeSurvey);
+  // Guests answer under the same browser key their call identity was derived from (see
+  // claimAnonymousToken), which is how the host's progress view matches them to answers.
+  const surveyGuest = useMemo<FormGuest | undefined>(
+    () => (user ? undefined : { key: getOrCreateFormGuestKey(), name: localParticipant.name || '' }),
+    [user, localParticipant.name],
+  );
 
   // Listen for host_granted message via LiveKit data channel
   useEffect(() => {
@@ -2985,7 +3062,30 @@ function CallRoomInner({
             selectedProfileUserId={selectedProfileUserId}
             setSelectedProfileUserId={setSelectedProfileUserId}
             onOpenProfile={handleOpenProfile}
+            isSurveyActive={!!survey.activeSurvey}
+            onOpenSurveyPanel={() => setShowSurveyPanel(true)}
+            surveyStage={
+              surveyView.isOnStage && survey.activeSurvey ? (
+                <SurveyStagePanel
+                  survey={survey.activeSurvey}
+                  guest={surveyGuest}
+                  isSubmitted={surveyView.isSubmitted}
+                  onHide={surveyView.hide}
+                  onSubmitted={surveyView.markSubmitted}
+                />
+              ) : undefined
+            }
           />
+
+          {isMiniRoomHost && (
+            <SurveyHostPanel
+              isOpen={showSurveyPanel}
+              onClose={() => setShowSurveyPanel(false)}
+              mainRoomId={roomId}
+              survey={survey}
+            />
+          )}
+          {surveyView.showReopenPill && <SurveyReopenPill onClick={surveyView.reopen} />}
 
           <MiniRoomMoveToast pendingMove={miniRooms.pendingMove} />
 
@@ -3323,6 +3423,7 @@ export default function CallRoomPage({
           invite_token: anonymousInvite.token,
           username: choices?.username || 'guest',
           waitlist_id: waitlistIdForClaim,
+          guest_key: getOrCreateFormGuestKey(),
         });
 
         if (res.status === 503) {

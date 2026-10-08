@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { isTrackReference, type TrackReferenceOrPlaceholder } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import { Minimize2, ZoomIn, ZoomOut } from 'lucide-react';
@@ -226,6 +226,8 @@ export interface StageLayoutViewProps {
   onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
   isInternalMeeting?: boolean;
   onOpenProfile?: (userId: string) => void;
+  /** Local-only content shown on the stage instead of `stageTracks` (e.g. an in-call survey). */
+  stageContent?: ReactNode;
 }
 
 /**
@@ -247,6 +249,7 @@ export default function StageLayoutView({
   onRequestGrantHost,
   isInternalMeeting,
   onOpenProfile,
+  stageContent,
 }: StageLayoutViewProps) {
   const [rootEl, setRootEl] = useState<HTMLDivElement | null>(null);
   const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
@@ -286,29 +289,35 @@ export default function StageLayoutView({
       className={`w-full h-full min-h-0 min-w-0 flex ${isVertical ? 'flex-row' : 'flex-col'}`}
     >
       <div ref={setStageEl} className="flex-1 min-w-0 min-h-0 relative">
-        <div
-          className="absolute inset-0 grid place-content-center"
-          style={{
-            gridTemplateColumns: `repeat(${stageGeometry.cols}, ${stageGeometry.tileW}px)`,
-            gridAutoRows: `${stageGeometry.rowH}px`,
-            gap: `${TILE_GAP}px`,
-            padding: `${TILE_GAP}px`,
-          }}
-        >
-          {stageTracks.map((track) => (
-            <StageTile
-              key={tileId(track)}
-              track={track}
-              isPinned={pinnedSet.has(tileId(track))}
-              onTogglePin={onTogglePin}
-              isHost={isHost}
-              onRequestClaimHost={onRequestClaimHost}
-              onRequestGrantHost={onRequestGrantHost}
-              isInternalMeeting={isInternalMeeting}
-              onOpenProfile={onOpenProfile}
-            />
-          ))}
-        </div>
+        {stageContent ? (
+          <div className="absolute inset-0" style={{ padding: `${TILE_GAP}px` }}>
+            {stageContent}
+          </div>
+        ) : (
+          <div
+            className="absolute inset-0 grid place-content-center"
+            style={{
+              gridTemplateColumns: `repeat(${stageGeometry.cols}, ${stageGeometry.tileW}px)`,
+              gridAutoRows: `${stageGeometry.rowH}px`,
+              gap: `${TILE_GAP}px`,
+              padding: `${TILE_GAP}px`,
+            }}
+          >
+            {stageTracks.map((track) => (
+              <StageTile
+                key={tileId(track)}
+                track={track}
+                isPinned={pinnedSet.has(tileId(track))}
+                onTogglePin={onTogglePin}
+                isHost={isHost}
+                onRequestClaimHost={onRequestClaimHost}
+                onRequestGrantHost={onRequestGrantHost}
+                isInternalMeeting={isInternalMeeting}
+                onOpenProfile={onOpenProfile}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       <FilmStrip

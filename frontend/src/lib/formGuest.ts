@@ -5,18 +5,22 @@ export const FORM_GUEST_KEY_HEADER = 'X-Form-Guest-Key';
 
 export type FormGuest = { key: string; name: string };
 
-// The key identifies a not-logged-in respondent across visits so they can resume drafts.
-// If storage is unavailable (private mode etc.) they still get a key, just not a persistent one.
+let sessionGuestKey: string | null = null;
+
+// The key identifies a not-logged-in visitor across visits: it resumes their form drafts and,
+// in Connect, keeps their call identity stable so survey progress can match them to answers.
+// If storage is unavailable (private mode etc.) it still stays the same for this page load.
 export function getOrCreateFormGuestKey(): string {
+  if (sessionGuestKey) return sessionGuestKey;
   try {
     const existing = localStorage.getItem(GUEST_KEY_STORAGE);
-    if (existing) return existing;
+    if (existing) return (sessionGuestKey = existing);
   } catch { /* storage unavailable */ }
-  const key = crypto.randomUUID();
+  sessionGuestKey = crypto.randomUUID();
   try {
-    localStorage.setItem(GUEST_KEY_STORAGE, key);
+    localStorage.setItem(GUEST_KEY_STORAGE, sessionGuestKey);
   } catch { /* storage unavailable */ }
-  return key;
+  return sessionGuestKey;
 }
 
 export function getSavedFormGuestName(): string {

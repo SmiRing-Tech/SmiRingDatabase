@@ -306,7 +306,8 @@ router.post('/api/forms/:id/responses/save', authenticateFormRespondent(), async
     let resultId = response_id;
 
     if (response_id) {
-      const { error } = await whereOwnedBy(
+      // 送信済みの回答を下書きに戻すと、編集不可の設定をすり抜けて上書きできてしまうため下書きのみ更新する
+      const { data: updated, error } = await whereOwnedBy(
         supabase
           .from('form_response_mappings')
           .update({
@@ -315,10 +316,14 @@ router.post('/api/forms/:id/responses/save', authenticateFormRespondent(), async
             ...(respondent.guestKey && { guest_info: guestInfo }),
           })
           .eq('id', response_id)
-          .eq('form_id', formId),
+          .eq('form_id', formId)
+          .eq('status', 'draft'),
         respondent
-      );
+      ).select('id');
       if (error) throw error;
+      if (!updated || updated.length === 0) {
+        return res.status(409).json({ error: '送信済みの回答は下書き保存できません' });
+      }
     } else {
       const { data, error } = await supabase
         .from('form_response_mappings')
@@ -355,33 +360,45 @@ router.post('/api/forms/:id/submit', authenticateFormRespondent(), async (req: R
     const user_id = respondent.userId;
 
     // 1. フォーム設定を取得して複数回答と匿名設定の可否を確認
-    const { data: form } = await supabase.from('forms').select('allow_multiple_responses, allow_anonymous').eq('id', formId).single();
+    const { data: form } = await supabase
+      .from('forms')
+      .select('allow_multiple_responses, allow_anonymous, allow_edit_responses')
+      .eq('id', formId)
+      .single();
     const allowMultiple = form?.allow_multiple_responses || false;
     const isAnonymous = form?.allow_anonymous || false;
+    const allowEdit = form?.allow_edit_responses !== false;
 
     // 2. Turnstile検証
     const verifyResponse = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ secret: process.env.TURNSTILE_SECRET_KEY, response: turnstileToken })
+      // Secret Manager 経由だと末尾に改行が混ざりやすく、Cloudflare が invalid-input-secret を返すため trim する
+      body: JSON.stringify({ secret: process.env.TURNSTILE_SECRET_KEY?.trim(), response: turnstileToken })
     });
     const verifyData = await verifyResponse.json();
-    if (!verifyData.success) return res.status(400).json({ error: 'Bot検知失敗' });
+    if (!verifyData.success) {
+      const codes: string[] = verifyData['error-codes'] ?? [];
+      console.warn(`[Forms] Turnstile verification failed for form ${formId}:`, codes, 'hostname:', verifyData.hostname);
+      return res.status(400).json({ error: `Bot検知失敗${codes.length ? `（${codes.join(', ')}）` : ''}。もう一度送信してください` });
+    }
 
     let finalResponseId = response_id;
+    let targetStatus: string | null = null;
 
     // 3-a. 指定された回答IDが本人のものか確認（他人の回答の上書きを防ぐ）
     if (finalResponseId) {
       const { data: owned, error: ownedError } = await whereOwnedBy(
         supabase
           .from('form_response_mappings')
-          .select('id')
+          .select('id, status')
           .eq('id', finalResponseId)
           .eq('form_id', formId),
         respondent
       ).maybeSingle();
       if (ownedError) throw ownedError;
       if (!owned) return res.status(404).json({ error: '回答が見つかりません' });
+      targetStatus = owned.status;
     }
 
     // 3-b. 複数回答不可の場合、既存の回答（下書き含む）がないか念のため再確認してIDを特定する
@@ -389,7 +406,7 @@ router.post('/api/forms/:id/submit', authenticateFormRespondent(), async (req: R
       const { data: existing, error: existingError } = await whereOwnedBy(
         supabase
           .from('form_response_mappings')
-          .select('id')
+          .select('id, status')
           .eq('form_id', formId),
         respondent
       )
@@ -400,7 +417,13 @@ router.post('/api/forms/:id/submit', authenticateFormRespondent(), async (req: R
 
       if (existing) {
         finalResponseId = existing.id;
+        targetStatus = existing.status;
       }
+    }
+
+    // 3-c. 送信済みの回答を上書きするのは「編集」なので、編集不可のフォームでは拒否する
+    if (targetStatus === 'submitted' && !allowEdit) {
+      return res.status(409).json({ error: 'このフォームは送信後の編集が許可されていません' });
     }
 
     // 4. form_response_mappings を更新/挿入
@@ -408,7 +431,7 @@ router.post('/api/forms/:id/submit', authenticateFormRespondent(), async (req: R
       form_id: formId,
       user_id: user_id,
       guest_key: respondent.guestKey,
-      guest_info: respondent.guestKey ? parseGuestInfo(guest_info) : null,
+      guest_info: respondent.guestKey && !isAnonymous ? parseGuestInfo(guest_info) : null,
       content: answers,
       status: 'submitted',
       submitted_at: new Date().toISOString(),

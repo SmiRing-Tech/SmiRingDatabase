@@ -11,6 +11,7 @@ import { requirePermission } from '../middleware/requirePermission';
 import { supabase } from '../lib/supabase';
 import { r2, BUCKET_NAME, resolveAvatarUrl, getSignedFileUrl } from '../lib/r2';
 import { ensureJpegBuffer } from '../lib/imageInput';
+import { guestIdentityForKey, isGuestKey } from '../lib/guestIdentity';
 import {
   closeParticipantPresence,
   closeParticipantTracks,
@@ -638,6 +639,15 @@ async function cleanupStaleRoomData(mainRoomId: string): Promise<void> {
     }
   } catch (e) {
     // Best-effort cleanup
+  }
+
+  const { error: surveyError } = await supabase
+    .from('connect_room_surveys')
+    .update({ ended_at: new Date().toISOString() })
+    .eq('room_id', mainRoomId)
+    .is('ended_at', null);
+  if (surveyError) {
+    console.error('[Connect] Failed to end active survey for emptied room:', surveyError);
   }
 
   const miniRooms = await getActiveMiniRooms(mainRoomId).catch((e) => {
@@ -2353,6 +2363,250 @@ router.get('/api/connect/rooms/:roomId/hosts', authenticate, async (req: Request
   }
 });
 
+// ==========================================
+// 通話中アンケート（connect_room_surveys）
+// ホストが通話中に自分のフォームを選んで開始 → 参加者の画面に表示 → ホストは進捗を見る。
+// :roomId はホスト用ルートではメインルーム名。参加者用の /surveys/active だけは、ゲストの
+// LiveKitトークンがミニルーム名に紐づくため、現在いるルーム（ミニルーム可）で呼ばれる。
+// ==========================================
+
+async function resolveMainRoomId(roomId: string): Promise<string> {
+  if (!roomId.startsWith('mr_')) return roomId;
+  const { data } = await supabase
+    .from('connect_miniroom_rooms')
+    .select('main_room_id')
+    .eq('id', roomId)
+    .maybeSingle();
+  return data?.main_room_id ?? roomId;
+}
+
+async function isExternalMeetingRoom(mainRoomId: string): Promise<boolean> {
+  const { data } = await supabase
+    .from('connect_rooms')
+    .select('meeting_type')
+    .eq('room_id', mainRoomId)
+    .maybeSingle();
+  return data?.meeting_type === 'external';
+}
+
+/** Data-channel ping to the main room and its mini rooms; clients re-fetch /surveys/active. */
+async function broadcastSurveyUpdate(mainRoomId: string) {
+  if (!roomService) return;
+  const payload = Buffer.from(JSON.stringify({ type: 'connect_survey_updated' }), 'utf8');
+  const miniRooms = await getActiveMiniRooms(mainRoomId).catch(() => [] as MiniRoomRow[]);
+  await Promise.all(
+    [mainRoomId, ...miniRooms.map((r) => r.id)].map((roomId) =>
+      roomService!
+        .sendData(roomId, payload, DataPacket_Kind.RELIABLE, { topic: 'connect_survey' })
+        .catch((e) => console.warn(`[Connect] survey broadcast to ${roomId} failed:`, e)),
+    ),
+  );
+}
+
+// GET /api/connect/rooms/:roomId/survey-forms - Forms the host may start here: their own
+// published forms; an external meeting additionally needs ones guests can answer.
+router.get('/api/connect/rooms/:roomId/survey-forms', authenticate, requireRoomHost, async (req: Request, res: Response) => {
+  try {
+    const roomId = req.params.roomId as string;
+    const requiresPublic = await isExternalMeetingRoom(roomId);
+
+    let query = supabase
+      .from('forms')
+      .select('id, title, access_mode, updated_at')
+      .eq('created_by', req.user!.id)
+      .eq('status', 'published')
+      .is('deleted_at', null)
+      .order('updated_at', { ascending: false });
+    if (requiresPublic) query = query.eq('access_mode', 'public');
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return res.status(200).json({ forms: data ?? [], requiresPublic });
+  } catch (error: any) {
+    console.error('[Connect] GET .../survey-forms failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/rooms/:roomId/surveys - Start a survey (replaces any one still running).
+router.post('/api/connect/rooms/:roomId/surveys', authenticate, requireRoomHost, async (req: Request, res: Response) => {
+  try {
+    const roomId = req.params.roomId as string;
+    const userId = req.user!.id;
+    const { form_id } = req.body ?? {};
+    if (!isValidRoomName(roomId) || typeof form_id !== 'string' || !form_id) {
+      return res.status(400).json({ error: 'リクエストが不正です' });
+    }
+
+    const { data: form } = await supabase
+      .from('forms')
+      .select('id, created_by, status, deleted_at, access_mode')
+      .eq('id', form_id)
+      .maybeSingle();
+    if (!form || form.created_by !== userId || form.status !== 'published' || form.deleted_at) {
+      return res.status(400).json({ error: '開始できるのは自分が作成した公開済みのフォームだけです' });
+    }
+    if (form.access_mode !== 'public' && (await isExternalMeetingRoom(roomId))) {
+      return res.status(400).json({ error: '外部ミーティングでは、ログインなしで回答できるフォームだけを使えます' });
+    }
+
+    const now = new Date().toISOString();
+    const { error: endError } = await supabase
+      .from('connect_room_surveys')
+      .update({ ended_at: now })
+      .eq('room_id', roomId)
+      .is('ended_at', null);
+    if (endError) throw endError;
+
+    const { data: survey, error } = await supabase
+      .from('connect_room_surveys')
+      .insert({ room_id: roomId, form_id, started_by: userId, started_at: now })
+      .select('id, form_id, started_at')
+      .single();
+    if (error) {
+      // 23505: another host started one at the same moment (one-active unique index).
+      if (error.code === '23505') return res.status(409).json({ error: '別のアンケートが開始されました' });
+      throw error;
+    }
+
+    await broadcastSurveyUpdate(roomId);
+    return res.status(201).json({ survey });
+  } catch (error: any) {
+    console.error('[Connect] POST .../surveys failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/connect/rooms/:roomId/surveys/:surveyId/end - Stop showing the survey.
+router.post(
+  '/api/connect/rooms/:roomId/surveys/:surveyId/end',
+  authenticate,
+  requireRoomHost,
+  async (req: Request, res: Response) => {
+    try {
+      const { roomId, surveyId } = req.params as { roomId: string; surveyId: string };
+      const { error } = await supabase
+        .from('connect_room_surveys')
+        .update({ ended_at: new Date().toISOString() })
+        .eq('id', surveyId)
+        .eq('room_id', roomId)
+        .is('ended_at', null);
+      if (error) throw error;
+
+      await broadcastSurveyUpdate(roomId);
+      return res.status(200).json({ ok: true });
+    } catch (error: any) {
+      console.error('[Connect] POST .../surveys/:surveyId/end failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// GET /api/connect/rooms/:roomId/surveys/active - The running survey, if any (all participants).
+router.get('/api/connect/rooms/:roomId/surveys/active', authenticateChatCaller, async (req: Request, res: Response) => {
+  try {
+    const roomId = req.params.roomId as string;
+    if (!isValidRoomName(roomId)) {
+      return res.status(400).json({ error: 'ルーム名が不正です' });
+    }
+    const mainRoomId = await resolveMainRoomId(roomId);
+
+    const { data, error } = await supabase
+      .from('connect_room_surveys')
+      .select('id, form_id, started_at, forms(title)')
+      .eq('room_id', mainRoomId)
+      .is('ended_at', null)
+      .maybeSingle();
+    if (error) throw error;
+
+    const survey = data
+      ? {
+          id: data.id,
+          form_id: data.form_id,
+          form_title: (data.forms as { title?: string } | null)?.title || '無題のフォーム',
+          started_at: data.started_at,
+        }
+      : null;
+    return res.status(200).json({ survey });
+  } catch (error: any) {
+    console.error('[Connect] GET .../surveys/active failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/connect/rooms/:roomId/surveys/:surveyId/progress - Who in the call (main + mini
+// rooms, hosts excluded) has submitted. With multiple responses allowed, only responses
+// since this survey started count; otherwise any earlier submission already counts.
+router.get(
+  '/api/connect/rooms/:roomId/surveys/:surveyId/progress',
+  authenticate,
+  requireRoomHost,
+  async (req: Request, res: Response) => {
+    try {
+      const { roomId, surveyId } = req.params as { roomId: string; surveyId: string };
+
+      const { data: survey } = await supabase
+        .from('connect_room_surveys')
+        .select('id, form_id, started_at, ended_at, forms(allow_multiple_responses, allow_anonymous)')
+        .eq('id', surveyId)
+        .eq('room_id', roomId)
+        .maybeSingle();
+      if (!survey) {
+        return res.status(404).json({ error: 'アンケートが見つかりません' });
+      }
+      const surveyForm = survey.forms as { allow_multiple_responses?: boolean; allow_anonymous?: boolean } | null;
+      const allowMultiple = !!surveyForm?.allow_multiple_responses;
+      const isAnonymous = !!surveyForm?.allow_anonymous;
+
+      const participantsByIdentity = new Map<string, string>();
+      if (roomService) {
+        const miniRooms = await getActiveMiniRooms(roomId).catch(() => [] as MiniRoomRow[]);
+        const lists = await Promise.all(
+          [roomId, ...miniRooms.map((r) => r.id)].map((id) => roomService!.listParticipants(id).catch(() => [])),
+        );
+        for (const p of lists.flat()) {
+          if (p.kind === ParticipantInfo_Kind.STANDARD) {
+            participantsByIdentity.set(p.identity, p.name || p.identity);
+          }
+        }
+      }
+      const hostIds = await getRoomHostUserIds(roomId);
+
+      let responseQuery = supabase
+        .from('form_response_mappings')
+        .select('user_id, guest_key')
+        .eq('form_id', survey.form_id)
+        .eq('status', 'submitted');
+      if (allowMultiple) responseQuery = responseQuery.gte('submitted_at', survey.started_at);
+      const { data: responses, error } = await responseQuery;
+      if (error) throw error;
+
+      const answeredIdentities = new Set<string>();
+      for (const r of responses ?? []) {
+        if (r.user_id) answeredIdentities.add(r.user_id);
+        else if (r.guest_key) answeredIdentities.add(guestIdentityForKey(r.guest_key));
+      }
+
+      const participants = [...participantsByIdentity.entries()]
+        .filter(([identity]) => !hostIds.has(identity))
+        .map(([identity, name]) => ({ identity, name, answered: answeredIdentities.has(identity) }))
+        .sort((a, b) => Number(a.answered) - Number(b.answered) || a.name.localeCompare(b.name, 'ja'));
+
+      // 匿名フォームでは「誰が回答済みか」も伏せ、人数だけを返す
+      return res.status(200).json({
+        total: participants.length,
+        answered: participants.filter((p) => p.answered).length,
+        participants: isAnonymous ? [] : participants,
+        anonymous: isAnonymous,
+        ended: !!survey.ended_at,
+      });
+    } catch (error: any) {
+      console.error('[Connect] GET .../surveys/:surveyId/progress failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  },
+);
+
 // POST /api/connect/rooms/:roomId/miniroom/move - Unified self-move / host-move-other.
 //
 // NOTE: this deployment's self-hosted LiveKit server does not implement the
@@ -3428,7 +3682,7 @@ router.post('/api/connect/rooms/:roomId/anonymous-token', async (req: Request, r
     }
 
     const roomId = req.params.roomId as string;
-    const { invite_token, username, waitlist_id } = req.body ?? {};
+    const { invite_token, username, waitlist_id, guest_key } = req.body ?? {};
     if (!isValidRoomName(roomId)) {
       return res.status(400).json({ error: 'ルーム名が不正です' });
     }
@@ -3456,7 +3710,9 @@ router.post('/api/connect/rooms/:roomId/anonymous-token', async (req: Request, r
       return res.status(403).json({ error: 'まだ入室が許可されていません' });
     }
 
-    const anonymousId = `guest_${crypto.randomUUID()}`;
+    // A browser-held guest key keeps the same identity across rejoins (so in-call survey
+    // progress can match them to their form response); without one, a fresh identity.
+    const anonymousId = isGuestKey(guest_key) ? guestIdentityForKey(guest_key) : `guest_${crypto.randomUUID()}`;
     const token = await mintLiveKitToken(anonymousId, roomId, username.trim());
 
     return res.status(200).json({
