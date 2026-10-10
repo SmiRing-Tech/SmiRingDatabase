@@ -1209,8 +1209,10 @@ router.post('/api/connect/rooms', authenticate, requirePermission('connect', 'wr
       return res.status(500).json({ error: error.message });
     }
 
-    // 自分は必ずホストに含める
-    const hostIds = Array.from(new Set([userId, ...(Array.isArray(host_user_ids) ? host_user_ids : [])]));
+    // 自分は必ずホストに含める。外部ミーティングは「共有するメンバー」全員にホスト権を渡す。
+    const hostIds = Array.from(
+      new Set([userId, ...(isExternal ? viewerRows : Array.isArray(host_user_ids) ? host_user_ids : [])]),
+    );
 
     const childError = await writeRoomChildRows(room.id, { hostIds, viewerRows, roleGroups, departments }).catch(
       (e) => e,
@@ -1662,7 +1664,10 @@ router.patch('/api/connect/rooms/:id', authenticate, async (req: Request, res: R
       ? Array.from(new Set(Array.isArray(excluded_user_ids) ? excluded_user_ids : []))
       : Array.from(new Set(Array.isArray(viewer_user_ids) ? viewer_user_ids : []));
     const creatorId = loaded.room.created_by;
-    const hostIds = Array.from(new Set([creatorId, ...(Array.isArray(host_user_ids) ? host_user_ids : [])]));
+    // 外部ミーティングは「共有するメンバー」全員がホスト（作成時と同じルール）
+    const hostIds = Array.from(
+      new Set([creatorId, ...(isExternal ? viewerRows : Array.isArray(host_user_ids) ? host_user_ids : [])]),
+    );
 
     const { data: room, error } = await supabase
       .from('connect_rooms')

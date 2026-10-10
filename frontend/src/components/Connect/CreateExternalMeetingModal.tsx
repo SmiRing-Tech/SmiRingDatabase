@@ -52,6 +52,7 @@ interface ExternalMeetingDetail {
   scheduled_start_at: string | null;
   scheduled_end_at: string | null;
   invite_token: string | null;
+  created_by: string | null;
   viewer_user_ids: string[];
 }
 
@@ -89,6 +90,8 @@ export default function CreateExternalMeetingModal({
   // 失効日時・開始/終了予定の3フィールドで共通のタイムゾーン（1つのミーティングなので別々にする意味がない）
   const [pickerTimezone, setPickerTimezone] = useState('Asia/Tokyo');
   const [viewerUserIds, setViewerUserIds] = useState<string[]>([]);
+  // 共有メンバー候補から除外する作成者（共有メンバーもホストとして編集できるため、自分ではなく作成者を除く）
+  const [creatorId, setCreatorId] = useState<string | null>(null);
   const [members, setMembers] = useState<ConnectMember[]>([]);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -124,6 +127,7 @@ export default function CreateExternalMeetingModal({
       setScheduledEndAt(null);
       setPickerTimezone('Asia/Tokyo');
       setViewerUserIds([]);
+      setCreatorId(null);
       return;
     }
 
@@ -137,14 +141,16 @@ export default function CreateExternalMeetingModal({
         setScheduledStartAt(parseDateOrNull(detail.scheduled_start_at));
         setScheduledEndAt(parseDateOrNull(detail.scheduled_end_at));
         setViewerUserIds(detail.viewer_user_ids);
+        setCreatorId(detail.created_by);
       })
       .catch((e) => setError(e?.message || 'ミーティング情報の取得に失敗しました'))
       .finally(() => setLoadingDetail(false));
   }, [isOpen, roomId]);
 
+  const excludedMemberId = creatorId ?? currentUserId;
   const memberOptions: DropdownOption[] = useMemo(
-    () => groupMembersByRole(members.filter((m) => m.id !== currentUserId)),
-    [members, currentUserId],
+    () => groupMembersByRole(members.filter((m) => m.id !== excludedMemberId)),
+    [members, excludedMemberId],
   );
 
   if (!isOpen || typeof document === 'undefined') return null;
@@ -307,9 +313,9 @@ export default function CreateExternalMeetingModal({
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-bold text-gray-600">Connectホームで共有する内部メンバー（任意）</label>
+            <label className="text-xs font-bold text-gray-600">共有する内部メンバー（任意・全員ホスト）</label>
             <p className="text-[10px] text-gray-400 font-semibold">
-              自分以外にも、選んだメンバーのConnectホームにこのタイルが表示され、URLをコピーできるようになります
+              選んだメンバーのConnectホームにこのタイルが表示され、URLのコピーができます。共有メンバーには全員ホスト権が付与されます
             </p>
             <CustomDropdown
               multiple
