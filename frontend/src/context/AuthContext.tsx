@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { apiClient } from '../lib/apiClient';
 import type { Session, User } from '@supabase/supabase-js';
@@ -253,6 +253,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       {children}
     </AuthContext.Provider>
   );
+};
+
+/**
+ * 配下の useAuth() から「未ログイン」に見えるようにする。SmiRing Connect の招待URL（/j/:token）は
+ * ゲストとして参加する入口なので、ブラウザにログインセッションが残っていても本物のゲストと
+ * 同じ経路（ゲストID・ゲスト回答・ゲスト用UI）で動かすために使う。
+ * APIの認証ヘッダーは apiClient 側で別途ゲストトークンが優先される（setGuestAuthToken 参照）。
+ */
+export const GuestAuthScope: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const parent = useAuth();
+  const value = useMemo<AuthContextType>(
+    () => ({
+      ...parent,
+      session: null,
+      user: null,
+      permissions: [],
+      roles: [],
+      roleIds: [],
+      isPermissionsReady: true,
+      permissionsError: false,
+      onboardingCompleted: true,
+      hasPermission: () => false,
+    }),
+    [parent],
+  );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
 export const useAuth = () => {

@@ -5,6 +5,7 @@ import type { useAdvancedChat } from '../../hooks/useAdvancedChat';
 import type { useConnectWaitlist } from '../../hooks/useConnectWaitlist';
 import type { UseMiniRoomsResult } from '../../hooks/useMiniRooms';
 import { CustomDropdown, type DropdownOption } from '../ui/CustomDropdown';
+import type { ProfileAccess } from './callLayout/ParticipantTileContent';
 
 interface ParticipantsPanelProps {
   isHost: boolean;
@@ -16,7 +17,7 @@ interface ParticipantsPanelProps {
    *  currently holds host privileges for this room group — see useRoomHosts. */
   hostUserIds: Set<string>;
   onBackToVideo?: () => void;
-  isInternalMeeting?: boolean;
+  profileAccess?: ProfileAccess;
   onOpenProfile?: (userId: string) => void;
   onRequestClaimHost?: () => void;
   onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
@@ -41,7 +42,7 @@ function ParticipantActionMenu({
   isSelf,
   isHost,
   hostUserIds,
-  isInternalMeeting,
+  profileAccess,
   onRequestClaimHost,
   onRequestGrantHost,
   onOpenProfile,
@@ -53,7 +54,7 @@ function ParticipantActionMenu({
   isSelf: boolean;
   isHost: boolean;
   hostUserIds: Set<string>;
-  isInternalMeeting?: boolean;
+  profileAccess?: ProfileAccess;
   onRequestClaimHost?: () => void;
   onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
   onOpenProfile?: (userId: string) => void;
@@ -62,7 +63,7 @@ function ParticipantActionMenu({
 }) {
   const canClaimHost = isSelf && !isHost && !!onRequestClaimHost;
   const canGrantHost = !isSelf && isHost && !hostUserIds.has(identity) && !!onRequestGrantHost;
-  const canViewProfile = !isSelf && isInternalMeeting && !!onOpenProfile;
+  const canViewProfile = !isSelf && !!profileAccess && profileAccess !== 'none' && !!onOpenProfile && !identity.startsWith('guest_');
   const menuOptions: DropdownOption[] = [];
 
   if (onTogglePin) {
@@ -149,7 +150,7 @@ export default function ParticipantsPanel({
   miniRooms,
   hostUserIds,
   onBackToVideo,
-  isInternalMeeting,
+  profileAccess,
   onOpenProfile,
   onRequestClaimHost,
   onRequestGrantHost,
@@ -265,7 +266,7 @@ export default function ParticipantsPanel({
                   isSelf={isSelf}
                   isHost={isHost}
                   hostUserIds={hostUserIds}
-                  isInternalMeeting={isInternalMeeting}
+                  profileAccess={profileAccess}
                   onRequestClaimHost={onRequestClaimHost}
                   onRequestGrantHost={onRequestGrantHost}
                   onOpenProfile={onOpenProfile}
@@ -310,7 +311,7 @@ export default function ParticipantsPanel({
                     isSelf={isSelf}
                     isHost={isHost}
                     hostUserIds={hostUserIds}
-                    isInternalMeeting={isInternalMeeting}
+                    profileAccess={profileAccess}
                     onRequestClaimHost={onRequestClaimHost}
                     onRequestGrantHost={onRequestGrantHost}
                     onOpenProfile={onOpenProfile}

@@ -2,10 +2,11 @@ import { supabase } from './supabase';
 import { API_BASE_URL } from '../config';
 
 /**
- * SmiRing Connect の外部招待URL経由の参加者はSupabaseセッションを持たない。彼らの唯一の
- * 資格情報は入室時に発行されたLiveKitトークンなので、Supabaseセッションが無いときはこれを
- * 代わりにAuthorizationヘッダーへ載せる（backend側の authenticateChatCaller が検証する）。
- * CallRoomPage が入室/ミニルーム移動のたびに setGuestAuthToken で最新のトークンに更新する。
+ * SmiRing Connect の外部招待URL経由の参加者はゲストとして扱う。彼らの資格情報は入室時に発行された
+ * LiveKitトークンなので、これが設定されている間はSupabaseセッションより優先してAuthorizationヘッダーへ
+ * 載せる（backend側の authenticateChatCaller が検証する）。ブラウザにログインセッションが残っていても
+ * ゲストトークンを使うことで、通話上のID（guest_*）とAPI上のIDが食い違わないようにしている。
+ * CallRoomPage が入室/ミニルーム移動のたびに setGuestAuthToken で最新のトークンに更新し、退室時に null に戻す。
  */
 let guestAuthToken: string | null = null;
 export function setGuestAuthToken(token: string | null) {
@@ -20,10 +21,11 @@ export async function apiRequest(path: string, options: RequestInit = {}) {
   let { data: { session } } = await supabase.auth.getSession();
 
   const headers = new Headers(options.headers);
-  if (session?.access_token) {
-    headers.set('Authorization', `Bearer ${session.access_token}`);
-  } else if (guestAuthToken) {
+  const useGuestToken = !!guestAuthToken;
+  if (guestAuthToken) {
     headers.set('Authorization', `Bearer ${guestAuthToken}`);
+  } else if (session?.access_token) {
+    headers.set('Authorization', `Bearer ${session.access_token}`);
   }
   if (!headers.has('Content-Type') && !(options.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
@@ -35,7 +37,7 @@ export async function apiRequest(path: string, options: RequestInit = {}) {
 
   // 2. もし 401 (Unauthorized) が返ってきたら、トークンリフレッシュを試みる
   // (ゲストトークンにはSupabaseのリフレッシュ機構が無いので対象外)
-  if (response.status === 401 && session?.access_token) {
+  if (response.status === 401 && !useGuestToken && session?.access_token) {
     console.warn('[API] Unauthorized (401). Attempting session refresh...');
     const { data: { session: newSession }, error: refreshError } = await supabase.auth.refreshSession();
 

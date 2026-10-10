@@ -33,6 +33,15 @@ function micMutedTileClassName(trackReference: TrackReferenceOrPlaceholder) {
     : '';
 }
 
+/**
+ * How the local user can open other participants' profiles.
+ * - 'none':   not at all (invite-link guests — they have no Supabase session)
+ * - 'menu':   from the '...' menu (internal meetings)
+ * - 'button': an always-visible icon on each tile (external meetings, where telling
+ *             internal members apart from guests at a glance matters more)
+ */
+export type ProfileAccess = 'none' | 'menu' | 'button';
+
 export interface TileDisplayProps {
   /**
    * When false the `<video>` is not rendered at all and the avatar placeholder takes
@@ -53,8 +62,8 @@ export interface TileDisplayProps {
   onRequestClaimHost?: () => void;
   /** Called when a host clicks "一時ホストにする" on another participant's tile. */
   onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
-  /** Whether the current call is an internal meeting (where profiles are available). */
-  isInternalMeeting?: boolean;
+  /** How the local user may open other participants' profiles — see `ProfileAccess`. */
+  profileAccess?: ProfileAccess;
   /** Called when "プロフィールを見る" is clicked for a participant. */
   onOpenProfile?: (userId: string) => void;
   /** Local zoom/pan. Only passed for screen shares on a stage. */
@@ -81,7 +90,7 @@ export function ParticipantTileContent({
   isHost = false,
   onRequestClaimHost,
   onRequestGrantHost,
-  isInternalMeeting = false,
+  profileAccess = 'none',
   onOpenProfile,
   zoom,
   onFitChange,
@@ -129,7 +138,13 @@ export function ParticipantTileContent({
   const isLocalParticipant = !!participant?.isLocal;
   const canClaimHost = isLocalParticipant && !isHost && !!onRequestClaimHost;
   const canGrantHost = !isLocalParticipant && isHost && !!onRequestGrantHost && !!participant?.identity;
-  const canViewProfile = !isLocalParticipant && isInternalMeeting && !!onOpenProfile && !!participant?.identity;
+  // 招待URLのゲスト（guest_*）にはプロフィールが存在しないので対象外
+  const canViewProfile =
+    !isLocalParticipant &&
+    profileAccess !== 'none' &&
+    !!onOpenProfile &&
+    !!participant?.identity &&
+    !participant.identity.startsWith('guest_');
   const menuOptions: DropdownOption[] = [];
 
   if (onTogglePin) {
@@ -156,7 +171,10 @@ export function ParticipantTileContent({
     });
   }
 
-  if (canViewProfile) {
+  // 画面共有タイルでは共有内容に常時アイコンが重ならないよう、従来どおり '...' メニュー側に置く
+  const showProfileButton = canViewProfile && profileAccess === 'button' && !isScreenShare;
+
+  if (canViewProfile && !showProfileButton) {
     menuOptions.push({
       label: 'プロフィールを見る',
       value: 'view-profile',
@@ -165,7 +183,7 @@ export function ParticipantTileContent({
   }
 
   const menuDropdown =
-    menuOptions.length > 0 ? (
+    menuOptions.length > 0 || showProfileButton ? (
       <div
         className="absolute top-2 right-2 z-20 flex items-center gap-1.5 pointer-events-auto"
         onClick={(e) => e.stopPropagation()}
@@ -178,33 +196,46 @@ export function ParticipantTileContent({
             <Pin className="w-3 h-3 fill-current" />
           </span>
         )}
-        <CustomDropdown
-          options={menuOptions}
-          value=""
-          minMenuWidth={180}
-          onChange={(val) => {
-            if (val === 'pin') {
-              onTogglePin?.(tileId(trackReference));
-            } else if (val === 'claim-host') {
-              onRequestClaimHost?.();
-            } else if (val === 'grant-host' && participant) {
-              onRequestGrantHost?.(participant.identity, participant.name || participant.identity);
-            } else if (val === 'view-profile' && participant) {
-              onOpenProfile?.(participant.identity);
-            }
-          }}
-          customTrigger={(isOpen) => (
-            <button
-              type="button"
-              aria-label="タイル操作メニュー"
-              className={`p-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white shadow-md shadow-sky-500/25 backdrop-blur-md transition-all ${
-                isOpen ? '!opacity-100 ring-2 ring-white/60' : 'opacity-0 group-hover:opacity-100'
-              } ${isPinned ? '!opacity-90' : ''}`}
-            >
-              <MoreHorizontal className="w-3.5 h-3.5" />
-            </button>
-          )}
-        />
+        {showProfileButton && (
+          <button
+            type="button"
+            aria-label="プロフィールを見る"
+            title="プロフィールを見る"
+            onClick={() => onOpenProfile?.(participant.identity)}
+            className="p-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white shadow-md shadow-sky-500/25 backdrop-blur-md transition-all"
+          >
+            <User className="w-3.5 h-3.5" />
+          </button>
+        )}
+        {menuOptions.length > 0 && (
+          <CustomDropdown
+            options={menuOptions}
+            value=""
+            minMenuWidth={180}
+            onChange={(val) => {
+              if (val === 'pin') {
+                onTogglePin?.(tileId(trackReference));
+              } else if (val === 'claim-host') {
+                onRequestClaimHost?.();
+              } else if (val === 'grant-host' && participant) {
+                onRequestGrantHost?.(participant.identity, participant.name || participant.identity);
+              } else if (val === 'view-profile' && participant) {
+                onOpenProfile?.(participant.identity);
+              }
+            }}
+            customTrigger={(isOpen) => (
+              <button
+                type="button"
+                aria-label="タイル操作メニュー"
+                className={`p-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white shadow-md shadow-sky-500/25 backdrop-blur-md transition-all ${
+                  isOpen ? '!opacity-100 ring-2 ring-white/60' : 'opacity-0 group-hover:opacity-100'
+                } ${isPinned ? '!opacity-90' : ''}`}
+              >
+                <MoreHorizontal className="w-3.5 h-3.5" />
+              </button>
+            )}
+          />
+        )}
       </div>
     ) : null;
 
@@ -316,7 +347,7 @@ function CustomParticipantTileImpl(props: CustomParticipantTileProps) {
     isHost,
     onRequestClaimHost,
     onRequestGrantHost,
-    isInternalMeeting,
+    profileAccess,
     onOpenProfile,
     zoom,
     onFitChange,
@@ -340,7 +371,7 @@ function CustomParticipantTileImpl(props: CustomParticipantTileProps) {
         isHost={isHost}
         onRequestClaimHost={onRequestClaimHost}
         onRequestGrantHost={onRequestGrantHost}
-        isInternalMeeting={isInternalMeeting}
+        profileAccess={profileAccess}
         onOpenProfile={onOpenProfile}
         zoom={zoom}
         onFitChange={onFitChange}
@@ -394,7 +425,7 @@ function tilePropsEqual(a: CustomParticipantTileProps, b: CustomParticipantTileP
     a.isHost === b.isHost &&
     a.onRequestClaimHost === b.onRequestClaimHost &&
     a.onRequestGrantHost === b.onRequestGrantHost &&
-    a.isInternalMeeting === b.isInternalMeeting &&
+    a.profileAccess === b.profileAccess &&
     a.onOpenProfile === b.onOpenProfile &&
     a.density === b.density &&
     a.className === b.className &&

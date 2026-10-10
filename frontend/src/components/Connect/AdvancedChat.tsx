@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { useParticipants } from '@livekit/components-react';
+import { useLocalParticipant, useParticipants } from '@livekit/components-react';
 import {
   Plus,
   Users,
@@ -108,7 +108,9 @@ export default function AdvancedChat({
   } = chat;
 
   const { user } = useAuth();
-  const selfIdentity = user?.id || '';
+  const { localParticipant } = useLocalParticipant();
+  // 招待URLのゲストは user を持たないので、通話上のID（guest_*）を自分として扱う（CallRoomPage と同じ）
+  const selfIdentity = user?.id || localParticipant.identity;
   const participants = useParticipants();
 
   const [showNewDmModal, setShowNewDmModal] = useState(false);

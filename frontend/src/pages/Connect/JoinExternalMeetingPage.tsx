@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { AlertTriangle, Loader2, Video } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
+import { GuestAuthScope } from '../../context/AuthContext';
 import CallRoomPage from './CallRoomPage';
 
 interface InviteInfo {
@@ -14,6 +15,9 @@ interface InviteInfo {
  * no SmiRing Database account. Resolves the invite token to a room first (so an
  * expired/invalid link fails here with a clear message instead of inside CallRoomPage),
  * then hands off to the same CallRoomPage everyone else uses, in its anonymous mode.
+ * Someone who happens to be logged in on this browser still joins as a guest: GuestAuthScope
+ * hides their session from the call UI, and apiClient sends the guest LiveKit token instead
+ * of the Supabase one, so the call identity (guest_*) and the API identity always match.
  */
 export default function JoinExternalMeetingPage() {
   const { token } = useParams<{ token: string }>();
@@ -78,12 +82,14 @@ export default function JoinExternalMeetingPage() {
   }
 
   return (
-    <CallRoomPage
-      anonymousInvite={{
-        token,
-        roomId: invite.room_id,
-        roomTitle: invite.room_title,
-      }}
-    />
+    <GuestAuthScope>
+      <CallRoomPage
+        anonymousInvite={{
+          token,
+          roomId: invite.room_id,
+          roomTitle: invite.room_title,
+        }}
+      />
+    </GuestAuthScope>
   );
 }

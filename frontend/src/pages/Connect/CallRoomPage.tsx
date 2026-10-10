@@ -111,6 +111,7 @@ import HostLeaveWarningModal from '../../components/Connect/HostLeaveWarningModa
 import ClaimHostModal from '../../components/Connect/ClaimHostModal';
 import GridLayoutView from '../../components/Connect/callLayout/GridLayoutView';
 import StageLayoutView from '../../components/Connect/callLayout/StageLayoutView';
+import type { ProfileAccess } from '../../components/Connect/callLayout/ParticipantTileContent';
 import {
   useCallLayout,
   type CallLayout,
@@ -2185,7 +2186,7 @@ function CustomVideoConference({
   recording,
   onStopRecording,
   onOpenRecordingReview,
-  isInternalMeeting,
+  profileAccess,
   selectedProfileUserId,
   setSelectedProfileUserId,
   onOpenProfile,
@@ -2214,7 +2215,7 @@ function CustomVideoConference({
   onStopRecording: () => void;
   /** Reopens the review dialog for a recording already left pending_review (the chevron menu). */
   onOpenRecordingReview: () => void;
-  isInternalMeeting?: boolean;
+  profileAccess?: ProfileAccess;
   selectedProfileUserId?: string | null;
   setSelectedProfileUserId?: (val: string | null) => void;
   onOpenProfile?: (userId: string) => void;
@@ -2556,7 +2557,7 @@ function CustomVideoConference({
                 isHost={isMiniRoomHost}
                 onRequestClaimHost={onRequestClaimHost}
                 onRequestGrantHost={onRequestGrantHost}
-                isInternalMeeting={isInternalMeeting}
+                profileAccess={profileAccess}
                 onOpenProfile={onOpenProfile}
                 stageContent={surveyStage}
               />
@@ -2569,7 +2570,7 @@ function CustomVideoConference({
                 isHost={isMiniRoomHost}
                 onRequestClaimHost={onRequestClaimHost}
                 onRequestGrantHost={onRequestGrantHost}
-                isInternalMeeting={isInternalMeeting}
+                profileAccess={profileAccess}
                 onOpenProfile={onOpenProfile}
               />
             ) : (
@@ -2582,7 +2583,7 @@ function CustomVideoConference({
                 isHost={isMiniRoomHost}
                 onRequestClaimHost={onRequestClaimHost}
                 onRequestGrantHost={onRequestGrantHost}
-                isInternalMeeting={isInternalMeeting}
+                profileAccess={profileAccess}
                 onOpenProfile={onOpenProfile}
               />
             )}
@@ -2633,7 +2634,7 @@ function CustomVideoConference({
             miniRooms={miniRooms}
             hostUserIds={hostUserIds}
             onBackToVideo={() => setShowParticipants(false)}
-            isInternalMeeting={isInternalMeeting}
+            profileAccess={profileAccess}
             onOpenProfile={onOpenProfile}
             onRequestClaimHost={onRequestClaimHost}
             onRequestGrantHost={onRequestGrantHost}
@@ -2698,7 +2699,7 @@ function CallRoomInner({
   pendingVideoTrack,
   pendingAudioTrack,
   initialMediaChoices,
-  isInternalMeeting,
+  profileAccess,
 }: {
   roomId: string;
   roomTitle: string;
@@ -2716,7 +2717,7 @@ function CallRoomInner({
   pendingVideoTrack: LocalVideoTrack | null;
   pendingAudioTrack: LocalAudioTrack | null;
   initialMediaChoices?: PreJoinChoices | null;
-  isInternalMeeting?: boolean;
+  profileAccess?: ProfileAccess;
 }) {
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -2771,8 +2772,8 @@ function CallRoomInner({
           throw new Error(body.error || 'ホスト権限の付与に失敗しました');
         }
         alert(`${targetName} さんに一時ホスト権限を付与しました`);
-      } catch (e: any) {
-        alert(e.message || 'ホスト権限の付与に失敗しました');
+      } catch (e) {
+        alert((e instanceof Error && e.message) || 'ホスト権限の付与に失敗しました');
       }
     },
     [roomId],
@@ -3058,7 +3059,7 @@ function CallRoomInner({
             recording={recording}
             onStopRecording={handleStopRecording}
             onOpenRecordingReview={() => setShowRecordingReview(true)}
-            isInternalMeeting={isInternalMeeting}
+            profileAccess={profileAccess}
             selectedProfileUserId={selectedProfileUserId}
             setSelectedProfileUserId={setSelectedProfileUserId}
             onOpenProfile={handleOpenProfile}
@@ -3341,7 +3342,7 @@ export default function CallRoomPage({
   const [token, setToken] = useState('');
   const [serverUrl, setServerUrl] = useState('');
   const [roomTitle, setRoomTitle] = useState(anonymousInvite?.roomTitle ?? '');
-  const [meetingType, setMeetingType] = useState<'fixed' | 'external'>(anonymousInvite ? 'external' : 'fixed');
+  const [meetingType, setMeetingType] = useState<'fixed' | 'external'>('fixed');
   const [isHost, setIsHost] = useState(false);
   const [choices, setChoices] = useState<PreJoinChoices | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
@@ -3415,13 +3416,14 @@ export default function CallRoomPage({
 
   // Claims a LiveKit token for an admitted (or waiting-room-exempt) anonymous invite-link
   // visitor. Shared by the immediate "no wait needed" path and the waiting-room poll below.
+  const guestUsername = choices?.username;
   const claimAnonymousToken = useCallback(
     async (waitlistIdForClaim: string | null) => {
       if (!anonymousInvite || !roomId) return;
       try {
         const res = await apiClient.post(`/api/connect/rooms/${roomId}/anonymous-token`, {
           invite_token: anonymousInvite.token,
-          username: choices?.username || 'guest',
+          username: guestUsername || 'guest',
           waitlist_id: waitlistIdForClaim,
           guest_key: getOrCreateFormGuestKey(),
         });
@@ -3448,13 +3450,12 @@ export default function CallRoomPage({
         setServerUrl(data.url);
         if (data.roomTitle) setRoomTitle(data.roomTitle);
         setIsHost(!!data.is_host);
-        setMeetingType('external');
         setStage('in-call');
-      } catch (e: any) {
-        setErrorMsg(e?.message || '接続中にエラーが発生しました');
+      } catch (e) {
+        setErrorMsg((e instanceof Error && e.message) || '接続中にエラーが発生しました');
       }
     },
-    [anonymousInvite, roomId, choices?.username],
+    [anonymousInvite, roomId, guestUsername],
   );
 
   // Fetch token and connect to room, once the pre-join stage has been completed.
@@ -3518,9 +3519,9 @@ export default function CallRoomPage({
           setMeetingType(data.meeting_type);
         }
         setStage('in-call');
-      } catch (e: any) {
+      } catch (e) {
         if (isMounted) {
-          setErrorMsg(e?.message || '接続中にエラーが発生しました');
+          setErrorMsg((e instanceof Error && e.message) || '接続中にエラーが発生しました');
         }
       }
     };
@@ -3868,7 +3869,9 @@ export default function CallRoomPage({
           pendingVideoTrack={pendingVideoTrack}
           pendingAudioTrack={pendingAudioTrack}
           initialMediaChoices={choices}
-          isInternalMeeting={meetingType !== 'external' && !anonymousInvite}
+          // プロフィールAPIはSupabaseログイン必須なので、ログインして入った人なら固定/外部ミーティングを問わず閲覧できる。
+          // 招待URLのゲストはアカウントを持たないため対象外。外部ミーティングでは各タイルにアイコンを常時表示する。
+          profileAccess={anonymousInvite || !user ? 'none' : meetingType === 'external' ? 'button' : 'menu'}
         />
       </LiveKitRoom>
     </div>

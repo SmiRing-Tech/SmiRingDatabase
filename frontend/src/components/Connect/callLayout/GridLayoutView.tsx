@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { type TrackReferenceOrPlaceholder } from '@livekit/components-react';
-import { CustomParticipantTile } from './ParticipantTileContent';
+import { CustomParticipantTile, type ProfileAccess } from './ParticipantTileContent';
 import { computeGridGeometry, useElementSize } from './geometry';
 import { useLiveTileIds, useScrollWindow } from './useScrollWindow';
 import {
@@ -20,7 +20,7 @@ export interface GridLayoutViewProps {
   isHost?: boolean;
   onRequestClaimHost?: () => void;
   onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
-  isInternalMeeting?: boolean;
+  profileAccess?: ProfileAccess;
   onOpenProfile?: (userId: string) => void;
 }
 
@@ -49,7 +49,7 @@ export default function GridLayoutView({
   isHost,
   onRequestClaimHost,
   onRequestGrantHost,
-  isInternalMeeting,
+  profileAccess,
   onOpenProfile,
 }: GridLayoutViewProps) {
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
@@ -121,7 +121,7 @@ export default function GridLayoutView({
                 isHost={isHost}
                 onRequestClaimHost={onRequestClaimHost}
                 onRequestGrantHost={onRequestGrantHost}
-                isInternalMeeting={isInternalMeeting}
+                profileAccess={profileAccess}
                 onOpenProfile={onOpenProfile}
                 className="w-full h-full"
               />

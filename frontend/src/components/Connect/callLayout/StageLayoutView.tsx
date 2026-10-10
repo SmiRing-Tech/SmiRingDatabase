@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { isTrackReference, type TrackReferenceOrPlaceholder } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import { Minimize2, ZoomIn, ZoomOut } from 'lucide-react';
-import { CustomParticipantTile } from './ParticipantTileContent';
+import { CustomParticipantTile, type ProfileAccess } from './ParticipantTileContent';
 import { computeGridGeometry, useElementSize } from './geometry';
 import { useLiveTileIds, useScrollWindow } from './useScrollWindow';
 import { useZoomPan } from './useZoomPan';
@@ -23,7 +23,7 @@ interface StripProps {
   isHost?: boolean;
   onRequestClaimHost?: () => void;
   onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
-  isInternalMeeting?: boolean;
+  profileAccess?: ProfileAccess;
   onOpenProfile?: (userId: string) => void;
 }
 
@@ -43,7 +43,7 @@ function FilmStrip({
   isHost,
   onRequestClaimHost,
   onRequestGrantHost,
-  isInternalMeeting,
+  profileAccess,
   onOpenProfile,
 }: StripProps) {
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
@@ -106,7 +106,7 @@ function FilmStrip({
                 isHost={isHost}
                 onRequestClaimHost={onRequestClaimHost}
                 onRequestGrantHost={onRequestGrantHost}
-                isInternalMeeting={isInternalMeeting}
+                profileAccess={profileAccess}
                 onOpenProfile={onOpenProfile}
                 density="compact"
                 className="w-full h-full"
@@ -126,7 +126,7 @@ interface StageTileProps {
   isHost?: boolean;
   onRequestClaimHost?: () => void;
   onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
-  isInternalMeeting?: boolean;
+  profileAccess?: ProfileAccess;
   onOpenProfile?: (userId: string) => void;
 }
 
@@ -141,7 +141,7 @@ function StageTile({
   isHost,
   onRequestClaimHost,
   onRequestGrantHost,
-  isInternalMeeting,
+  profileAccess,
   onOpenProfile,
 }: StageTileProps) {
   const zoomEnabled = isTrackReference(track) && track.source === Track.Source.ScreenShare;
@@ -171,7 +171,7 @@ function StageTile({
           isHost={isHost}
           onRequestClaimHost={onRequestClaimHost}
           onRequestGrantHost={onRequestGrantHost}
-          isInternalMeeting={isInternalMeeting}
+          profileAccess={profileAccess}
           onOpenProfile={onOpenProfile}
           zoom={zoom}
           onFitChange={zoomEnabled ? onFitChange : undefined}
@@ -224,7 +224,7 @@ export interface StageLayoutViewProps {
   isHost?: boolean;
   onRequestClaimHost?: () => void;
   onRequestGrantHost?: (targetUserId: string, targetName: string) => void;
-  isInternalMeeting?: boolean;
+  profileAccess?: ProfileAccess;
   onOpenProfile?: (userId: string) => void;
   /** Local-only content shown on the stage instead of `stageTracks` (e.g. an in-call survey). */
   stageContent?: ReactNode;
@@ -247,7 +247,7 @@ export default function StageLayoutView({
   isHost,
   onRequestClaimHost,
   onRequestGrantHost,
-  isInternalMeeting,
+  profileAccess,
   onOpenProfile,
   stageContent,
 }: StageLayoutViewProps) {
@@ -312,7 +312,7 @@ export default function StageLayoutView({
                 isHost={isHost}
                 onRequestClaimHost={onRequestClaimHost}
                 onRequestGrantHost={onRequestGrantHost}
-                isInternalMeeting={isInternalMeeting}
+                profileAccess={profileAccess}
                 onOpenProfile={onOpenProfile}
               />
             ))}
@@ -328,7 +328,7 @@ export default function StageLayoutView({
         isHost={isHost}
         onRequestClaimHost={onRequestClaimHost}
         onRequestGrantHost={onRequestGrantHost}
-        isInternalMeeting={isInternalMeeting}
+        profileAccess={profileAccess}
         onOpenProfile={onOpenProfile}
       />
     </div>
