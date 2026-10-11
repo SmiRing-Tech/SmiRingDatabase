@@ -1,5 +1,6 @@
 import { GTCRN_SAMPLE_RATE } from './GtcrnStreamProcessor';
 import { keepAudioContextResumed } from '../keepAudioContextResumed';
+import { registerDiagProbe } from '../../connectDiagnostics';
 import type { GtcrnPlaybackOptions, GtcrnPlaybackStats } from './gtcrnPlayback.worklet';
 import type { GtcrnCaptureOptions, GtcrnCaptureChunk } from './gtcrnCapture.worklet';
 import type { GtcrnWorkerRequest, GtcrnWorkerResponse } from './gtcrnInference.worker';
@@ -155,6 +156,21 @@ export class GtcrnNoiseCancelTrack {
   private playbackStats: GtcrnPlaybackStats | null = null;
   private statsInterval: ReturnType<typeof setInterval> | undefined;
 
+  // Feeds the in-call diagnostics recorder (lib/connectDiagnostics). Kept separate from the
+  // dev-only counters above because both readers reset on their own schedules.
+  //
+  // `chunksSent - chunksReturned` is the backlog: audio that has been captured but not yet come
+  // back from the worker. It should hover at 0-1 chunks; if inference can't keep up with real
+  // time it climbs without bound, and that number (x64ms) is exactly how late everyone else is
+  // hearing this person.
+  private chunksSent = 0;
+  private chunksReturned = 0;
+  private diagInferences = 0;
+  private diagInferenceMsTotal = 0;
+  private diagInferenceMsMax = 0;
+  private diagRelayGapMaxMs = 0;
+  private readonly unregisterDiagProbe: () => void;
+
   /**
    * @param isActive Polled once per captured chunk (~every CAPTURE_CHUNK/GTCRN_SAMPLE_RATE ms).
    *   While it returns false the chunk is dropped at the relay instead of being sent to the
@@ -237,6 +253,10 @@ export class GtcrnNoiseCancelTrack {
       this.inferenceCount++;
       this.inferenceTimeTotalMs += msg.inferenceMs;
       if (msg.inferenceMs > this.inferenceTimeMaxMs) this.inferenceTimeMaxMs = msg.inferenceMs;
+      this.chunksReturned++;
+      this.diagInferences++;
+      this.diagInferenceMsTotal += msg.inferenceMs;
+      if (msg.inferenceMs > this.diagInferenceMsMax) this.diagInferenceMsMax = msg.inferenceMs;
       this.lastInputRms = msg.inputRms;
       this.lastOutputRms = msg.outputRms;
       // Transferred straight through to the audio thread — the worker doesn't retain it and
@@ -258,10 +278,12 @@ export class GtcrnNoiseCancelTrack {
       if (this.lastRelayAt > 0) {
         const gap = now - this.lastRelayAt;
         if (gap > this.relayIntervalMaxMs) this.relayIntervalMaxMs = gap;
+        if (gap > this.diagRelayGapMaxMs) this.diagRelayGapMaxMs = gap;
       }
       this.lastRelayAt = now;
       if (!isActive()) return;
       const samples = event.data.samples;
+      this.chunksSent++;
       postToWorker({ type: 'samples', streamId: this.streamId, samples }, [samples.buffer]);
     };
 
@@ -273,6 +295,29 @@ export class GtcrnNoiseCancelTrack {
     sourceNode.connect(this.capture);
     this.capture.connect(this.silentGain);
     this.silentGain.connect(this.ctx.destination);
+
+    this.unregisterDiagProbe = registerDiagProbe('gtcrn', () => {
+      const chunkMs = (CAPTURE_CHUNK / GTCRN_SAMPLE_RATE) * 1000;
+      const data = {
+        active: isActive(),
+        inferences: this.diagInferences,
+        // Per 1024-sample chunk (4 model runs). Real time allows 64ms; anything near that
+        // means the worker is about to fall behind.
+        chunkMsAvg: this.diagInferences ? Math.round((this.diagInferenceMsTotal / this.diagInferences) * 10) / 10 : undefined,
+        chunkMsMax: Math.round(this.diagInferenceMsMax),
+        backlogMs: Math.round((this.chunksSent - this.chunksReturned) * chunkMs),
+        relayGapMaxMs: Math.round(this.diagRelayGapMaxMs),
+        underruns: this.playbackStats?.underrunCount,
+        droppedSamples: this.playbackStats?.droppedSamples,
+        playbackQueuedMs: this.playbackStats ? Math.round(this.playbackStats.queuedMs) : undefined,
+        ctxState: this.ctx.state,
+      };
+      this.diagInferences = 0;
+      this.diagInferenceMsTotal = 0;
+      this.diagInferenceMsMax = 0;
+      this.diagRelayGapMaxMs = 0;
+      return data;
+    });
 
     if (import.meta.env.DEV) {
       this.statsInterval = setInterval(() => {
@@ -303,6 +348,7 @@ export class GtcrnNoiseCancelTrack {
     if (this.stopped) return;
     this.stopped = true;
     this.detachResumeRetry();
+    this.unregisterDiagProbe();
     if (this.statsInterval !== undefined) clearInterval(this.statsInterval);
     // Drop this stream's DSP state in the worker, and stop routing its results here. The worker
     // itself stays alive for the page — see getWorker's comment.

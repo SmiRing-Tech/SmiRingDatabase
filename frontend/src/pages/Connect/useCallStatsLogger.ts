@@ -1,6 +1,13 @@
 import { useEffect } from 'react';
 import { useRoomContext } from '@livekit/components-react';
-import { Track, type Room } from 'livekit-client';
+import { ConnectionQuality, RoomEvent, Track, type Participant, type Room } from 'livekit-client';
+import {
+  collectDiagProbes,
+  diagEvent,
+  diagSample,
+  diagState,
+  isDiagnosticsRecording,
+} from '../../lib/connectDiagnostics';
 
 /**
  * Opt-in call diagnostics, for working out *why* a call degrades before changing codecs or
@@ -27,6 +34,13 @@ import { Track, type Room } from 'livekit-client';
  *  - `audio-send` (this browser's mic): bitrate, and loss/RTT on the way to the server.
  *  - `audio-recv` (everyone else's mic): the share of audio the decoder had to *invent* to cover
  *    gaps (concealment — what choppy audio actually is), packet loss, jitter-buffer delay.
+ *  - `cam-send` / `cam-recv`: the same as `send` / `recv`, for cameras instead of screen shares.
+ *  - `room`: how many participants / subscribed videos this browser is handling.
+ *
+ * The same samples also feed the in-call diagnostics recorder (lib/connectDiagnostics, the
+ * "通話の診断" button) whenever it's recording — no DevTools needed, and nothing is printed to
+ * the console unless the flag above is also set. This hook also reports the room events and
+ * local media state that recorder puts on its timeline.
  */
 const FLAG_KEY = 'smiring.debug.shareStats';
 const INTERVAL_MS = 2000;
@@ -44,7 +58,7 @@ const str = (s: Stat | undefined, k: string): string | undefined =>
 const round = (n: number | undefined, digits = 0) =>
   n === undefined || !Number.isFinite(n) ? undefined : Number(n.toFixed(digits));
 
-function isEnabled(): boolean {
+function isConsoleEnabled(): boolean {
   try {
     return localStorage.getItem(FLAG_KEY) === '1';
   } catch {
@@ -59,7 +73,11 @@ function record(entry: Record<string, unknown>) {
   if (history.length > HISTORY_LIMIT) history.splice(0, history.length - HISTORY_LIMIT);
 }
 
-function emit(entry: Record<string, unknown>, line: string, warn: boolean) {
+let consoleOutput = false;
+
+function emit(entry: Record<string, unknown> & { t: number }, line: string, warn: boolean) {
+  diagSample(entry);
+  if (!consoleOutput) return;
   record(entry);
   if (warn) console.warn(line);
   else console.log(line);
@@ -137,7 +155,10 @@ function logNet(pub: Stats | undefined, sub: Stats | undefined, d: { pub: Deltas
   );
 }
 
-function logShareSend(stats: Stats, d: Deltas, now: number) {
+type VideoKind = 'screen' | 'camera';
+
+function logVideoSend(stats: Stats, d: Deltas, now: number, kind: VideoKind) {
+  const dir = kind === 'screen' ? 'send' : 'cam-send';
   const values = [...stats.values()];
   const source = values.find((s) => s.type === 'media-source' && s.kind === 'video');
   const captureFps = round(num(source, 'framesPerSecond'), 1);
@@ -147,7 +168,7 @@ function logShareSend(stats: Stats, d: Deltas, now: number) {
     const remote = values.find((s) => s.type === 'remote-inbound-rtp' && s.localId === out.id);
     const entry = {
       t: now,
-      dir: 'send',
+      dir,
       rid: str(out, 'rid') ?? '-',
       active: out.active,
       size: `${num(out, 'frameWidth') ?? '?'}x${num(out, 'frameHeight') ?? '?'}`,
@@ -166,7 +187,7 @@ function logShareSend(stats: Stats, d: Deltas, now: number) {
     if (entry.active === false) continue; // a layer nobody is subscribed to (dynacast paused it)
     emit(
       entry,
-      `[stats send ${entry.rid}] ${entry.size} sent ${entry.sentFps ?? '?'}fps / capture ${entry.captureFps ?? '?'}fps` +
+      `[stats ${dir} ${entry.rid}] ${entry.size} sent ${entry.sentFps ?? '?'}fps / capture ${entry.captureFps ?? '?'}fps` +
         ` | ${entry.kbps ?? '?'}kbps | huge+${entry.hugeFrames ?? '?'} | enc ${entry.encodeMs ?? '?'}ms` +
         ` | limit=${entry.limit ?? '?'} | ${entry.codec ?? '?'} ${entry.encoder}` +
         ` | rtt ${entry.rttMs ?? '?'}ms loss ${entry.lossPct ?? '?'}%`,
@@ -175,12 +196,13 @@ function logShareSend(stats: Stats, d: Deltas, now: number) {
   }
 }
 
-function logShareRecv(from: string, stats: Stats, d: Deltas, now: number) {
+function logVideoRecv(from: string, stats: Stats, d: Deltas, now: number, kind: VideoKind) {
+  const dir = kind === 'screen' ? 'recv' : 'cam-recv';
   for (const inb of [...stats.values()].filter((s) => s.type === 'inbound-rtp' && s.kind === 'video')) {
     const emitted = d.of(inb, 'jitterBufferEmittedCount');
     const entry = {
       t: now,
-      dir: 'recv',
+      dir,
       from,
       size: `${num(inb, 'frameWidth') ?? '?'}x${num(inb, 'frameHeight') ?? '?'}`,
       fps: round(num(inb, 'framesPerSecond'), 1),
@@ -196,7 +218,7 @@ function logShareRecv(from: string, stats: Stats, d: Deltas, now: number) {
     d.remember(inb);
     emit(
       entry,
-      `[stats recv ${from}] ${entry.size} ${entry.fps ?? '?'}fps` +
+      `[stats ${dir} ${from}] ${entry.size} ${entry.fps ?? '?'}fps` +
         ` | freezes+${entry.freezes ?? '?'} (${entry.freezeSec ?? '?'}s) | dropped+${entry.dropped ?? '?'}` +
         ` | ${entry.kbps ?? '?'}kbps | jb ${entry.jitterBufferMs ?? '?'}ms | lost+${entry.lost ?? '?'}` +
         ` | ${entry.codec ?? '?'} ${entry.decoder}`,
@@ -261,43 +283,132 @@ async function sample(room: Room, d: { pub: Deltas; sub: Deltas }) {
   const camReport = await local.getTrackPublication(Track.Source.Camera)?.track?.getRTCStatsReport();
   const mic = micReport && toMap(micReport);
   const share = shareReport && toMap(shareReport);
+  const cam = camReport && toMap(camReport);
 
   // Any one track's report carries its whole peer connection's transport/candidate pair, so
   // whichever local track exists stands in for the publisher side, any remote one for the
   // subscriber side.
-  const pubStats: Stats | undefined = mic ?? share ?? (camReport && toMap(camReport));
+  const pubStats: Stats | undefined = mic ?? share ?? cam;
   let subStats: Stats | undefined;
 
-  const remote: Array<{ from: string; mic?: Stats; share?: Stats }> = [];
+  const remote: Array<{ from: string; mic?: Stats; share?: Stats; cam?: Stats }> = [];
   for (const participant of room.remoteParticipants.values()) {
     const from = participant.name || participant.identity;
     const micR = await participant.getTrackPublication(Track.Source.Microphone)?.track?.getRTCStatsReport();
     const shareR = await participant.getTrackPublication(Track.Source.ScreenShare)?.track?.getRTCStatsReport();
-    const entry = { from, mic: micR && toMap(micR), share: shareR && toMap(shareR) };
-    subStats ??= entry.mic ?? entry.share;
+    const camR = await participant.getTrackPublication(Track.Source.Camera)?.track?.getRTCStatsReport();
+    const entry = { from, mic: micR && toMap(micR), share: shareR && toMap(shareR), cam: camR && toMap(camR) };
+    subStats ??= entry.mic ?? entry.share ?? entry.cam;
     remote.push(entry);
-  }
-  if (!subStats) {
-    for (const participant of room.remoteParticipants.values()) {
-      const camR = await participant.getTrackPublication(Track.Source.Camera)?.track?.getRTCStatsReport();
-      if (camR) {
-        subStats = toMap(camR);
-        break;
-      }
-    }
   }
 
   logNet(pubStats, subStats, d, now);
   if (mic) logAudioSend(mic, d.pub, now);
-  if (share) logShareSend(share, d.pub, now);
+  if (share) logVideoSend(share, d.pub, now, 'screen');
+  if (cam) logVideoSend(cam, d.pub, now, 'camera');
   for (const r of remote) {
     if (r.mic) logAudioRecv(r.from, r.mic, d.sub, now);
-    if (r.share) logShareRecv(r.from, r.share, d.sub, now);
+    if (r.share) logVideoRecv(r.from, r.share, d.sub, now, 'screen');
+    if (r.cam) logVideoRecv(r.from, r.cam, d.sub, now, 'camera');
   }
+
+  const entry = {
+    t: now,
+    dir: 'room',
+    participants: room.numParticipants,
+    remoteCamerasReceived: remote.filter((r) => r.cam).length,
+    remoteSharesReceived: remote.filter((r) => r.share).length,
+  };
+  emit(
+    entry,
+    `[stats room] ${entry.participants} participants | receiving ${entry.remoteCamerasReceived} cameras, ${entry.remoteSharesReceived} shares`,
+    false,
+  );
+}
+
+/** Local camera/mic/share on-off, capture settings and device labels, deduplicated by diagState. */
+function reportLocalMediaState(room: Room) {
+  const local = room.localParticipant;
+  diagState('camera', local.isCameraEnabled);
+  diagState('microphone', local.isMicrophoneEnabled);
+  diagState('screenShare', local.isScreenShareEnabled);
+  const cam = local.getTrackPublication(Track.Source.Camera)?.track?.mediaStreamTrack;
+  if (cam && cam.readyState === 'live') {
+    const settings = cam.getSettings();
+    diagState('cameraCapture', `${settings.width ?? '?'}x${settings.height ?? '?'}@${settings.frameRate ?? '?'}`);
+    diagState('cameraDevice', cam.label);
+  }
+  const mic = local.getTrackPublication(Track.Source.Microphone)?.track?.mediaStreamTrack;
+  if (mic && mic.readyState === 'live') diagState('microphoneDevice', mic.label);
+  const share = local.getTrackPublication(Track.Source.ScreenShare)?.track?.mediaStreamTrack;
+  if (share && share.readyState === 'live') {
+    const settings = share.getSettings();
+    diagState('screenShareCapture', `${settings.width ?? '?'}x${settings.height ?? '?'}@${settings.frameRate ?? '?'}`);
+  }
+}
+
+/** Puts the room's own events on the diagnostics timeline. Cheap enough to always listen —
+ *  diagEvent/diagState are no-ops beyond a map write while nothing is recording. */
+function useDiagnosticsRoomEvents(room: Room) {
+  useEffect(() => {
+    const syncLocal = () => reportLocalMediaState(room);
+    const nameOf = (p: Participant) => p.name || p.identity;
+    const onJoined = (p: Participant) => {
+      diagEvent('participant-joined', { name: nameOf(p) });
+      diagState('participants', room.numParticipants);
+    };
+    const onLeft = (p: Participant) => {
+      diagEvent('participant-left', { name: nameOf(p) });
+      diagState('participants', room.numParticipants);
+    };
+    const onQuality = (quality: ConnectionQuality, p: Participant) => {
+      if (p.isLocal) diagState('connectionQuality', quality);
+    };
+    const onReconnecting = () => diagEvent('reconnecting');
+    const onSignalReconnecting = () => diagEvent('signal-reconnecting');
+    const onReconnected = () => diagEvent('reconnected');
+    const onDisconnected = (reason?: unknown) => diagEvent('disconnected', { reason: String(reason ?? '') });
+    const onDevice = (kind: MediaDeviceKind) => {
+      diagEvent('device-changed', { kind });
+      syncLocal();
+    };
+
+    syncLocal();
+    diagState('participants', room.numParticipants);
+    room
+      .on(RoomEvent.LocalTrackPublished, syncLocal)
+      .on(RoomEvent.LocalTrackUnpublished, syncLocal)
+      .on(RoomEvent.TrackMuted, syncLocal)
+      .on(RoomEvent.TrackUnmuted, syncLocal)
+      .on(RoomEvent.ParticipantConnected, onJoined)
+      .on(RoomEvent.ParticipantDisconnected, onLeft)
+      .on(RoomEvent.ConnectionQualityChanged, onQuality)
+      .on(RoomEvent.Reconnecting, onReconnecting)
+      .on(RoomEvent.SignalReconnecting, onSignalReconnecting)
+      .on(RoomEvent.Reconnected, onReconnected)
+      .on(RoomEvent.Disconnected, onDisconnected)
+      .on(RoomEvent.ActiveDeviceChanged, onDevice);
+    return () => {
+      room
+        .off(RoomEvent.LocalTrackPublished, syncLocal)
+        .off(RoomEvent.LocalTrackUnpublished, syncLocal)
+        .off(RoomEvent.TrackMuted, syncLocal)
+        .off(RoomEvent.TrackUnmuted, syncLocal)
+        .off(RoomEvent.ParticipantConnected, onJoined)
+        .off(RoomEvent.ParticipantDisconnected, onLeft)
+        .off(RoomEvent.ConnectionQualityChanged, onQuality)
+        .off(RoomEvent.Reconnecting, onReconnecting)
+        .off(RoomEvent.SignalReconnecting, onSignalReconnecting)
+        .off(RoomEvent.Reconnected, onReconnected)
+        .off(RoomEvent.Disconnected, onDisconnected)
+        .off(RoomEvent.ActiveDeviceChanged, onDevice);
+    };
+  }, [room]);
 }
 
 export function useCallStatsLogger() {
   const room = useRoomContext();
+  useDiagnosticsRoomEvents(room);
 
   useEffect(() => {
     const deltas = { pub: new Deltas(), sub: new Deltas() };
@@ -305,11 +416,11 @@ export function useCallStatsLogger() {
     let running = false;
 
     const tick = async () => {
-      if (!isEnabled()) {
-        announced = false;
-        return;
-      }
-      if (!announced) {
+      consoleOutput = isConsoleEnabled();
+      const recording = isDiagnosticsRecording();
+      if (!consoleOutput) announced = false;
+      if (!consoleOutput && !recording) return;
+      if (consoleOutput && !announced) {
         console.info(
           '[stats] on — samples every 2s; copy(JSON.stringify(window.__smiringShareStats)) to export',
         );
@@ -322,6 +433,9 @@ export function useCallStatsLogger() {
       } catch (e) {
         console.warn('[stats] sample failed:', e);
       } finally {
+        // Outside the try: the probes (GTCRN backlog, main-thread stalls, ...) matter most
+        // exactly when things are going wrong, including a getStats() that just threw.
+        collectDiagProbes(Date.now());
         running = false;
       }
     };

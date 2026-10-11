@@ -7,6 +7,7 @@ import {
   type SegmentationQuality,
 } from '../../lib/video/MediapipeBackgroundProcessor';
 import { BlankFrameProcessor } from '../../lib/video/BlankFrameProcessor';
+import { diagEvent, diagState } from '../../lib/connectDiagnostics';
 import {
   useBackgroundLibrary,
   readStoredChoice,
@@ -355,6 +356,16 @@ export function useBackgroundEffect(isGuest = false) {
   useEffect(() => {
     setQualityRef.current = setQuality;
   }, [setQuality]);
+
+  // Diagnostics timeline (lib/connectDiagnostics). `error` also carries the automatic
+  // high <-> balanced switch messages, which is the main thing worth seeing there.
+  useEffect(() => {
+    diagState('background', supported ? mode : 'unsupported');
+    diagState('backgroundQuality', quality);
+  }, [supported, mode, quality]);
+  useEffect(() => {
+    if (error) diagEvent('background-message', { message: error });
+  }, [error]);
 
   return {
     supported,

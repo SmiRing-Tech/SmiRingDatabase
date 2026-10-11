@@ -91,6 +91,15 @@ import { useRecording } from './useRecording';
 import { useRecordingSync } from './useRecordingSync';
 import { useParticipantPresenceSounds } from './useParticipantPresenceSounds';
 import { useCallStatsLogger } from './useCallStatsLogger';
+import { diagEvent, diagState } from '../../lib/connectDiagnostics';
+import {
+  DiagnosticsDialog,
+  DiagnosticsMenuItem,
+  DiagnosticsRecordingPill,
+  DiagnosticsResultDialog,
+} from './ConnectDiagnostics';
+import { useDiagnosticsController } from './useDiagnosticsController';
+import { codecPublishOptions, readVideoCodecPreference } from '../../lib/videoCodecPreference';
 import { useMiniRooms, type UseMiniRoomsResult, type ReconnectTarget } from '../../hooks/useMiniRooms';
 import { useDocumentPiP } from '../../hooks/useDocumentPiP';
 import { useActiveSpeakerVideoPip } from '../../hooks/useActiveSpeakerVideoPip';
@@ -605,6 +614,7 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
           );
         } catch (e) {
           console.error('[Connect] failed to start noise cancellation, falling back to raw mic:', e);
+          diagEvent('noise-cancel-failed', { error: String(e) });
           noiseCancelTrack = null;
         }
         if (cancelled) {
@@ -1047,6 +1057,10 @@ function useMediaEnhancementsState(isGuest: boolean) {
   const [vadSensitivity, setVadSensitivity] = useState(VAD_POSITIVE_SPEECH_THRESHOLD);
   const [noiseCancelEnabled, setNoiseCancelEnabled] = useState(true);
   const autoGateLoading = useVadAutoGate(autoGateEnabled, vadSensitivity, noiseCancelEnabled);
+  useEffect(() => {
+    diagState('noiseCancel', noiseCancelEnabled);
+    diagState('autoMute', autoGateEnabled);
+  }, [noiseCancelEnabled, autoGateEnabled]);
   // Video is only delayed to stay level with however much the audio side is currently delaying
   // audio — zero, one, or both of these stages may be contributing at any given moment.
   useVideoDelay(
@@ -1483,30 +1497,15 @@ function CameraButton({ mediaEnhancements }: { mediaEnhancements: MediaEnhanceme
   );
 }
 
-/**
- * Debug-only screen-share codec override, for comparing VP8 (libvpx, CPU) against H.264
- * (hardware encoder where the machine has one) on a real machine alongside the stats logger
- * (useCallStatsLogger). Set in DevTools before starting a share:
- *   localStorage.setItem('smiring.debug.shareCodec', 'h264')   // or 'vp8'
- *   localStorage.removeItem('smiring.debug.shareCodec')        // back to the room default
- */
-function debugScreenShareCodec(): 'h264' | 'vp8' | undefined {
-  try {
-    const value = localStorage.getItem('smiring.debug.shareCodec');
-    return value === 'h264' || value === 'vp8' ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function useScreenShareToggle() {
   const isSupported = useMemo(() => supportsScreenSharing(), []);
   const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
 
   const toggleShare = useCallback(async () => {
     try {
-      const codec = isScreenShareEnabled ? undefined : debugScreenShareCodec();
-      if (codec) console.info(`[share] debug codec override: ${codec}`);
+      // Codec switch from the "通話の診断" dialog (see lib/videoCodecPreference).
+      const codec = isScreenShareEnabled ? undefined : readVideoCodecPreference('screen');
+      if (codec) console.info(`[share] codec override: ${codec}`);
       await localParticipant.setScreenShareEnabled(
         !isScreenShareEnabled,
         {
@@ -1524,10 +1523,7 @@ function useScreenShareToggle() {
           // slides and code, and the reason a static share stays readable at 15fps.
           contentHint: 'detail',
         },
-        // No backup codec on the override: every browser can decode both, and a backup
-        // would mean encoding the screen in a second codec too — polluting exactly the
-        // encoder-cost comparison this override exists for.
-        codec ? { videoCodec: codec, backupCodec: false } : undefined,
+        codecPublishOptions(codec),
       );
     } catch (e) {
       console.error('Failed to toggle screen share:', e);
@@ -2008,6 +2004,9 @@ interface OverflowBarItem {
   key: string;
   priority: number;
   badgeCount?: number;
+  /** Never shown as a bar button, always a row in `MoreMenu` — for rarely-used entries that
+   *  shouldn't take bar space from everyone (e.g. the diagnostics recorder). */
+  menuOnly?: boolean;
   renderBar: () => ReactNode;
   renderMenuItem: (close: () => void) => ReactNode;
 }
@@ -2259,6 +2258,22 @@ function CustomVideoConference({
     );
   const layoutKey = hasLocalCameraPublication ? 'camera-live' : 'camera-pending';
 
+  // In-call diagnostics recorder ("その他" > 通話の診断) — see ConnectDiagnostics.tsx. Uploads
+  // against the *current* room, since a guest's LiveKit token is only valid for that one.
+  const diagnostics = useDiagnosticsController(miniRooms.currentRoomId, () => ({
+    roomId: mainRoomId,
+    currentRoomId: miniRooms.currentRoomId,
+    identity: localParticipant.identity,
+    name: localParticipant.name,
+    isGuest: !user,
+    host: window.location.host,
+  }));
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  useEffect(() => {
+    diagState('layout', layout.mode);
+    diagState('pip', isPipActive);
+  }, [layout.mode, isPipActive]);
+
   // Mini-room panel, opened by the control-bar button. Visible/openable by everyone —
   // MiniRoomPanel itself branches host vs. non-host content.
   const [showMiniRoomPanel, setShowMiniRoomPanel] = useState(false);
@@ -2475,15 +2490,35 @@ function CustomVideoConference({
     });
   }
 
-  // Reserve room for the "More" button only when items actually overflow.
+  overflowItems.push({
+    key: 'diagnostics',
+    priority: -1,
+    menuOnly: true,
+    renderBar: () => null,
+    renderMenuItem: (close) => (
+      <DiagnosticsMenuItem
+        recording={diagnostics.recording}
+        onClick={() => {
+          setShowDiagnostics(true);
+          close();
+        }}
+      />
+    ),
+  });
+
+  // Reserve room for the "More" button only when items actually overflow — or when a
+  // menu-only item means it has to be there regardless.
   // If everything fits, we do not reserve the More button width so all buttons can be shown directly.
-  const totalCount = overflowItems.length;
-  const canFitAll = centerWidth !== null && centerWidth >= totalCount * OVERFLOW_ITEM_WIDTH_PX;
+  const barCandidates = overflowItems.filter((item) => !item.menuOnly);
+  const hasMenuOnly = barCandidates.length < overflowItems.length;
+  const totalCount = barCandidates.length;
+  const canFitAll =
+    centerWidth !== null && centerWidth >= (totalCount + (hasMenuOnly ? 1 : 0)) * OVERFLOW_ITEM_WIDTH_PX;
   const availableForItems = centerWidth === null || canFitAll ? Infinity : centerWidth - OVERFLOW_ITEM_WIDTH_PX;
   const fitCount =
     availableForItems === Infinity ? totalCount : Math.max(0, Math.floor(availableForItems / OVERFLOW_ITEM_WIDTH_PX));
   const visibleKeys = new Set(
-    [...overflowItems]
+    [...barCandidates]
       .sort((a, b) => b.priority - a.priority)
       .slice(0, fitCount)
       .map((item) => item.key),
@@ -2508,6 +2543,17 @@ function CustomVideoConference({
   return (
     <div className="lk-video-conference relative flex flex-row h-full w-full overflow-hidden">
 
+
+      <DiagnosticsRecordingPill controller={diagnostics} onOpen={() => setShowDiagnostics(true)} />
+      {showDiagnostics && (
+        <DiagnosticsDialog
+          controller={diagnostics}
+          noiseCancelEnabled={mediaEnhancements.noiseCancelEnabled}
+          setNoiseCancelEnabled={mediaEnhancements.setNoiseCancelEnabled}
+          onClose={() => setShowDiagnostics(false)}
+        />
+      )}
+      <DiagnosticsResultDialog controller={diagnostics} />
 
       {recording.error && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50">
@@ -2871,7 +2917,12 @@ function CallRoomInner({
           ) {
             videoPublishInFlightRef.current = true;
             try {
-              await localParticipant.publishTrack(pendingVideoTrack);
+              // Codec switch from the "通話の診断" dialog (see lib/videoCodecPreference);
+              // undefined (the default) leaves LiveKit's own publishDefaults in charge.
+              await localParticipant.publishTrack(
+                pendingVideoTrack,
+                codecPublishOptions(readVideoCodecPreference('camera')),
+              );
               if (mediaChoicesRef.current?.videoEnabled === false) {
                 await localParticipant.setCameraEnabled(false);
               }

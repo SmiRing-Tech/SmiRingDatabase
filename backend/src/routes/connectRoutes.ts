@@ -1,6 +1,7 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import express, { Router, Request, Response, NextFunction } from 'express';
 import type { User } from '@supabase/supabase-js';
 import crypto from 'crypto';
+import zlib from 'zlib';
 import { AccessToken, RoomServiceClient, WebhookReceiver, DataPacket_Kind, TokenVerifier } from 'livekit-server-sdk';
 import { ParticipantInfo_Kind } from '@livekit/protocol';
 import { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
@@ -3851,6 +3852,75 @@ router.post('/api/connect/webhook', async (req: Request, res: Response) => {
     return res.status(401).end();
   }
 });
+
+// ==========================================
+// 🩺 通話の診断ログ（SmiRing Connect）
+// ==========================================
+
+/** 診断ログの保存先プレフィックス。取り出しは backend/src/scripts/connectDiagnostics.ts。 */
+const DIAGNOSTICS_PREFIX = 'connect-diagnostics/';
+/** 紛らわしい文字(0/O, 1/I/L)を除いた英数字。非エンジニアが口頭やチャットで伝えても崩れないように。 */
+const DIAGNOSTICS_ID_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+
+function generateDiagnosticsId(): string {
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const bytes = crypto.randomBytes(6);
+  let suffix = '';
+  for (const b of bytes) suffix += DIAGNOSTICS_ID_ALPHABET[b % DIAGNOSTICS_ID_ALPHABET.length];
+  return `${date}-${suffix}`;
+}
+
+// POST /api/connect/rooms/:roomId/diagnostics  (body: 診断ログJSON。gzip済みでも生でも可) -> { id }
+// 通話中の「通話の診断」ボタン(frontend/src/lib/connectDiagnostics.ts)が停止時に送ってくる。
+// 1時間で数MBになるため、express.json() でパースせずに application/octet-stream のまま受け取り、
+// 中身はそのまま R2 に置く(サーバー側では解釈しない)。ゲストも送れるよう authenticateChatCaller。
+// 認証を body の受信より先に通すことで、未認証のリクエストに大きな body を読ませない。
+router.post(
+  '/api/connect/rooms/:roomId/diagnostics',
+  authenticateChatCaller,
+  express.raw({ type: 'application/octet-stream', limit: '30mb' }),
+  async (req: Request, res: Response) => {
+    try {
+      const roomId = req.params.roomId as string;
+      if (!isValidRoomName(roomId)) {
+        return res.status(400).json({ error: 'invalid room' });
+      }
+      const body = req.body;
+      if (!Buffer.isBuffer(body) || body.length === 0) {
+        return res.status(400).json({ error: 'empty body' });
+      }
+      // gzip のマジックナンバー(1f 8b)で判定。CompressionStream の無いブラウザは生JSONを送ってくる。
+      const isGzip = body[0] === 0x1f && body[1] === 0x8b;
+      const gz = isGzip ? body : zlib.gzipSync(body);
+
+      const user = req.user!;
+      const isGuest = (user as { aud?: string }).aud === 'guest';
+      const name = isGuest
+        ? String(user.user_metadata?.guest_name || user.id)
+        : (await getDisplayProfile(user.id, user.email || user.id)).displayName;
+
+      const id = generateDiagnosticsId();
+      await r2.send(
+        new PutObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: `${DIAGNOSTICS_PREFIX}${id}.json.gz`,
+          Body: gz,
+          ContentType: 'application/gzip',
+          // S3/R2 のメタデータは ASCII のみなので、日本語名は URI エンコードして入れる。
+          Metadata: {
+            uploader: encodeURIComponent(name),
+            uploader_id: user.id,
+            room_id: roomId,
+          },
+        }),
+      );
+      res.json({ id });
+    } catch (error: any) {
+      console.error('診断ログ保存エラー:', error);
+      res.status(500).json({ error: error.message });
+    }
+  },
+);
 
 // ==========================================
 // 🖼️ バーチャル背景（SmiRing Connect）

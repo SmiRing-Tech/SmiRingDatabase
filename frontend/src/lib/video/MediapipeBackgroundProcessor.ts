@@ -17,6 +17,7 @@ import {
   copyFragmentShader,
   gaussianFragmentShader,
 } from './mediapipeShaders';
+import { registerDiagProbe } from '../connectDiagnostics';
 
 /**
  * A LiveKit `TrackProcessor` that blurs the camera background using MediaPipe
@@ -737,6 +738,8 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       });
     }
     this.startPipeline();
+    this.unregisterDiagProbe?.();
+    this.unregisterDiagProbe = registerDiagProbe('background', () => this.readDiagnostics());
     this.log('init() done', {
       processedTrackId: this.processedTrack?.id,
       usingImageBackground: this.usingImageBackground(),
@@ -756,6 +759,8 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.log('destroy() called', { stableFrameCount: this.stableFrameCount, readyResolved: this.readyResolved });
     this.stopped = true;
     this.stopPipeline();
+    this.unregisterDiagProbe?.();
+    this.unregisterDiagProbe = undefined;
 
     await this.segmenter?.close();
     this.segmenter = undefined;
@@ -938,6 +943,44 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
   private frameCount = 0;
 
+  // Feeds the in-call diagnostics recorder (lib/connectDiagnostics), reset on every read.
+  // Main-thread wall time: GL calls are queued to the GPU asynchronously, so on a healthy GPU
+  // this is mostly submission cost — but on a software-rendered one (SwiftShader etc.) it *is*
+  // the rendering, which is exactly the case these numbers are here to catch.
+  private diagFrames = 0;
+  private diagFrameMsTotal = 0;
+  private diagFrameMsMax = 0;
+  private diagSegmentations = 0;
+  private diagSegmentMsTotal = 0;
+  private diagSegmentMsMax = 0;
+  private diagLastReadAt = 0;
+  private unregisterDiagProbe?: () => void;
+
+  private readDiagnostics(): Record<string, unknown> {
+    const now = performance.now();
+    const seconds = this.diagLastReadAt ? (now - this.diagLastReadAt) / 1000 : undefined;
+    const avg = (total: number, count: number) => (count ? Math.round((total / count) * 10) / 10 : undefined);
+    const data = {
+      quality: this.options.quality,
+      mode: this.options.mode,
+      delegate: this.options.delegate,
+      fps: seconds ? Math.round((this.diagFrames / seconds) * 10) / 10 : undefined,
+      frameMsAvg: avg(this.diagFrameMsTotal, this.diagFrames),
+      frameMsMax: Math.round(this.diagFrameMsMax),
+      segmentations: this.diagSegmentations,
+      segmentMsAvg: avg(this.diagSegmentMsTotal, this.diagSegmentations),
+      segmentMsMax: Math.round(this.diagSegmentMsMax),
+    };
+    this.diagLastReadAt = now;
+    this.diagFrames = 0;
+    this.diagFrameMsTotal = 0;
+    this.diagFrameMsMax = 0;
+    this.diagSegmentations = 0;
+    this.diagSegmentMsTotal = 0;
+    this.diagSegmentMsMax = 0;
+    return data;
+  }
+
   private transform(frame: VideoFrame, controller: TransformStreamDefaultController<VideoFrame>) {
     let handedOff = false;
     this.frameCount += 1;
@@ -1079,7 +1122,11 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       gl.clear(gl.COLOR_BUFFER_BIT);
     }
 
-    this.trackFramePerf(performance.now() - t0);
+    const frameMs = performance.now() - t0;
+    this.diagFrames += 1;
+    this.diagFrameMsTotal += frameMs;
+    if (frameMs > this.diagFrameMsMax) this.diagFrameMsMax = frameMs;
+    this.trackFramePerf(frameMs);
   }
 
   /**
@@ -1173,6 +1220,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
     // segmentForVideo is synchronous: the callback runs before it returns, and the
     // masks are only valid inside it.
+    const segmentStart = performance.now();
     segmenter.segmentForVideo(source, timestamp, (result) => {
       try {
         const masks = result.confidenceMasks;
@@ -1196,6 +1244,10 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
         result.close();
       }
     });
+    const segmentMs = performance.now() - segmentStart;
+    this.diagSegmentations += 1;
+    this.diagSegmentMsTotal += segmentMs;
+    if (segmentMs > this.diagSegmentMsMax) this.diagSegmentMsMax = segmentMs;
   }
 
   private composeMatte(maskTexture: WebGLTexture) {
