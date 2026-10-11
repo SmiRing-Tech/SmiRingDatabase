@@ -72,6 +72,8 @@ import {
   ClipboardList,
 } from 'lucide-react';
 import { apiClient, setGuestAuthToken } from '../../lib/apiClient';
+import { markDeviceExplicitlyChosen } from '../../lib/continuityDevices';
+import { useContinuityDeviceGuard } from '../../hooks/useContinuityDeviceGuard';
 import { getOrCreateFormGuestKey, type FormGuest } from '../../lib/formGuest';
 import { useConnectSurvey } from '../../hooks/useConnectSurvey';
 import SurveyHostPanel from '../../components/Connect/SurveyHostPanel';
@@ -1127,6 +1129,7 @@ function MicMenuDropdown({
                 <button
                   key={device.deviceId}
                   onClick={async () => {
+                    markDeviceExplicitlyChosen('audioinput');
                     await setActiveInput(device.deviceId);
                     onClose();
                   }}
@@ -1318,6 +1321,7 @@ function CameraMenuDropdown({
                 <button
                   key={device.deviceId}
                   onClick={async () => {
+                    markDeviceExplicitlyChosen('videoinput');
                     await setActiveVideo(device.deviceId);
                     onClose();
                   }}
@@ -2801,6 +2805,8 @@ function CallRoomInner({
 
   const reactions = useReactions({ selfIdentity });
   const room = useRoomContext();
+  // 既定が連係カメラの iPhone/iPad になっても、明示的に選んでいなければ iPhone/iPad 以外を使う
+  useContinuityDeviceGuard(room);
 
   const survey = useConnectSurvey({ mainRoomId: roomId, currentRoomId: miniRooms.currentRoomId });
   const [showSurveyPanel, setShowSurveyPanel] = useState(false);

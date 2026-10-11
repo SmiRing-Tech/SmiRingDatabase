@@ -6,6 +6,13 @@ import { usePreJoinBackground } from '../../pages/Connect/usePreJoinBackground';
 import { warmupGtcrnModel } from '../../lib/audio/gtcrn/GtcrnNoiseCancelTrack';
 import { isMobileDevice } from '../../pages/Connect/backgroundLibrary';
 import { useMicLevel, playSpeakerTestTone } from './audioTest';
+import {
+  isContinuityDevice,
+  markDeviceExplicitlyChosen,
+  nonContinuityFallback,
+  resetDeviceChoices,
+  setFallbackInUse,
+} from '../../lib/continuityDevices';
 
 const CUSTOM_USERNAME_KEY = 'smiring_connect_custom_username';
 
@@ -43,6 +50,12 @@ const VIDEO_CAPTURE_CONSTRAINTS: MediaTrackConstraints = isMobileDevice()
       // actually sends just burns battery encoding frames simulcast will never transmit).
       frameRate: { ideal: 20 },
     };
+
+const AUDIO_CAPTURE_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+};
 
 export interface PreJoinChoices {
   username: string;
@@ -133,15 +146,43 @@ export default function PreJoinScreen({
     let localVideo: LocalVideoTrack | null = null;
     let localAudio: LocalAudioTrack | null = null;
 
+    // 新しい参加の始まりなので、前回の参加で明示的に選んだデバイスの記録は持ち越さない
+    resetDeviceChoices();
+
     void (async () => {
       try {
         const tracks = await createLocalTracks({
           video: VIDEO_CAPTURE_CONSTRAINTS as any,
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          audio: AUDIO_CAPTURE_CONSTRAINTS,
         });
         for (const t of tracks) {
           if (t.kind === Track.Kind.Video) localVideo = t as LocalVideoTrack;
           if (t.kind === Track.Kind.Audio) localAudio = t as LocalAudioTrack;
+        }
+        // OS の既定が iPhone/iPad（連係カメラ）だった場合は、iPhone/iPad 以外に切り替えてから使う。
+        // 失敗しても既定のまま使えるので、プレビューは止めない（continuityDevices.ts 参照）。
+        try {
+          const usingContinuity =
+            isContinuityDevice(localVideo?.mediaStreamTrack.label) ||
+            isContinuityDevice(localAudio?.mediaStreamTrack.label);
+          if (usingContinuity && !cancelled) {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoFallback = nonContinuityFallback(devices.filter((d) => d.kind === 'videoinput'));
+            const audioFallback = nonContinuityFallback(devices.filter((d) => d.kind === 'audioinput'));
+            if (localVideo && videoFallback && isContinuityDevice(localVideo.mediaStreamTrack.label)) {
+              await localVideo.restartTrack({
+                deviceId: videoFallback,
+                ...VIDEO_CAPTURE_CONSTRAINTS,
+              } as Parameters<LocalVideoTrack['restartTrack']>[0]);
+              setFallbackInUse('videoinput', videoFallback);
+            }
+            if (localAudio && audioFallback && isContinuityDevice(localAudio.mediaStreamTrack.label)) {
+              await localAudio.restartTrack({ deviceId: audioFallback, ...AUDIO_CAPTURE_CONSTRAINTS });
+              setFallbackInUse('audioinput', audioFallback);
+            }
+          }
+        } catch (e) {
+          console.warn('[Connect] Failed to switch away from iPhone/iPad device:', e);
         }
         if (cancelled) {
           tracks.forEach((t) => t.stop());
@@ -258,6 +299,7 @@ export default function PreJoinScreen({
   const handleVideoDeviceChange = useCallback(
     async (deviceId: string) => {
       if (!videoTrack) return;
+      markDeviceExplicitlyChosen('videoinput');
       await videoTrack.restartTrack({ deviceId, ...(VIDEO_CAPTURE_CONSTRAINTS as any) });
       setVideoDeviceId(deviceId);
     },
@@ -267,12 +309,8 @@ export default function PreJoinScreen({
   const handleAudioDeviceChange = useCallback(
     async (deviceId: string) => {
       if (!audioTrack) return;
-      await audioTrack.restartTrack({
-        deviceId,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      });
+      markDeviceExplicitlyChosen('audioinput');
+      await audioTrack.restartTrack({ deviceId, ...AUDIO_CAPTURE_CONSTRAINTS });
       setAudioDeviceId(deviceId);
     },
     [audioTrack],
