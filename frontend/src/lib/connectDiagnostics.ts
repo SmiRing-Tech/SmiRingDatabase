@@ -159,6 +159,15 @@ export function startDiagnostics(context: Record<string, unknown>) {
     stopMonitors: () => {},
   };
   const own = session;
+  // Probes report "since the last read" — read each once now and discard it, so the first
+  // recorded sample covers the first tick rather than everything since the probe was created.
+  for (const probe of probes.values()) {
+    try {
+      probe();
+    } catch {
+      // Reported on the first real read instead.
+    }
+  }
   own.stopMonitors = startMainThreadMonitors();
   // Filled in asynchronously (high-entropy UA hints, battery, codec capability queries all
   // resolve later); the log is only serialized at stop, by which point this has long settled.

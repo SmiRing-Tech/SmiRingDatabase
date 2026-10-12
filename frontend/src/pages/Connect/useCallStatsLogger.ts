@@ -184,7 +184,13 @@ function logVideoSend(stats: Stats, d: Deltas, now: number, kind: VideoKind) {
       lossPct: round((num(remote, 'fractionLost') ?? NaN) * 100, 1),
     };
     d.remember(out);
-    if (entry.active === false) continue; // a layer nobody is subscribed to (dynacast paused it)
+    if (entry.active === false) {
+      // A layer nobody is subscribed to: dynacast paused it, so it isn't being encoded. Still
+      // recorded (compactly) for diagnostics — otherwise a paused layer is indistinguishable
+      // from a missing sample — but kept out of the console.
+      diagSample({ t: now, dir, rid: entry.rid, active: false, codec: entry.codec });
+      continue;
+    }
     emit(
       entry,
       `[stats ${dir} ${entry.rid}] ${entry.size} sent ${entry.sentFps ?? '?'}fps / capture ${entry.captureFps ?? '?'}fps` +
@@ -315,7 +321,7 @@ async function sample(room: Room, d: { pub: Deltas; sub: Deltas }) {
   const entry = {
     t: now,
     dir: 'room',
-    participants: room.numParticipants,
+    participants: participantCount(room),
     remoteCamerasReceived: remote.filter((r) => r.cam).length,
     remoteSharesReceived: remote.filter((r) => r.share).length,
   };
@@ -326,26 +332,41 @@ async function sample(room: Room, d: { pub: Deltas; sub: Deltas }) {
   );
 }
 
-/** Local camera/mic/share on-off, capture settings and device labels, deduplicated by diagState. */
+const captureLabel = (settings: MediaTrackSettings) =>
+  `${settings.width ?? '?'}x${settings.height ?? '?'}@${settings.frameRate ? Math.round(settings.frameRate) : '?'}`;
+
+/** The device's human-readable name. Looked up from the room's active device id rather than the
+ *  track's own label: once a background processor is attached, the camera track is a generated
+ *  one whose label is a random UUID. */
+async function reportDeviceLabel(room: Room, kind: MediaDeviceKind, key: string) {
+  const deviceId = room.getActiveDevice(kind);
+  if (!deviceId) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const device = devices.find((d) => d.kind === kind && d.deviceId === deviceId);
+    diagState(key, device?.label || deviceId);
+  } catch {
+    diagState(key, deviceId);
+  }
+}
+
+/** Local camera/mic/share on-off, capture settings and device names, deduplicated by diagState. */
 function reportLocalMediaState(room: Room) {
   const local = room.localParticipant;
   diagState('camera', local.isCameraEnabled);
   diagState('microphone', local.isMicrophoneEnabled);
   diagState('screenShare', local.isScreenShareEnabled);
   const cam = local.getTrackPublication(Track.Source.Camera)?.track?.mediaStreamTrack;
-  if (cam && cam.readyState === 'live') {
-    const settings = cam.getSettings();
-    diagState('cameraCapture', `${settings.width ?? '?'}x${settings.height ?? '?'}@${settings.frameRate ?? '?'}`);
-    diagState('cameraDevice', cam.label);
-  }
-  const mic = local.getTrackPublication(Track.Source.Microphone)?.track?.mediaStreamTrack;
-  if (mic && mic.readyState === 'live') diagState('microphoneDevice', mic.label);
+  if (cam && cam.readyState === 'live') diagState('cameraCapture', captureLabel(cam.getSettings()));
   const share = local.getTrackPublication(Track.Source.ScreenShare)?.track?.mediaStreamTrack;
-  if (share && share.readyState === 'live') {
-    const settings = share.getSettings();
-    diagState('screenShareCapture', `${settings.width ?? '?'}x${settings.height ?? '?'}@${settings.frameRate ?? '?'}`);
-  }
+  if (share && share.readyState === 'live') diagState('screenShareCapture', captureLabel(share.getSettings()));
+  void reportDeviceLabel(room, 'videoinput', 'cameraDevice');
+  void reportDeviceLabel(room, 'audioinput', 'microphoneDevice');
 }
+
+/** Everyone in the call including this browser — counted locally, since the server-reported
+ *  figure reads 0 until its first update arrives. */
+const participantCount = (room: Room) => room.remoteParticipants.size + 1;
 
 /** Puts the room's own events on the diagnostics timeline. Cheap enough to always listen —
  *  diagEvent/diagState are no-ops beyond a map write while nothing is recording. */
@@ -355,11 +376,11 @@ function useDiagnosticsRoomEvents(room: Room) {
     const nameOf = (p: Participant) => p.name || p.identity;
     const onJoined = (p: Participant) => {
       diagEvent('participant-joined', { name: nameOf(p) });
-      diagState('participants', room.numParticipants);
+      diagState('participants', participantCount(room));
     };
     const onLeft = (p: Participant) => {
       diagEvent('participant-left', { name: nameOf(p) });
-      diagState('participants', room.numParticipants);
+      diagState('participants', participantCount(room));
     };
     const onQuality = (quality: ConnectionQuality, p: Participant) => {
       if (p.isLocal) diagState('connectionQuality', quality);
@@ -374,7 +395,7 @@ function useDiagnosticsRoomEvents(room: Room) {
     };
 
     syncLocal();
-    diagState('participants', room.numParticipants);
+    diagState('participants', participantCount(room));
     room
       .on(RoomEvent.LocalTrackPublished, syncLocal)
       .on(RoomEvent.LocalTrackUnpublished, syncLocal)
