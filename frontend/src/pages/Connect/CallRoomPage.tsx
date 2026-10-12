@@ -99,6 +99,7 @@ import {
   DiagnosticsResultDialog,
 } from './ConnectDiagnostics';
 import { useDiagnosticsController } from './useDiagnosticsController';
+import { playSpeakerTestTone, useMicLevel } from '../../components/Connect/audioTest';
 import { codecPublishOptions, readVideoCodecPreference } from '../../lib/videoCodecPreference';
 import { useMiniRooms, type UseMiniRoomsResult, type ReconnectTarget } from '../../hooks/useMiniRooms';
 import { useDocumentPiP } from '../../hooks/useDocumentPiP';
@@ -1117,6 +1118,20 @@ function MicMenuDropdown({
     setNoiseCancelEnabled,
   } = mediaEnhancements;
 
+  // Same mic meter / speaker tone as the pre-join screen. The meter keeps moving while muted
+  // (see useMicLevel), so someone can check their mic before unmuting.
+  const { microphoneTrack, isMicrophoneEnabled } = useLocalParticipant();
+  const micLevel = useMicLevel((microphoneTrack?.track as LocalAudioTrack | undefined) ?? null);
+  const [testingSpeaker, setTestingSpeaker] = useState(false);
+  const handleTestSpeaker = useCallback(async () => {
+    setTestingSpeaker(true);
+    try {
+      await playSpeakerTestTone(activeOutputId);
+    } finally {
+      setTestingSpeaker(false);
+    }
+  }, [activeOutputId]);
+
   return (
     <DropdownPortal anchorRef={anchorRef} onClose={onClose} align="left">
       <div className="w-80 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl p-3.5 text-white space-y-3">
@@ -1162,6 +1177,20 @@ function MicMenuDropdown({
               <p className="text-[11px] text-gray-500 py-1 px-1">利用可能なマイクがありません</p>
             )}
           </div>
+          {microphoneTrack && (
+            <div className="space-y-1 px-1 pt-1">
+              <p className="text-[10px] text-gray-400">マイク入力テスト（話すとバーが動きます）</p>
+              <div className="h-1.5 w-full bg-gray-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-emerald-500 rounded-full transition-[width] duration-75"
+                  style={{ width: `${Math.round(micLevel * 100)}%` }}
+                />
+              </div>
+              {!isMicrophoneEnabled && (
+                <p className="text-[10px] text-gray-500">ミュート中です（バーは動きますが、相手には聞こえていません）</p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Speakers (Audio Output) if available */}
@@ -1192,6 +1221,18 @@ function MicMenuDropdown({
             </div>
           </div>
         )}
+
+        {/* Speaker test — outside the speaker list, which only exists where the browser can
+            enumerate outputs (not Safari/Firefox); the tone still plays on the default there. */}
+        <button
+          type="button"
+          onClick={() => void handleTestSpeaker()}
+          disabled={testingSpeaker}
+          className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 border border-gray-700 font-bold text-xs rounded-xl transition-colors"
+        >
+          <Volume2 className={`w-3.5 h-3.5 ${testingSpeaker ? 'animate-pulse text-sky-400' : ''}`} />
+          <span>{testingSpeaker ? '再生中...' : 'スピーカーをテスト'}</span>
+        </button>
 
         {/* GTCRN Noise Cancellation */}
         <div className="space-y-1.5 border-t border-gray-800/80 pt-2.5 px-1">
@@ -2890,6 +2931,16 @@ function CallRoomInner({
   useEffect(() => {
     mediaChoicesRef.current = initialMediaChoices;
   }, [initialMediaChoices]);
+
+  // The speaker picked on the pre-join screen. Applied once on entering the call; after that the
+  // mic menu's speaker list owns it (and reads it back from the room's active device).
+  const initialAudioOutputId = initialMediaChoices?.audioOutputDeviceId;
+  useEffect(() => {
+    if (!initialAudioOutputId || initialAudioOutputId === 'default') return;
+    void room.switchActiveDevice('audiooutput', initialAudioOutputId).catch((e) =>
+      console.warn('[CallRoomPage] failed to apply pre-join speaker choice:', e),
+    );
+  }, [room, initialAudioOutputId]);
 
   // Publishes the pre-join camera/mic tracks once the room is actually connected
   // — the initial join, and again after every mini-room switch (`useMiniRooms`'

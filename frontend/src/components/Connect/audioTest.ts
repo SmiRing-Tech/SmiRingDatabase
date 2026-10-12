@@ -1,21 +1,41 @@
 import { useEffect, useState } from 'react';
-import type { LocalAudioTrack } from 'livekit-client';
+import { TrackEvent, type LocalAudioTrack } from 'livekit-client';
 
 /**
- * Live input level (0..1) for a mic track, for a level-meter UI. Reads the raw
- * MediaStreamTrack via an AnalyserNode rather than anything LiveKit-specific, so
- * it keeps working across mute/unmute — a muted track just measures as silence,
- * which is the correct thing for a meter to show.
+ * Live input level (0..1) for a mic track, for a level-meter UI.
+ *
+ * Keeps reacting while the mic is muted — the point is to let someone check "is my mic picking
+ * me up?" *before* unmuting. LiveKit mutes a mic by setting its MediaStreamTrack's `.enabled` to
+ * false, which makes it read as pure silence, so the meter measures a clone with `.enabled`
+ * forced back on instead. The clone only ever feeds this local AnalyserNode; nothing it carries
+ * is sent anywhere, so muting still means nobody else hears you.
+ *
+ * Rebuilt whenever LiveKit swaps the underlying MediaStreamTrack (a mic device switch fires
+ * TrackEvent.Restarted on the same LocalAudioTrack) — otherwise the clone would keep the old
+ * device open and the meter would keep measuring it.
  */
 export function useMicLevel(track: LocalAudioTrack | null): number {
   const [level, setLevel] = useState(0);
+  const [epoch, setEpoch] = useState(0);
+
+  useEffect(() => {
+    if (!track) return;
+    const bump = () => setEpoch((n) => n + 1);
+    track.on(TrackEvent.Restarted, bump);
+    return () => {
+      track.off(TrackEvent.Restarted, bump);
+    };
+  }, [track]);
 
   useEffect(() => {
     if (!track) return; // no track to measure; reported as 0 below regardless of stale state
+    if (track.mediaStreamTrack.readyState === 'ended') return;
 
+    const meterTrack = track.mediaStreamTrack.clone();
+    meterTrack.enabled = true;
     const audioContext = new AudioContext();
     if (audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
-    const source = audioContext.createMediaStreamSource(new MediaStream([track.mediaStreamTrack]));
+    const source = audioContext.createMediaStreamSource(new MediaStream([meterTrack]));
     const analyser = audioContext.createAnalyser();
     analyser.fftSize = 512;
     source.connect(analyser);
@@ -53,9 +73,10 @@ export function useMicLevel(track: LocalAudioTrack | null): number {
     return () => {
       cancelAnimationFrame(raf);
       source.disconnect();
+      meterTrack.stop();
       void audioContext.close();
     };
-  }, [track]);
+  }, [track, epoch]);
 
   return track ? level : 0;
 }
@@ -64,12 +85,20 @@ export function useMicLevel(track: LocalAudioTrack | null): number {
  * Plays "ド・ミ・ソ・ミ・ソ・ド" (C4-E4-G4-E4-G4-C5), one third of a second each,
  * so someone can confirm their speakers/headphones actually put out sound
  * without us having to ship and host an audio file for it.
+ *
+ * @param sinkId Output device to play on — in a call, the speaker picked in the mic menu, so
+ *   the test checks the device the call's audio actually goes to. Ignored (system default)
+ *   where AudioContext.setSinkId isn't supported, or for the default device.
  */
-export function playSpeakerTestTone(): Promise<void> {
+export async function playSpeakerTestTone(sinkId?: string): Promise<void> {
   const notes = [261.63, 329.63, 392.0, 329.63, 392.0, 523.25];
   const noteDuration = 1 / 3;
 
   const audioContext = new AudioContext();
+  const withSink = audioContext as AudioContext & { setSinkId?: (id: string) => Promise<void> };
+  if (sinkId && sinkId !== 'default' && withSink.setSinkId) {
+    await withSink.setSinkId(sinkId).catch(() => {});
+  }
   if (audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
   const now = audioContext.currentTime;
 

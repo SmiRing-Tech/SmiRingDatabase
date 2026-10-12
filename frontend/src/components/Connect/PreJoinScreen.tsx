@@ -63,6 +63,8 @@ export interface PreJoinChoices {
   audioEnabled: boolean;
   videoDeviceId?: string;
   audioDeviceId?: string;
+  /** Speaker picked here; applied to the room on join (see CallRoomInner). */
+  audioOutputDeviceId?: string;
 }
 
 interface PreJoinScreenProps {
@@ -135,6 +137,10 @@ export default function PreJoinScreen({
   const [audioDeviceId, setAudioDeviceId] = useState<string | undefined>();
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  // Empty where the browser can't enumerate outputs (Safari, Firefox) — the select is hidden then
+  // and everything plays on the system default.
+  const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [audioOutputDeviceId, setAudioOutputDeviceId] = useState<string>('default');
 
   const hasSubmittedRef = useRef(false);
 
@@ -225,6 +231,7 @@ export default function PreJoinScreen({
       .then((devices) => {
         setVideoDevices(devices.filter((d) => d.kind === 'videoinput'));
         setAudioDevices(devices.filter((d) => d.kind === 'audioinput'));
+        setAudioOutputDevices(devices.filter((d) => d.kind === 'audiooutput'));
       })
       .catch(() => {});
   }, [videoTrack, audioTrack]);
@@ -276,11 +283,11 @@ export default function PreJoinScreen({
   const handleTestSpeaker = useCallback(async () => {
     setTestingSpeaker(true);
     try {
-      await playSpeakerTestTone();
+      await playSpeakerTestTone(audioOutputDeviceId);
     } finally {
       setTestingSpeaker(false);
     }
-  }, []);
+  }, [audioOutputDeviceId]);
 
   const toggleVideo = useCallback(async () => {
     if (!videoTrack) return;
@@ -386,6 +393,7 @@ export default function PreJoinScreen({
         audioEnabled,
         videoDeviceId,
         audioDeviceId,
+        audioOutputDeviceId,
       },
       videoTrack,
       audioTrack,
@@ -399,6 +407,7 @@ export default function PreJoinScreen({
     audioEnabled,
     videoDeviceId,
     audioDeviceId,
+    audioOutputDeviceId,
     videoTrack,
     audioTrack,
   ]);
@@ -554,6 +563,20 @@ export default function PreJoinScreen({
               </div>
             )}
           </div>
+        )}
+
+        {audioOutputDevices.length > 0 && (
+          <select
+            value={audioOutputDeviceId}
+            onChange={(e) => setAudioOutputDeviceId(e.target.value)}
+            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-gray-700 focus:outline-none"
+          >
+            {audioOutputDevices.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>
+                {d.label || 'スピーカー'}
+              </option>
+            ))}
+          </select>
         )}
 
         {audioDevices.length > 0 && (
