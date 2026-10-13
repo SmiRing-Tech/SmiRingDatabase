@@ -56,6 +56,8 @@ export interface SlowFrameMeasure {
 
 /** Pinned to the installed @mediapipe/tasks-vision version — keep in sync on upgrade. */
 const TASKS_VISION_VERSION = '1.0.1';
+/** Where the tasks-vision WASM fileset is loaded from (also by the worker spike). */
+export const MEDIAPIPE_WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`;
 
 const MODELS: Record<SegmentationQuality, string> = {
   // 244 KB. Binary person/background, trained on 256x144 landscape input, which
@@ -163,7 +165,7 @@ export function loadSegmentationModel(quality: SegmentationQuality, timeoutMs?: 
  * Re-verify (or re-measure and update this table) if either model file is
  * ever swapped for a different version/architecture.
  */
-const MODEL_INVERT: Record<SegmentationQuality, number> = {
+export const MODEL_INVERT: Record<SegmentationQuality, number> = {
   balanced: 0,
   high: 1,
 };
@@ -199,10 +201,26 @@ export type MediapipeBackgroundOptions = {
   edgeFeather?: number;
   /** Cap on segmentation inferences per second; frames in between reuse the last matte. */
   segmentationFps?: number;
+  /**
+   * How segmentationFps is enforced.
+   *  - 'interval' (default, what the app runs): skip a frame if less than 1000/fps ms passed
+   *    since the last inference. With fps equal to the camera's, any frame arriving slightly early
+   *    is skipped, so in practice this runs at about *half* the camera rate (measured: 10/s at
+   *    a 20fps camera with segmentationFps 20).
+   *  - 'exact': a credit counter that hits the requested rate on average (e.g. 3 of every 4
+   *    frames for 15/s at 20fps) — for the blur lab to compare rates honestly.
+   */
+  segmentationScheduler?: 'interval' | 'exact';
   /** Override the WASM bundle / model URLs, e.g. to self-host them. */
   assetPaths?: { wasmFileSet?: string; modelAssetPath?: string };
   /** MediaPipe inference backend. GPU unless you have a reason. */
   delegate?: 'GPU' | 'CPU';
+  /**
+   * Benchmarking only (the blur lab): call gl.finish() at the end of every frame so the
+   * per-frame timings include the GPU's own work, not just the main thread queueing it. Makes
+   * the pipeline slower — never set it in the app.
+   */
+  measureGpuSync?: boolean;
   /**
    * Forces how the confidence mask is read: `true` = it scores background,
    * `false` = it scores the subject. Leave undefined to use the known-correct
@@ -255,6 +273,8 @@ const DEFAULTS = {
   // the matte is moving, so raising it does not reintroduce trails.
   segmentationFps: 30,
   delegate: 'GPU' as const,
+  measureGpuSync: false,
+  segmentationScheduler: 'interval' as 'interval' | 'exact',
   invertMask: undefined as boolean | undefined,
   matteLo: 0.3,
   matteHi: 0.75,
@@ -404,9 +424,21 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   /** Label map from the model, if it ships one. Used to pick the mask, never the polarity. */
   private labels: string[] = [];
 
+  /** Where the last init() spent its time, for the blur lab's load-freeze breakdown (ms). */
+  readonly loadTimings: {
+    filesetMs?: number;
+    modelFetchMs?: number;
+    createSegmenterMs?: number;
+    firstSegmentationMs?: number;
+  } = {};
+
   private maskIndexResolved = false;
 
   private lastSegmentationMs = 0;
+
+  /** 'exact' scheduler state: inference credit (capped at 2 so a slightly late frame isn't lost). */
+  private segmentationCredit = 0;
+  private lastSchedulerAt = 0;
 
   private lastTimestampMs = 0;
 
@@ -781,7 +813,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.startPipeline();
     this.startStarvationMonitor();
     this.unregisterDiagProbe?.();
-    this.unregisterDiagProbe = registerDiagProbe('background', () => this.readDiagnostics());
+    this.unregisterDiagProbe = registerDiagProbe('background', () => this.takePerfSnapshot());
     this.log('init() done', {
       processedTrackId: this.processedTrack?.id,
       usingImageBackground: this.usingImageBackground(),
@@ -847,18 +879,18 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.log('createSegmenter() start', { quality: this.options.quality, delegate: this.options.delegate });
     const t0 = performance.now();
     const fileset = await FilesetResolver.forVisionTasks(
-      this.options.assetPaths?.wasmFileSet ??
-        `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`,
+      this.options.assetPaths?.wasmFileSet ?? MEDIAPIPE_WASM_BASE,
     );
+    const t1 = performance.now();
 
     // Normally already in memory: callers that care about load time fetch it first, with a
     // deadline, before building this processor at all — see loadSegmentationModel.
     const modelAssetPath = this.options.assetPaths?.modelAssetPath;
+    const modelAssetBuffer = modelAssetPath ? undefined : await loadSegmentationModel(this.options.quality);
+    const t2 = performance.now();
     this.segmenter = await ImageSegmenter.createFromOptions(fileset, {
       baseOptions: {
-        ...(modelAssetPath
-          ? { modelAssetPath }
-          : { modelAssetBuffer: await loadSegmentationModel(this.options.quality) }),
+        ...(modelAssetPath ? { modelAssetPath } : { modelAssetBuffer }),
         delegate: this.options.delegate,
       },
       canvas: this.canvas,
@@ -871,6 +903,10 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     // yet hands back a single mask scoring the *subject*, so trusting the labels
     // here inverted the whole effect on that model.
     this.labels = this.segmenter.getLabels();
+    this.loadTimings.filesetMs = Math.round(t1 - t0);
+    this.loadTimings.modelFetchMs = Math.round(t2 - t1);
+    this.loadTimings.createSegmenterMs = Math.round(performance.now() - t2);
+    this.loadTimings.firstSegmentationMs = undefined;
     this.log('createSegmenter() done', { ms: Math.round(performance.now() - t0), labels: this.labels });
   }
 
@@ -1062,10 +1098,13 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     }
   }
 
-  private readDiagnostics(): Record<string, unknown> {
+  /** Per-frame costs since the previous call, then resets — what the diagnostics probe records,
+   *  also read directly by the blur lab. */
+  takePerfSnapshot(): Record<string, unknown> {
     const now = performance.now();
     const seconds = this.diagLastReadAt ? (now - this.diagLastReadAt) / 1000 : undefined;
-    const avg = (total: number, count: number) => (count ? Math.round((total / count) * 10) / 10 : undefined);
+    // Two decimals: on a fast machine a frame costs ~1ms, and one decimal hid ±10% differences.
+    const avg = (total: number, count: number) => (count ? Math.round((total / count) * 100) / 100 : undefined);
     const data = {
       quality: this.options.quality,
       mode: this.options.mode,
@@ -1228,6 +1267,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       gl.clear(gl.COLOR_BUFFER_BIT);
     }
 
+    if (this.options.measureGpuSync) gl.finish();
     const frameMs = performance.now() - t0;
     this.starvationFrames += 1;
     this.diagFrames += 1;
@@ -1325,8 +1365,16 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
     // Throttle inference; in-between frames reuse the matte we already have.
     const now = performance.now();
-    const minInterval = 1000 / Math.max(1, this.options.segmentationFps);
-    if (this.hasMatteHistory && now - this.lastSegmentationMs < minInterval) return;
+    if (this.options.segmentationScheduler === 'exact') {
+      const elapsed = this.lastSchedulerAt ? now - this.lastSchedulerAt : Infinity;
+      this.lastSchedulerAt = now;
+      this.segmentationCredit = Math.min(2, this.segmentationCredit + (elapsed * this.options.segmentationFps) / 1000);
+      if (this.hasMatteHistory && this.segmentationCredit < 1) return;
+      this.segmentationCredit = Math.max(0, this.segmentationCredit - 1);
+    } else {
+      const minInterval = 1000 / Math.max(1, this.options.segmentationFps);
+      if (this.hasMatteHistory && now - this.lastSegmentationMs < minInterval) return;
+    }
     this.lastSegmentationMs = now;
 
     // MediaPipe requires strictly increasing timestamps in VIDEO mode.
@@ -1360,6 +1408,11 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       }
     });
     const segmentMs = performance.now() - segmentStart;
+    // The very first inference is where the GPU delegate compiles its shaders — measured at 4.3s
+    // on a 2-core MacBook Air, i.e. a big share of the "switching the effect freezes the call".
+    if (this.loadTimings.firstSegmentationMs === undefined) {
+      this.loadTimings.firstSegmentationMs = Math.round(segmentMs);
+    }
     this.diagSegmentations += 1;
     this.diagSegmentMsTotal += segmentMs;
     if (segmentMs > this.diagSegmentMsMax) this.diagSegmentMsMax = segmentMs;
