@@ -61,6 +61,9 @@ const PRIME_MS = 128;
 /** Ceiling on queued audio, so a producer that ever runs ahead doesn't leave the extra delay in
  * place for the rest of the call. Generous — it should only ever bite after a long stall. */
 const MAX_QUEUE_MS = 400;
+/** Queued audio normally swings between PRIME_MS and one chunk more (chunks land 64ms at a time);
+ * above that, the playback worklet trims pauses in speech until it's back (see drainAboveMs). */
+const DRAIN_ABOVE_MS = PRIME_MS + (CAPTURE_CHUNK / GTCRN_SAMPLE_RATE) * 1000;
 
 /** This stage's added latency: a full capture chunk has to accumulate before anything sees it,
  * then the playback worklet holds PRIME_MS more as its anti-stall cushion. Exported so callers
@@ -252,7 +255,11 @@ export class GtcrnNoiseCancelTrack {
     const sourceNode = this.ctx.createMediaStreamSource(new MediaStream([this.sourceClone]));
 
     // --- playback stage ---
-    const playbackOptions: GtcrnPlaybackOptions = { primeMs: PRIME_MS, maxMs: MAX_QUEUE_MS };
+    const playbackOptions: GtcrnPlaybackOptions = {
+      primeMs: PRIME_MS,
+      maxMs: MAX_QUEUE_MS,
+      drainAboveMs: DRAIN_ABOVE_MS,
+    };
     this.playback = new AudioWorkletNode(this.ctx, 'gtcrn-playback', {
       numberOfInputs: 0,
       numberOfOutputs: 1,
@@ -351,6 +358,9 @@ export class GtcrnNoiseCancelTrack {
         inactiveChunks: this.diagInactiveChunks,
         underruns: this.playbackStats?.underrunCount,
         droppedSamples: this.playbackStats?.droppedSamples,
+        drainedMsTotal: this.playbackStats
+          ? Math.round((this.playbackStats.drainedSamples / GTCRN_SAMPLE_RATE) * 1000)
+          : undefined,
         playbackQueuedMs: this.playbackStats ? Math.round(this.playbackStats.queuedMs) : undefined,
         ctxState: this.ctx.state,
       };

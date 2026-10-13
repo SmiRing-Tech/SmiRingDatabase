@@ -181,13 +181,11 @@ const AppShell = () => {
 // ルーターの設定 (Flutter前のに相当)
 // ==========================================
 const router = createBrowserRouter([
-  // 0. 開発用ルート（本番ビルドには含まれない）
-  ...(import.meta.env.DEV
-    ? [
-        { path: '/dev/blur-lab', element: <BackgroundBlurLabPage /> },
-        { path: '/dev/noise-cancel-lab', element: <NoiseCancelLabPage /> },
-      ]
-    : []),
+  // 0. 計測ページ。背景エフェクトの計測は本番でも公開（ログイン不要）：自分のカメラを使うだけで
+  //    サーバーには一切アクセスしないため、誰が開いても問題ない。遅いPCの持ち主にその場で開いて
+  //    もらえるように。ノイズキャンセルの方は開発時のみ。
+  { path: '/dev/blur-lab', element: <BackgroundBlurLabPage /> },
+  ...(import.meta.env.DEV ? [{ path: '/dev/noise-cancel-lab', element: <NoiseCancelLabPage /> }] : []),
 
   // 1. 公開ルート
   { path: '/', element: <WelcomePage /> },

@@ -1,8 +1,12 @@
 /**
  * Compositing for the worker background pipeline (see WorkerBackgroundProcessor): reads camera
- * frames straight from a transferred MediaStreamTrackProcessor.readable, renders the effect with
- * BackgroundCompositor on an OffscreenCanvas, and writes the result to a transferred
- * MediaStreamTrackGenerator.writable. Frames never touch the main thread.
+ * frames, renders the effect with BackgroundCompositor on an OffscreenCanvas, and writes the
+ * result out. Frames never touch the main thread. Two ways in and out, by browser:
+ *  - 'streams' (Chrome/Edge): the page builds MediaStreamTrackProcessor/MediaStreamTrackGenerator
+ *    (Chrome exposes them on the page) and transfers their readable/writable here.
+ *  - 'track' (Safari 18+, the standard shape): the page transfers a camera track here; this
+ *    worker builds MediaStreamTrackProcessor and VideoTrackGenerator itself (worker-only APIs)
+ *    and transfers the generator's track back.
  *
  * The matte comes from a segmenter worker attached over a MessagePort. This worker never waits
  * for it: every frame is composited with the latest matte, and a new one is requested only once
@@ -31,17 +35,30 @@ export interface CompositorSettings {
   measureGpuSync: boolean;
 }
 
+/** Where frames come from and go to; see the header. */
+export type CompositorIO =
+  | { kind: 'streams'; readable: ReadableStream<VideoFrame>; writable: WritableStream<VideoFrame> }
+  | { kind: 'track'; track: MediaStreamTrack };
+
+/** A new camera after a device switch: a readable ('streams') or a track ('track'). */
+export type CompositorSource = { readable: ReadableStream<VideoFrame> } | { track: MediaStreamTrack };
+
 export type CompositorRequest =
   | {
       type: 'init';
-      readable: ReadableStream<VideoFrame>;
-      writable: WritableStream<VideoFrame>;
+      io: CompositorIO;
       width: number;
       height: number;
       settings: CompositorSettings;
     }
   /** Device switch: the same output, frames from a new camera track. */
-  | { type: 'replaceSource'; readable: ReadableStream<VideoFrame> }
+  | { type: 'replaceSource'; source: CompositorSource }
+  /**
+   * 'track' mode: the page's original camera track changed state. The copy here is independent
+   * of it — LiveKit turns the camera off by stopping the original, which leaves this copy (and
+   * the camera light) running — so the page mirrors it over.
+   */
+  | { type: 'sourceState'; enabled: boolean; ended: boolean }
   /** Start (or switch to) getting mattes from this segmenter worker's port. */
   | { type: 'attachSegmenter'; port: MessagePort }
   | { type: 'settings'; settings: Partial<CompositorSettings> }
@@ -67,11 +84,19 @@ export interface CompositorStats {
 }
 
 export type CompositorResponse =
-  | { type: 'started' }
+  /** In 'track' mode, carries the output track (transferred). */
+  | { type: 'started'; track?: MediaStreamTrack }
   | { type: 'ready' }
   | { type: 'stats'; stats: CompositorStats }
   | { type: 'fatal'; message: string }
   | { type: 'stopped' };
+
+// Worker-only standard API (Safari 18+); not in TypeScript's DOM types yet.
+declare class VideoTrackGenerator {
+  readonly writable: WritableStream<VideoFrame>;
+  readonly track: MediaStreamTrack;
+}
+const workerScope = globalThis as { VideoTrackGenerator?: unknown; MediaStreamTrackProcessor?: unknown };
 
 const REQUIRED_STABLE_FRAMES = 5;
 const STATS_INTERVAL_MS = 1000;
@@ -85,6 +110,8 @@ let canvas: OffscreenCanvas;
 let compositor: BackgroundCompositor;
 let writer: WritableStreamDefaultWriter<VideoFrame> | undefined;
 let reader: ReadableStreamDefaultReader<VideoFrame> | undefined;
+/** 'track' mode: the camera track transferred in, stopped when replaced or on stop. */
+let sourceTrack: MediaStreamTrack | undefined;
 let segmenterPort: MessagePort | undefined;
 let requestInFlight = false;
 let lastSegmentationAt = 0;
@@ -250,10 +277,18 @@ async function pump(source: ReadableStreamDefaultReader<VideoFrame>) {
   }
 }
 
-function switchSource(readable: ReadableStream<VideoFrame>) {
+function switchSource(source: CompositorSource) {
   const previous = reader;
-  reader = readable.getReader();
+  const previousTrack = sourceTrack;
+  if ('track' in source) {
+    sourceTrack = source.track;
+    reader = new MediaStreamTrackProcessor({ track: source.track as MediaStreamVideoTrack }).readable.getReader();
+  } else {
+    sourceTrack = undefined;
+    reader = source.readable.getReader();
+  }
   previous?.cancel().catch(() => {});
+  previousTrack?.stop();
   void pump(reader);
 }
 
@@ -273,11 +308,28 @@ function init(request: Extract<CompositorRequest, { type: 'init' }>) {
     fatal('compositor WebGL context lost');
   });
   compositor = new BackgroundCompositor(canvas);
-  writer = request.writable.getWriter();
+  const io = request.io;
+  let outputTrack: MediaStreamTrack | undefined;
+  if (io.kind === 'track') {
+    if (typeof workerScope.MediaStreamTrackProcessor === 'undefined' || typeof workerScope.VideoTrackGenerator === 'undefined') {
+      throw new Error('MediaStreamTrackProcessor/VideoTrackGenerator are not available in this worker');
+    }
+    const generator = new VideoTrackGenerator();
+    writer = generator.writable.getWriter();
+    outputTrack = generator.track;
+    switchSource({ track: io.track });
+  } else {
+    writer = io.writable.getWriter();
+    switchSource({ readable: io.readable });
+  }
   statsSince = performance.now();
   statsTimer = setInterval(sendStats, STATS_INTERVAL_MS);
-  switchSource(request.readable);
-  post({ type: 'started' });
+  if (outputTrack) {
+    // MediaStreamTrack is transferable in browsers with this API; TypeScript doesn't know yet.
+    self.postMessage({ type: 'started', track: outputTrack } satisfies CompositorResponse, {
+      transfer: [outputTrack as unknown as Transferable],
+    });
+  } else post({ type: 'started' });
 }
 
 async function stop() {
@@ -286,6 +338,8 @@ async function stop() {
   segmenterPort?.close();
   await reader?.cancel().catch(() => {});
   reader = undefined;
+  sourceTrack?.stop();
+  sourceTrack = undefined;
   await writer?.close().catch(() => {});
   compositor?.destroy();
   // Give the GPU memory back now rather than whenever the worker gets collected.
@@ -302,10 +356,21 @@ self.onmessage = (event: MessageEvent<CompositorRequest>) => {
         break;
       case 'replaceSource':
         // A different camera may have a different size; the next frame's resize() handles it.
-        switchSource(message.readable);
+        switchSource(message.source);
         break;
       case 'attachSegmenter':
         attachSegmenter(message.port);
+        break;
+      case 'sourceState':
+        if (!sourceTrack) break;
+        if (message.ended) {
+          sourceTrack.stop();
+          sourceTrack = undefined;
+          void reader?.cancel().catch(() => {});
+          reader = undefined;
+        } else {
+          sourceTrack.enabled = message.enabled;
+        }
         break;
       case 'settings':
         settings = { ...settings, ...message.settings };

@@ -8,11 +8,12 @@ import {
 import { supportsWorkerBackground, WorkerBackgroundProcessor } from '../../lib/video/WorkerBackgroundProcessor';
 
 /**
- * Dev-only bench for the MediaPipe background processor.
+ * Bench for the background effect processors.
  *
  * The processor only ever needs a MediaStreamTrack, so this page drives it
  * straight from getUserMedia — no LiveKit server, no room token, no login.
- * Registered behind `import.meta.env.DEV` in App.tsx, so it never ships.
+ * Public in production too (App.tsx): it touches nothing but the visitor's own
+ * camera, and being able to send a slow machine's owner a link is the point.
  *
  * Two halves:
  *  - Manual: pick one configuration and watch it (edge quality, motion artifacts).
@@ -151,6 +152,19 @@ interface LabProcessor {
 
 function num(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/** The GPU's name, for the report header — the thing that decides this page's numbers most. */
+function gpuName(): string {
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2');
+    const info = gl?.getExtension('WEBGL_debug_renderer_info');
+    const name = info ? gl!.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl?.getParameter(gl.RENDERER);
+    gl?.getExtension('WEBGL_lose_context')?.loseContext();
+    return typeof name === 'string' ? name : '?';
+  } catch {
+    return '?';
+  }
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -569,7 +583,7 @@ export default function BackgroundBlurLabPage() {
     const base = results[0]?.busyMsPerSec;
     const f = (v: number | undefined, digits = 1) => (v === undefined ? '-' : v.toFixed(digits));
     const lines = [
-      `背景エフェクト計測（${suiteName}） ${new Date().toISOString().slice(0, 16)} | ${navigator.userAgent.match(/(Chrome|Firefox|Safari)\/[\d.]+/)?.[0] ?? ''} | CPUコア ${navigator.hardwareConcurrency} | GPU完了待ち ${gpuSync ? 'ON' : 'OFF'} | CPU throttle ${throttleLabel} | 計測${measureSec}秒`,
+      `背景エフェクト計測（${suiteName}） ${new Date().toISOString().slice(0, 16)} | ${navigator.userAgent.match(/(Chrome|Firefox|Safari)\/[\d.]+/)?.[0] ?? ''} | CPUコア ${navigator.hardwareConcurrency} | GPU ${gpuName()} | GPU完了待ち ${gpuSync ? 'ON' : 'OFF'} | CPU throttle ${throttleLabel} | 計測${measureSec}秒`,
       '',
       '| 設定 | 場所 | 負荷(ms/秒) | 基準比 | 1フレーム(ms) | 処理fps | 出力fps | 切り抜き/秒 | 切り抜き1回(ms) | 長いタスク(ms/秒) | 読込(ms) | 読込中の最大固まり(ms) | 読込中の画面停止(ms) | 読込中の元映像コマ間隔(ms) | 読込内訳 WASM/モデル/生成/初回推論 |',
       '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|',
@@ -641,7 +655,7 @@ export default function BackgroundBlurLabPage() {
 
   const swapReportMarkdown = useCallback(() => {
     const lines = [
-      `背景エフェクト モデル切り替えテスト ${new Date().toISOString().slice(0, 16)} | ${navigator.userAgent.match(/(Chrome|Firefox|Safari)\/[\d.]+/)?.[0] ?? ''} | CPUコア ${navigator.hardwareConcurrency} | CPU throttle ${throttleLabel}`,
+      `背景エフェクト モデル切り替えテスト ${new Date().toISOString().slice(0, 16)} | ${navigator.userAgent.match(/(Chrome|Firefox|Safari)\/[\d.]+/)?.[0] ?? ''} | CPUコア ${navigator.hardwareConcurrency} | GPU ${gpuName()} | CPU throttle ${throttleLabel}`,
       '',
       '| 場所 | 切り替え | 切り替え完了まで(ms) | 黒い画面の時間(ms) | 適用後映像の最大停止(ms) | 画面スレッドの最大停止(ms) |',
       '|---|---|---|---|---|---|',
@@ -701,7 +715,7 @@ export default function BackgroundBlurLabPage() {
   return (
     <div className="min-h-screen bg-gray-950 text-gray-200 p-6 space-y-6">
       <header className="space-y-1">
-        <h1 className="text-xl font-bold">背景エフェクト計測（開発用）</h1>
+        <h1 className="text-xl font-bold">背景エフェクト計測</h1>
         <p className="text-xs text-gray-400">
           LiveKit サーバー不要。カメラ映像に直接プロセッサを適用します。切り抜きはカメラの半分のレートを下限にしています。
         </p>

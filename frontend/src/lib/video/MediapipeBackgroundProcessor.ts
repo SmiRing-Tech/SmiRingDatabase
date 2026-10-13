@@ -359,6 +359,11 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
   private fallbackHandle?: number;
 
+  /** Drives the Safari/Firefox path while the tab is hidden; see startHiddenTicker. */
+  private hiddenTicker?: Worker;
+
+  private onVisibilityChange?: () => void;
+
   private width = 0;
 
   private height = 0;
@@ -844,8 +849,45 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
     void video
       .play()
-      .then(() => this.scheduleFallbackFrame())
+      .then(() => {
+        this.scheduleFallbackFrame();
+        this.startHiddenTicker();
+      })
       .catch((err) => console.error('[mediapipe-bg] could not start fallback video:', err));
+  }
+
+  private renderFallbackFrame() {
+    const video = this.fallbackVideo;
+    if (!video || this.stopped) return;
+    try {
+      if (video.videoWidth > 0) {
+        this.resize(video.videoWidth, video.videoHeight);
+        this.renderFrame(video);
+      }
+    } catch (err) {
+      console.error('[mediapipe-bg] render error:', err);
+    }
+  }
+
+  /**
+   * requestVideoFrameCallback/requestAnimationFrame stop firing while the tab is hidden, and the
+   * canvas captureStream then has nothing new to send. While hidden, a worker metronome (workers
+   * are exempt from background timer throttling) renders at ~20fps instead; while visible it's
+   * idle. Not enough on Safari, which also pauses the soundless source <video> and the canvas
+   * capture stream itself in hidden tabs (WebKit bug 242679) — Safari 18+ uses the worker
+   * pipeline instead (WorkerBackgroundProcessor), so this path only serves older Safari/Firefox.
+   */
+  private startHiddenTicker() {
+    if (this.hiddenTicker || this.stopped) return;
+    const ticker = new Worker(new URL('./videoDelayTicker.worker.ts', import.meta.url), { type: 'module' });
+    ticker.onmessage = () => {
+      if (document.visibilityState === 'hidden') this.renderFallbackFrame();
+    };
+    const sync = () => ticker.postMessage(document.visibilityState === 'hidden' ? 'start' : 'stop');
+    document.addEventListener('visibilitychange', sync);
+    sync();
+    this.hiddenTicker = ticker;
+    this.onVisibilityChange = sync;
   }
 
   private scheduleFallbackFrame() {
@@ -854,14 +896,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
     const render = () => {
       if (!this.fallbackVideo || this.stopped) return;
-      try {
-        if (video.videoWidth > 0) {
-          this.resize(video.videoWidth, video.videoHeight);
-          this.renderFrame(video);
-        }
-      } catch (err) {
-        console.error('[mediapipe-bg] render error:', err);
-      }
+      this.renderFallbackFrame();
       this.scheduleFallbackFrame();
     };
 
@@ -886,6 +921,10 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       }
     }
     this.fallbackHandle = undefined;
+    if (this.onVisibilityChange) document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    this.onVisibilityChange = undefined;
+    this.hiddenTicker?.terminate();
+    this.hiddenTicker = undefined;
     if (this.fallbackVideo) {
       this.fallbackVideo.srcObject = null;
       this.fallbackVideo = undefined;

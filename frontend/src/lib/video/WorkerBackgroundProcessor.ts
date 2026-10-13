@@ -30,10 +30,18 @@ import { diagEvent, registerDiagProbe } from '../connectDiagnostics';
  * beside the running one before handing over — no black frames, no freeze. Measured on an M4:
  * 1.08-1.13x the main-thread cost, zero black frames across model swaps.
  *
- * Chrome/Edge only (needs MediaStreamTrackProcessor/Generator on the page and OffscreenCanvas
- * WebGL2 in workers). If the workers can't start, init() quietly runs a MediapipeBackgroundProcessor
- * instead and disables this path for the rest of the page; if they break later, it reports
- * onPipelineFailure so the caller can rebuild (which then gets the main-thread version).
+ * Chrome/Edge hand the compositor a transferred MediaStreamTrackProcessor.readable /
+ * MediaStreamTrackGenerator.writable (Chrome exposes those on the page). Safari 18+ has only the
+ * standard, worker-only shape — the camera track itself is transferred to the compositor, which
+ * builds MediaStreamTrackProcessor + VideoTrackGenerator there and sends the output track back.
+ * That matters beyond freezes on Safari: its main-thread fallback (a hidden <video> drawn into a
+ * canvas.captureStream()) stops when the tab is hidden, because Safari pauses both a soundless
+ * video element and canvas capture streams in background tabs.
+ *
+ * If the workers can't start (Firefox, older Safari), init() quietly runs a
+ * MediapipeBackgroundProcessor instead and disables this path for the rest of the page; if they
+ * break later, it reports onPipelineFailure so the caller can rebuild (which then gets the
+ * main-thread version).
  */
 
 export type WorkerBackgroundOptions = MediapipeBackgroundOptions & {
@@ -79,14 +87,33 @@ export function workerBackgroundDisabledReason() {
   return disabledReason;
 }
 
+/** Chrome/Edge: the stream APIs exist on the page, so the streams themselves are transferred. */
+function pageHasTrackStreams() {
+  return typeof MediaStreamTrackProcessor !== 'undefined' && typeof MediaStreamTrackGenerator !== 'undefined';
+}
+
+/**
+ * Whether trying the worker pipeline is worthwhile. Without the page-side stream APIs this can't
+ * know for sure — the worker-side ones (Safari 18+) are only visible from inside a worker — so
+ * init() finds out by trying, and falls back to the main thread if the worker says no.
+ */
 export function supportsWorkerBackground(): boolean {
   return (
     typeof Worker !== 'undefined' &&
     typeof OffscreenCanvas !== 'undefined' &&
-    typeof MediaStreamTrackProcessor !== 'undefined' &&
-    typeof MediaStreamTrackGenerator !== 'undefined' &&
+    typeof VideoFrame !== 'undefined' &&
     typeof OffscreenCanvas.prototype.transferToImageBitmap === 'function'
   );
+}
+
+/** How often 'track' mode checks the original camera track (see watchSourceTrack). */
+const SOURCE_WATCH_MS = 250;
+
+/** A clone of the camera track to transfer to the compositor ('track' mode; see the header). */
+function cloneForWorker(track: MediaStreamTrack) {
+  const clone = track.clone();
+  clone.enabled = track.enabled;
+  return clone;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
@@ -133,8 +160,9 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
   private stopped = false;
   private swapChain: Promise<void> = Promise.resolve();
   private segmenterRestarted = false;
-  private compositorStarted?: { resolve: () => void; reject: (err: Error) => void };
+  private compositorStarted?: { resolve: (track?: MediaStreamTrack) => void; reject: (err: Error) => void };
   private compositorStopped?: () => void;
+  private sourceWatch?: ReturnType<typeof setInterval>;
 
   private readyResolved = false;
   private readyWaiters: Array<() => void> = [];
@@ -211,7 +239,9 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
 
     const worker = new Worker(new URL('./backgroundCompositor.worker.ts', import.meta.url), { type: 'module' });
     this.compositor = worker;
-    const started = new Promise<void>((resolve, reject) => (this.compositorStarted = { resolve, reject }));
+    const started = new Promise<MediaStreamTrack | undefined>(
+      (resolve, reject) => (this.compositorStarted = { resolve, reject }),
+    );
     worker.onmessage = (event: MessageEvent<CompositorResponse>) => this.onCompositorMessage(event.data);
     worker.onerror = (event) => {
       const message = `compositor worker error: ${event.message}`;
@@ -219,19 +249,37 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       else this.pipelineFailed(message);
     };
 
-    const processor = new MediaStreamTrackProcessor({ track: track as MediaStreamVideoTrack });
-    const generator = new MediaStreamTrackGenerator({ kind: 'video' });
-    this.processedTrack = generator as unknown as MediaStreamTrack;
-    const request: CompositorRequest = {
-      type: 'init',
-      readable: processor.readable,
-      writable: generator.writable,
-      width,
-      height,
-      settings: this.compositorSettings(),
-    };
-    worker.postMessage(request, [processor.readable, generator.writable]);
-    await started;
+    const settingsForWorker = this.compositorSettings();
+    if (pageHasTrackStreams()) {
+      const processor = new MediaStreamTrackProcessor({ track: track as MediaStreamVideoTrack });
+      const generator = new MediaStreamTrackGenerator({ kind: 'video' });
+      this.processedTrack = generator as unknown as MediaStreamTrack;
+      const request: CompositorRequest = {
+        type: 'init',
+        io: { kind: 'streams', readable: processor.readable, writable: generator.writable },
+        width,
+        height,
+        settings: settingsForWorker,
+      };
+      worker.postMessage(request, [processor.readable, generator.writable]);
+      await started;
+    } else {
+      // A clone: transferring moves the track out of this page, and the original belongs to LiveKit.
+      const clone = cloneForWorker(track);
+      const request: CompositorRequest = {
+        type: 'init',
+        io: { kind: 'track', track: clone },
+        width,
+        height,
+        settings: settingsForWorker,
+      };
+      // Throws DataCloneError where tracks aren't transferable — caught by init(), which falls back.
+      worker.postMessage(request, [clone as unknown as Transferable]);
+      const output = await started;
+      if (!output) throw new Error('compositor worker returned no output track');
+      this.processedTrack = output;
+      this.watchSourceTrack();
+    }
     this.compositorStarted = undefined;
 
     await this.startSegmenter(this.currentQuality);
@@ -244,6 +292,27 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
     this.startStarvationMonitor();
     this.unregisterDiagProbe?.();
     this.unregisterDiagProbe = registerDiagProbe('background', () => this.takePerfSnapshot());
+  }
+
+  /**
+   * 'track' mode only. The compositor reads an independent clone of the camera track, and a
+   * clone outlives its original: LiveKit turns the camera off by stopping the original (the
+   * camera light goes off, the published video stops), but the clone would keep the camera — and
+   * this processor's output — running. Stopping a track fires no event, so poll it and mirror
+   * its state onto the clone. restart() hands over the new track when the camera comes back.
+   */
+  private watchSourceTrack() {
+    if (this.sourceWatch !== undefined) return;
+    let last = '';
+    this.sourceWatch = setInterval(() => {
+      const track = this.sourceTrack;
+      if (!track || !this.compositor) return;
+      const ended = track.readyState === 'ended';
+      const state = `${ended}/${track.enabled}`;
+      if (state === last) return;
+      last = state;
+      this.postToCompositor({ type: 'sourceState', enabled: track.enabled, ended });
+    }, SOURCE_WATCH_MS);
   }
 
   private compositorSettings(): CompositorSettings {
@@ -365,6 +434,8 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
   }
 
   private async teardownWorkers() {
+    if (this.sourceWatch !== undefined) clearInterval(this.sourceWatch);
+    this.sourceWatch = undefined;
     const compositor = this.compositor;
     this.compositor = undefined;
     const segmenter = this.segmenter;
@@ -389,8 +460,13 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       this.processedTrack = this.fallback.processedTrack;
       return;
     }
-    const processor = new MediaStreamTrackProcessor({ track: opts.track as MediaStreamVideoTrack });
-    this.postToCompositor({ type: 'replaceSource', readable: processor.readable }, [processor.readable]);
+    if (pageHasTrackStreams()) {
+      const processor = new MediaStreamTrackProcessor({ track: opts.track as MediaStreamVideoTrack });
+      this.postToCompositor({ type: 'replaceSource', source: { readable: processor.readable } }, [processor.readable]);
+    } else {
+      const clone = cloneForWorker(opts.track);
+      this.postToCompositor({ type: 'replaceSource', source: { track: clone } }, [clone as unknown as Transferable]);
+    }
     // The switch itself is a gap with no frames — start the starvation check over, grace included.
     this.startStarvationMonitor();
   }
@@ -522,7 +598,7 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
   private onCompositorMessage(message: CompositorResponse) {
     switch (message.type) {
       case 'started':
-        this.compositorStarted?.resolve();
+        this.compositorStarted?.resolve(message.track);
         break;
       case 'ready':
         this.resolveReady();
