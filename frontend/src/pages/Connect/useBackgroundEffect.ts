@@ -5,6 +5,7 @@ import {
   MediapipeBackgroundProcessor,
   supportsMediapipeBackground,
   type SegmentationQuality,
+  type SlowFrameMeasure,
 } from '../../lib/video/MediapipeBackgroundProcessor';
 import { BlankFrameProcessor } from '../../lib/video/BlankFrameProcessor';
 import { diagEvent, diagState } from '../../lib/connectDiagnostics';
@@ -14,7 +15,6 @@ import {
   writeStoredChoice,
   detectSegmentationQuality,
   detectSegmentationFps,
-  isMobileDevice,
   qualityWithinLoadDeadline,
   HIGH_MODEL_FALLBACK_MESSAGE,
   type BackgroundMode,
@@ -38,18 +38,18 @@ export { PRESETS } from './backgroundLibrary';
 export function useBackgroundEffect(isGuest = false) {
   const { localParticipant } = useLocalParticipant();
   const processorRef = useRef<MediapipeBackgroundProcessor | null>(null);
-  // Guards the automatic high -> balanced fallback (see handlePerfDowngrade) so
+  // Guards the automatic high -> balanced fallback (see handlePerfSlow) so
   // it fires at most once per "high" attempt; setQuality resets it whenever the
   // user picks 'high' again themselves, so a later attempt gets its own chance.
   const autoDowngradedRef = useRef(false);
-  // Same idea, opposite direction — see handlePerfUpgrade.
-  const autoUpgradedRef = useRef(false);
-  // setQuality closes over applyEffect, and handlePerfDowngrade needs to call
-  // setQuality — but handlePerfDowngrade is handed to applyEffect as a
+  // setQuality closes over applyEffect, and handlePerfSlow needs to call
+  // setQuality — but handlePerfSlow is handed to applyEffect as a
   // constructor option, so it has to exist before setQuality does. A ref sidesteps
-  // the circular dependency: handlePerfDowngrade is only ever invoked later, from
+  // the circular dependency: handlePerfSlow is only ever invoked later, from
   // inside a running processor, well after this effect has populated it.
-  const setQualityRef = useRef<((q: SegmentationQuality) => Promise<boolean>) | undefined>(undefined);
+  const setQualityRef = useRef<
+    ((q: SegmentationQuality, opts?: { auto?: boolean }) => Promise<boolean>) | undefined
+  >(undefined);
 
   const supported = useMemo(() => supportsMediapipeBackground(), []);
   const stored = useMemo(() => readStoredChoice(isGuest), [isGuest]);
@@ -81,47 +81,43 @@ export function useBackgroundEffect(isGuest = false) {
   }, [localParticipant]);
 
   /**
-   * Wired into the 'high'-quality processor as onSustainedSlowFrames: fires
-   * once its own per-frame cost has averaged above a stutter-level threshold
-   * for a few seconds straight. Falls back to 'balanced' the same way the
-   * manual HD toggle does (see setQuality) rather than duplicating the
-   * processor-swap logic here.
+   * Wired into every processor as onSustainedSlowFrames, which fires once the effect is
+   * measurably too heavy for the machine *as it is right now* — a weak CPU, or a strong one busy
+   * with other apps; judged from what's measured live, never from the hardware's spec.
+   *
+   * 'high' falls back to 'balanced', for this call only (not written to the remembered choice,
+   * so the next join starts from what the person actually picked). 'balanced' is as far as this
+   * hook goes on its own: some people won't show their room without an effect, so switching it
+   * off is never automatic here — the measurement is only recorded, for whatever decides the
+   * call's overall load budget to act on (lighter video first; turning the camera off with an
+   * explanation only as a last resort).
+   *
+   * There's deliberately no automatic *upgrade* to 'high' any more. Every quality swap rebuilds
+   * the segmenter — a blank-video gap while the model loads, and a main-thread freeze on slower
+   * machines (7s twice in a measured call) — and an upgrade that later proves too heavy swaps
+   * straight back, which is the "video goes black every ~20s" loop that was reported. 'high' is
+   * now only ever the person's own choice (the HD toggle).
    */
-  const handlePerfDowngrade = useCallback(() => {
-    if (autoDowngradedRef.current) return;
-    autoDowngradedRef.current = true;
-    console.warn('[Connect] background effect running slow, falling back to balanced quality');
-    void setQualityRef.current?.('balanced').then((ok) => {
-      if (ok) setError('処理が重かったため、背景エフェクトを標準画質に切り替えました。');
-    });
-  }, []);
-
-  /**
-   * Wired into the 'balanced'-quality processor as onSustainedFastFrames: fires once
-   * it's had comfortable headroom for a while, and tries 'high' the same way the
-   * manual HD toggle does. Desktop only — mobile always forces 'balanced' regardless
-   * of measured performance (see detectSegmentationQuality), so there's nothing to
-   * try upgrading to there.
-   */
-  const handlePerfUpgrade = useCallback(() => {
-    if (autoUpgradedRef.current || isMobileDevice()) return;
-    autoUpgradedRef.current = true;
-    console.info('[Connect] background effect has headroom, trying high quality');
-    void setQualityRef.current?.('high').then((ok) => {
-      if (ok) setError('処理に余裕があるため、背景エフェクトを高精細画質に切り替えました。');
-    });
+  const handlePerfSlow = useCallback((processorQuality: SegmentationQuality, measure: SlowFrameMeasure) => {
+    console.warn('[Connect] background effect running slow', processorQuality, measure);
+    if (processorQuality === 'high') {
+      if (autoDowngradedRef.current) return;
+      autoDowngradedRef.current = true;
+      diagEvent('background-auto-downgrade', { ...measure });
+      void setQualityRef.current?.('balanced', { auto: true }).then((ok) => {
+        if (ok) setError('処理が重かったため、背景エフェクトを標準画質に切り替えました。');
+      });
+      return;
+    }
+    diagEvent('background-slow', { quality: processorQuality, ...measure });
   }, []);
 
   /**
    * 'high' was asked for but its model didn't arrive in time (see qualityWithinLoadDeadline):
    * settle on 'balanced' as if the person had picked it, including for future joins on this
-   * device. Also latches autoUpgradedRef so the balanced processor's own headroom check doesn't
-   * go straight back to retrying the same download every few seconds. Deliberately not routed
-   * through setQuality('balanced'), which would reset that latch; a manual toggle to 'high'
-   * doesn't consult it at all, so the person can still retry by hand.
+   * device. The person can still retry 'high' by hand.
    */
   const handleHighModelFallback = useCallback((fallbackMode: BackgroundMode, fallbackImageId: string | undefined) => {
-    autoUpgradedRef.current = true;
     writeStoredChoice({ mode: fallbackMode, imageId: fallbackImageId, quality: 'balanced' });
     setQualityState('balanced');
     setError(HIGH_MODEL_FALLBACK_MESSAGE);
@@ -218,10 +214,9 @@ export function useBackgroundEffect(isGuest = false) {
         matteLo: 0.3,
         matteHi: 0.75,
         segmentationFps: detectSegmentationFps(),
-        // Only 'high' has anywhere lighter to fall back to, and only 'balanced' has
-        // anywhere heavier to try — never both on the same processor.
-        onSustainedSlowFrames: effectiveQuality === 'high' ? handlePerfDowngrade : undefined,
-        onSustainedFastFrames: effectiveQuality === 'balanced' ? handlePerfUpgrade : undefined,
+        // Every processor reports when it's too heavy (see handlePerfSlow for what happens
+        // next). No onSustainedFastFrames: automatic upgrades are off, see handlePerfSlow.
+        onSustainedSlowFrames: (measure) => handlePerfSlow(effectiveQuality, measure),
       });
       // setProcessor() resolves once the model is loaded and the pipeline is wired,
       // not once its output is stable — the processor blanks its own output until
@@ -233,7 +228,7 @@ export function useBackgroundEffect(isGuest = false) {
       processorRef.current = processor;
       return effectiveQuality;
     },
-    [getCameraTrack, imageUrlFor, handlePerfDowngrade, handlePerfUpgrade, handleHighModelFallback],
+    [getCameraTrack, imageUrlFor, handlePerfSlow, handleHighModelFallback],
   );
 
   const commit = useCallback(
@@ -322,24 +317,24 @@ export function useBackgroundEffect(isGuest = false) {
 
   /**
    * The manual Balanced/High toggle — see BackgroundControls. Also the path
-   * handlePerfDowngrade uses to fall back automatically; returns whether it
+   * handlePerfSlow uses to fall back automatically (`auto`); returns whether it
    * succeeded so that caller can decide whether to surface a message.
+   *
+   * An `auto` change is for this call only: it isn't remembered for the next join, and it
+   * doesn't re-arm the automatic fallback the way a person's own choice does.
    */
   const setQuality = useCallback(
-    async (nextQuality: SegmentationQuality) => {
-      // A person choosing 'high' (or 'balanced') again gets a fresh shot at the
-      // opposite auto-adjustment — otherwise one auto-swap early in a call would
-      // silently suppress its counterpart for the rest of every call after.
-      if (nextQuality === 'high') autoDowngradedRef.current = false;
-      if (nextQuality === 'balanced') autoUpgradedRef.current = false;
+    async (nextQuality: SegmentationQuality, opts?: { auto?: boolean }) => {
+      // A person choosing 'high' again gets a fresh shot at the automatic fallback —
+      // otherwise one auto-swap early in a call would silently suppress it for good.
+      if (!opts?.auto && nextQuality === 'high') autoDowngradedRef.current = false;
       setBusy(true);
       setError('');
       try {
-        writeStoredChoice({ mode, imageId, quality: nextQuality });
+        if (!opts?.auto) writeStoredChoice({ mode, imageId, quality: nextQuality });
         setQualityState(nextQuality);
         const applied = await applyEffect(mode, imageId, nextQuality);
-        // A 'high' that fell back to 'balanced' isn't a success for the caller's purposes
-        // (handlePerfUpgrade would otherwise announce an upgrade that didn't happen) —
+        // A 'high' that fell back to 'balanced' isn't a success for the caller's purposes —
         // handleHighModelFallback has already said what actually happened.
         return applied === nextQuality;
       } catch (e) {

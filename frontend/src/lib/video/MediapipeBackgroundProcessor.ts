@@ -46,6 +46,14 @@ import { registerDiagProbe } from '../connectDiagnostics';
 
 export type SegmentationQuality = 'balanced' | 'high';
 
+/** What tripped onSustainedSlowFrames, for logging/diagnostics. */
+export interface SlowFrameMeasure {
+  trigger: 'sustained' | 'spike' | 'starved';
+  avgFrameMs?: number;
+  fps?: number;
+  expectedFps?: number;
+}
+
 /** Pinned to the installed @mediapipe/tasks-vision version — keep in sync on upgrade. */
 const TASKS_VISION_VERSION = '1.0.1';
 
@@ -208,13 +216,20 @@ export type MediapipeBackgroundOptions = {
   /** Cutoff above which mask values are saturated to 1 (subject). Default: 0.75 */
   matteHi?: number;
   /**
-   * Fires once, the first time this processor's own per-frame cost (segmentation
-   * + GL compositing, whichever transport path) has averaged above a stutter-
-   * level threshold over a multi-second rolling window. Meant for a caller
-   * running the `high` model to fall back to `balanced` — this processor has no
-   * lighter mode to drop to itself, so it only reports the measurement.
+   * Fires once, the first time this processor is measurably too heavy for the machine *right
+   * now* — whatever the reason (a weak CPU, or a strong one busy with other apps). Two kinds of
+   * evidence, whichever shows up first:
+   *  - `sustained` / `spike`: its own per-frame cost (segmentation + GL compositing) averaged
+   *    above a stutter-level threshold over a rolling window;
+   *  - `starved`: frames simply aren't getting through — fewer than half the camera's frame
+   *    rate processed over several seconds, with the camera on and the page visible. Per-frame
+   *    cost alone misses this: on a saturated machine each frame that *does* run can look cheap
+   *    while most frames never run at all (measured: ~5ms/frame at 0-4fps on a 2-core
+   *    MacBook Air), and a main-thread freeze shows up here as zero frames.
+   * This processor has no lighter mode of its own, so it only reports; the caller decides
+   * (`high` -> `balanced`, `balanced` -> off).
    */
-  onSustainedSlowFrames?: (avgFrameMs: number) => void;
+  onSustainedSlowFrames?: (measure: SlowFrameMeasure) => void;
   /**
    * Fires once, the first time this processor's own per-frame cost has averaged
    * *comfortably below* a headroom threshold over a longer rolling window than
@@ -453,7 +468,33 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
    *  trying the heavier model is unlikely to immediately trip the slow-frame fallback. */
   private static readonly PERF_FAST_AVG_MS = 6;
 
+  /**
+   * ...and the PERF_FAST_WINDOW frames must also have *arrived* at close to the camera's frame
+   * rate. Cheap frames prove nothing if most frames never got processed: a saturated 2-core
+   * MacBook Air measured ~5ms/frame at a few fps, passed the cost check alone, got "upgraded" to
+   * the 15.6 MB model, and froze for 7s twice loading it.
+   */
+  private static readonly PERF_FAST_MIN_FPS_RATIO = 0.85;
+
+  /** Starvation check (see onSustainedSlowFrames): measured over windows this long... */
+  private static readonly STARVATION_WINDOW_MS = 5000;
+
+  /** ...and tripped below this fraction of the camera's frame rate. */
+  private static readonly STARVATION_MIN_FPS_RATIO = 0.5;
+
+  /** The first frames (model warm-up, shader compile — measured at 4.3s for the very first
+   *  segmentation on a slow machine) aren't representative; starvation is only judged once the
+   *  matte is stable, or after this long, whichever comes first. */
+  private static readonly STARVATION_GRACE_MS = 10_000;
+
+  private starvationTimer?: ReturnType<typeof setInterval>;
+  private starvationFrames = 0;
+  private starvationWindowStart = 0;
+  private starvationMonitorStart = 0;
+
   private fastFrameDurations: number[] = [];
+
+  private fastFrameTimes: number[] = [];
 
   private fastFrameDurationSum = 0;
 
@@ -738,6 +779,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       });
     }
     this.startPipeline();
+    this.startStarvationMonitor();
     this.unregisterDiagProbe?.();
     this.unregisterDiagProbe = registerDiagProbe('background', () => this.readDiagnostics());
     this.log('init() done', {
@@ -753,12 +795,15 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     const settings = opts.track.getSettings();
     this.resize(settings.width ?? this.width, settings.height ?? this.height);
     this.startPipeline();
+    // The switch itself is a gap with no frames — start the starvation check over, grace included.
+    this.startStarvationMonitor();
   }
 
   async destroy() {
     this.log('destroy() called', { stableFrameCount: this.stableFrameCount, readyResolved: this.readyResolved });
     this.stopped = true;
     this.stopPipeline();
+    this.stopStarvationMonitor();
     this.unregisterDiagProbe?.();
     this.unregisterDiagProbe = undefined;
 
@@ -956,6 +1001,67 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   private diagLastReadAt = 0;
   private unregisterDiagProbe?: () => void;
 
+  /** The camera's own frame rate — what "keeping up" means for this processor. */
+  private expectedFps(): number {
+    const rate = this.sourceTrack?.getSettings().frameRate;
+    return Math.min(rate && rate > 0 ? rate : 20, 30);
+  }
+
+  private startStarvationMonitor() {
+    this.stopStarvationMonitor();
+    if (!this.options.onSustainedSlowFrames) return;
+    const now = performance.now();
+    this.starvationMonitorStart = now;
+    this.starvationWindowStart = now;
+    this.starvationFrames = 0;
+    this.starvationTimer = setInterval(() => this.checkStarvation(), 1000);
+  }
+
+  private stopStarvationMonitor() {
+    if (this.starvationTimer !== undefined) clearInterval(this.starvationTimer);
+    this.starvationTimer = undefined;
+  }
+
+  /**
+   * Runs on a 1s timer rather than per frame, because the case it exists for is frames *not*
+   * arriving. A main-thread freeze delays the timer itself, so the freeze lands inside the
+   * window as elapsed time with no frames — counted as starvation, which is what it is.
+   */
+  private checkStarvation() {
+    const now = performance.now();
+    const track = this.sourceTrack;
+    const inGrace =
+      !this.readyResolved && now - this.starvationMonitorStart < MediapipeBackgroundProcessor.STARVATION_GRACE_MS;
+    const eligible =
+      !this.stopped &&
+      !this.slowCallbackFired &&
+      !inGrace &&
+      document.visibilityState === 'visible' &&
+      track?.readyState === 'live' &&
+      track.enabled &&
+      !track.muted;
+    if (!eligible) {
+      this.starvationWindowStart = now;
+      this.starvationFrames = 0;
+      return;
+    }
+    const elapsed = now - this.starvationWindowStart;
+    if (elapsed < MediapipeBackgroundProcessor.STARVATION_WINDOW_MS) return;
+    const fps = this.starvationFrames / (elapsed / 1000);
+    const expectedFps = this.expectedFps();
+    this.starvationWindowStart = now;
+    this.starvationFrames = 0;
+    if (fps < expectedFps * MediapipeBackgroundProcessor.STARVATION_MIN_FPS_RATIO) {
+      this.slowCallbackFired = true;
+      this.log('starved: frames not keeping up', { fps: Math.round(fps * 10) / 10, expectedFps });
+      this.options.onSustainedSlowFrames?.({
+        trigger: 'starved',
+        fps: Math.round(fps * 10) / 10,
+        expectedFps: Math.round(expectedFps),
+      });
+    }
+  }
+
   private readDiagnostics(): Record<string, unknown> {
     const now = performance.now();
     const seconds = this.diagLastReadAt ? (now - this.diagLastReadAt) / 1000 : undefined;
@@ -1123,6 +1229,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     }
 
     const frameMs = performance.now() - t0;
+    this.starvationFrames += 1;
     this.diagFrames += 1;
     this.diagFrameMsTotal += frameMs;
     if (frameMs > this.diagFrameMsMax) this.diagFrameMsMax = frameMs;
@@ -1180,22 +1287,30 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
         const avg = triggeredBy === 'sustained' ? sustainedAvg! : spikeAvg!;
         this.slowCallbackFired = true;
         this.log('sustained slow frames detected', { avgFrameMs: Math.round(avg), triggeredBy });
-        slowCb(avg);
+        slowCb({ trigger: triggeredBy, avgFrameMs: Math.round(avg * 10) / 10 });
       }
     }
 
     const fastCb = this.options.onSustainedFastFrames;
     if (fastCb && !this.fastCallbackFired) {
       this.fastFrameDurations.push(durationMs);
+      this.fastFrameTimes.push(performance.now());
       this.fastFrameDurationSum += durationMs;
       if (this.fastFrameDurations.length > MediapipeBackgroundProcessor.PERF_FAST_WINDOW) {
         this.fastFrameDurationSum -= this.fastFrameDurations.shift()!;
+        this.fastFrameTimes.shift();
       }
       if (this.fastFrameDurations.length >= MediapipeBackgroundProcessor.PERF_FAST_WINDOW) {
         const avg = this.fastFrameDurationSum / this.fastFrameDurations.length;
-        if (avg < MediapipeBackgroundProcessor.PERF_FAST_AVG_MS) {
+        const spanSec = (this.fastFrameTimes[this.fastFrameTimes.length - 1] - this.fastFrameTimes[0]) / 1000;
+        const fps = spanSec > 0 ? (this.fastFrameTimes.length - 1) / spanSec : 0;
+        const expectedFps = this.expectedFps();
+        if (
+          avg < MediapipeBackgroundProcessor.PERF_FAST_AVG_MS &&
+          fps >= expectedFps * MediapipeBackgroundProcessor.PERF_FAST_MIN_FPS_RATIO
+        ) {
           this.fastCallbackFired = true;
-          this.log('sustained fast frames detected', { avgFrameMs: Math.round(avg) });
+          this.log('sustained fast frames detected', { avgFrameMs: Math.round(avg), fps: Math.round(fps) });
           fastCb(avg);
         }
       }
