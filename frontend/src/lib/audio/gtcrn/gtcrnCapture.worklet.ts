@@ -8,8 +8,9 @@
  * and that window of microphone audio is *gone*, not merely late. That is the other half of the
  * stutter story the playback worklet's header describes, and the reason this side moved over
  * too: `process()` runs on the audio render thread at real-time priority, so capture keeps
- * happening on schedule no matter what the main thread is doing. A main-thread stall now only
- * delays when the relay forwards a chunk onward; nothing is dropped at the microphone.
+ * happening on schedule no matter what the main thread is doing. Chunks go straight to the
+ * inference worker over a MessagePort (see GtcrnCaptureConnect), so a main-thread stall doesn't
+ * even delay them.
  *
  * All this does is rebuffer the render quantum (128 samples at the 16kHz context this runs in)
  * into CHUNK-sized pieces and post them out — deliberately dependency-free, exactly like the
@@ -35,7 +36,13 @@ export interface GtcrnCaptureOptions {
   chunkSize: number;
 }
 
-/** Worklet -> main, one per completed chunk. `samples` is transferred, not copied. */
+/** main -> worklet: send chunks to this port (the inference worker's end) instead of to the page. */
+export interface GtcrnCaptureConnect {
+  type: 'connect';
+  port: MessagePort;
+}
+
+/** Worklet -> inference worker, one per completed chunk. `samples` is transferred, not copied. */
 export interface GtcrnCaptureChunk {
   type: 'chunk';
   samples: Float32Array;
@@ -46,6 +53,8 @@ class GtcrnCaptureProcessor extends AudioWorkletProcessor {
   private buffer: Float32Array;
   private filled = 0;
   private stopped = false;
+  /** Straight to the inference worker; see GtcrnCaptureConnect. */
+  private out: MessagePort | null = null;
 
   constructor(options?: { processorOptions?: unknown }) {
     super(options);
@@ -54,7 +63,13 @@ class GtcrnCaptureProcessor extends AudioWorkletProcessor {
     this.buffer = new Float32Array(chunkSize);
 
     this.port.onmessage = (event: MessageEvent) => {
-      if ((event.data as { type?: string })?.type === 'stop') this.stopped = true;
+      const msg = event.data as { type?: string; port?: MessagePort };
+      if (msg?.type === 'stop') {
+        this.stopped = true;
+        this.out?.close();
+      } else if (msg?.type === 'connect' && msg.port) {
+        this.out = msg.port;
+      }
     };
   }
 
@@ -77,7 +92,7 @@ class GtcrnCaptureProcessor extends AudioWorkletProcessor {
         const chunk: GtcrnCaptureChunk = { type: 'chunk', samples: this.buffer };
         // Transferred, not copied — a fresh buffer is allocated for the next chunk below, so
         // this processor never touches the one it just handed off.
-        this.port.postMessage(chunk, [this.buffer.buffer]);
+        (this.out ?? this.port).postMessage(chunk, [this.buffer.buffer]);
         this.buffer = new Float32Array(this.chunkSize);
         this.filled = 0;
       }

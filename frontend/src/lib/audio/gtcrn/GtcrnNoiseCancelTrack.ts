@@ -1,8 +1,8 @@
 import { GTCRN_SAMPLE_RATE } from './GtcrnStreamProcessor';
 import { keepAudioContextResumed } from '../keepAudioContextResumed';
 import { registerDiagProbe } from '../../connectDiagnostics';
-import type { GtcrnPlaybackOptions, GtcrnPlaybackStats } from './gtcrnPlayback.worklet';
-import type { GtcrnCaptureOptions, GtcrnCaptureChunk } from './gtcrnCapture.worklet';
+import type { GtcrnPlaybackConnect, GtcrnPlaybackOptions, GtcrnPlaybackStats } from './gtcrnPlayback.worklet';
+import type { GtcrnCaptureConnect, GtcrnCaptureOptions } from './gtcrnCapture.worklet';
 import type { GtcrnWorkerRequest, GtcrnWorkerResponse } from './gtcrnInference.worker';
 import playbackWorkletUrl from './gtcrnPlayback.worklet.ts?worker&url';
 import captureWorkletUrl from './gtcrnCapture.worklet.ts?worker&url';
@@ -17,15 +17,20 @@ import captureWorkletUrl from './gtcrnCapture.worklet.ts?worker&url';
  *
  * ## Thread layout
  *
- * Nothing in the per-buffer path runs on the main thread any more:
+ * Nothing in the per-buffer path runs on the main thread, and no audio passes through it:
  *
  *   mic
  *    -> gtcrn-capture AudioWorkletNode      (audio render thread, realtime priority)
- *    -> [main thread relay: two postMessage calls, both zero-copy transfers]
- *    -> gtcrnInference.worker               (dedicated worker: FFT + 62.5 ONNX inferences/sec)
- *    -> [main thread relay]
+ *    -> [MessagePort, zero-copy transfer]
+ *    -> gtcrnInference.worker               (dedicated worker: FFT + batched ONNX inference)
+ *    -> [MessagePort, zero-copy transfer]
  *    -> gtcrn-playback AudioWorkletNode      (audio render thread)
  *    -> MediaStreamDestination -> sender
+ *
+ * The main thread used to relay every chunk both ways, so anything that stalled it — a
+ * background-effect model load froze it for seconds on a slow machine — delayed the audio too,
+ * past what the playback cushion could hide. Now it only opens/closes the stream, tells the
+ * worker when it's active, and reads per-chunk numbers for diagnostics.
  *
  * This used to be a ScriptProcessorNode on the main thread doing the inference inline. The
  * blocker that shape was working around — ORT cannot run inside an AudioWorkletGlobalScope
@@ -37,8 +42,11 @@ import captureWorkletUrl from './gtcrnCapture.worklet.ts?worker&url';
  * What this buys, beyond battery: the old shape lost microphone audio outright whenever the main
  * thread stalled (ScriptProcessorNode's input buffer is only valid inside its callback, and the
  * callback simply doesn't fire while the thread is busy). Capture now happens at realtime
- * priority regardless, and a main-thread stall only delays the relay.
+ * priority regardless, and a main-thread stall doesn't touch the audio path at all.
  */
+
+/** How often the page re-checks isActive() and tells the worker if it changed — about one chunk. */
+const ACTIVE_POLL_MS = 64;
 
 // 1024 samples @ 16kHz = 64ms = exactly one GTCRN_FRAMES_PER_BATCH batch of hops, which is
 // what lets the worker run 4 frames per session.run() with no added latency. Keep it a multiple
@@ -73,9 +81,9 @@ let worker: Worker | null = null;
 let workerReady: Promise<void> | null = null;
 let nextStreamId = 1;
 
-type StreamMessage = Extract<GtcrnWorkerResponse, { type: 'enhanced' | 'overloaded' }>;
+type StreamMessage = Extract<GtcrnWorkerResponse, { type: 'chunk' | 'overloaded' }>;
 
-/** streamId -> that instance's handler for its 'enhanced' / 'overloaded' messages. */
+/** streamId -> that instance's handler for its 'chunk' / 'overloaded' messages. */
 const streamHandlers = new Map<number, (msg: StreamMessage) => void>();
 
 function postToWorker(message: GtcrnWorkerRequest, transfer?: Transferable[]) {
@@ -98,7 +106,7 @@ function getWorker(): Promise<void> {
           // since by then there's a live pipeline that simply produces nothing for that chunk.
           console.error('[Connect] GTCRN worker:', msg.message);
           reject(new Error(msg.message));
-        } else if (msg.type === 'enhanced' || msg.type === 'overloaded') {
+        } else if (msg.type === 'chunk' || msg.type === 'overloaded') {
           streamHandlers.get(msg.streamId)?.(msg);
         }
       };
@@ -148,47 +156,43 @@ export class GtcrnNoiseCancelTrack {
   private inferenceTimeMaxMs = 0;
   private lastInputRms = 0;
   private lastOutputRms = 0;
-  // Gap between consecutive relay invocations. The relay is the one step still on the main
-  // thread, so this is the direct readout of how starved that thread gets: it should sit at
-  // ~64ms, and whatever it peaks to during a stall is what the cushions have to cover. Unlike
-  // the ScriptProcessorNode this replaced, a spike here no longer means lost audio — the
-  // capture worklet keeps buffering — only late audio.
-  private relayIntervalMaxMs = 0;
-  private lastRelayAt = 0;
+  // Longest gap between chunks reaching the worker from the capture worklet. Should sit at
+  // ~64ms; whatever it peaks to is what the playback cushion has to cover.
+  private captureGapMaxMs = 0;
   private playbackStats: GtcrnPlaybackStats | null = null;
   private statsInterval: ReturnType<typeof setInterval> | undefined;
+  private readonly activePoll: ReturnType<typeof setInterval>;
 
   // Feeds the in-call diagnostics recorder (lib/connectDiagnostics). Kept separate from the
   // dev-only counters above because both readers reset on their own schedules.
   //
-  // `chunksSent - chunksReturned` is the backlog: audio that has been captured but not yet come
-  // back from the worker. It should hover at 0-1 chunks; if inference can't keep up with real
-  // time it climbs without bound, and that number (x64ms) is exactly how late everyone else is
+  // The backlog is audio that has been captured but not yet processed, as the worker reports it
+  // after each chunk. It should hover at 0-1 chunks; if inference can't keep up with real time
+  // it climbs (until the worker's cap), and that number (x64ms) is how late everyone else is
   // hearing this person.
-  private chunksSent = 0;
-  private chunksReturned = 0;
+  private diagBacklogMax = 0;
   private diagInferences = 0;
   private diagInferenceMsTotal = 0;
   private diagInferenceMsMax = 0;
-  private diagRelayGapMaxMs = 0;
+  private diagCaptureGapMaxMs = 0;
   private diagPassthroughChunks = 0;
+  private diagInactiveChunks = 0;
   /** Skip level of the most recent processed chunk (see GtcrnSkipLevel). */
   private level = 0;
   /** Frames-per-run models the worker has loaded so far (T=4 first, T=2/T=1 lazily). */
   private loadedModels: number[] = [];
-  /** Set once the worker reports it can't keep up at all: from then on, chunks bypass the
-   *  worker and go straight to playback (raw mic) until this instance is replaced. */
+  /** Set once the worker reports it can't keep up at all: from then on it sends this stream's
+   *  chunks to playback unprocessed (raw mic) until this instance is replaced. */
   private bypass = false;
   private readonly unregisterDiagProbe: () => void;
 
   /**
-   * @param isActive Polled once per captured chunk (~every CAPTURE_CHUNK/GTCRN_SAMPLE_RATE ms).
-   *   While it returns false the chunk is dropped at the relay instead of being sent to the
-   *   worker, skipping the inference entirely on audio the gate (see useVadAutoGate) is about to
-   *   zero out anyway. Muted is the overwhelmingly common state for most of a call, so this is
-   *   the single biggest lever on battery use here without touching quality while unmuted.
-   *   Deliberately polled at the relay rather than pushed down into the capture worklet: a
-   *   worklet that stops posting while muted could never be told that the mute had ended.
+   * @param isActive Polled about once per chunk (ACTIVE_POLL_MS); changes are passed to the
+   *   worker. While it returns false the worker drops chunks uninferred, skipping the inference
+   *   entirely on audio the gate (see useVadAutoGate) is about to zero out anyway. Muted is the
+   *   overwhelmingly common state for most of a call, so this is the single biggest lever on
+   *   battery use here without touching quality while unmuted. The capture worklet keeps
+   *   posting regardless, so the end of a mute is never missed.
    * @param onOverload Called once if the worker reports it can't keep up even at its lightest
    *   setting (see the worker's header). By then this instance has already switched itself to
    *   passing the raw mic through, so there's no delay or gap while the caller reacts.
@@ -247,7 +251,7 @@ export class GtcrnNoiseCancelTrack {
     this.sourceClone.enabled = true;
     const sourceNode = this.ctx.createMediaStreamSource(new MediaStream([this.sourceClone]));
 
-    // --- playback stage (built first: the relay below posts into it) ---
+    // --- playback stage ---
     const playbackOptions: GtcrnPlaybackOptions = { primeMs: PRIME_MS, maxMs: MAX_QUEUE_MS };
     this.playback = new AudioWorkletNode(this.ctx, 'gtcrn-playback', {
       numberOfInputs: 0,
@@ -261,24 +265,52 @@ export class GtcrnNoiseCancelTrack {
     this.destination = this.ctx.createMediaStreamDestination();
     this.playback.connect(this.destination);
 
-    // --- worker stream + the return half of the relay ---
-    postToWorker({ type: 'open', streamId: this.streamId });
+    // --- capture stage ---
+    const captureOptions: GtcrnCaptureOptions = { chunkSize: CAPTURE_CHUNK };
+    this.capture = new AudioWorkletNode(this.ctx, 'gtcrn-capture', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      processorOptions: captureOptions,
+    });
+
+    // --- direct audio path: capture worklet -> worker -> playback worklet ---
+    const toWorker = new MessageChannel();
+    const fromWorker = new MessageChannel();
+    this.capture.port.postMessage({ type: 'connect', port: toWorker.port1 } satisfies GtcrnCaptureConnect, [toWorker.port1]);
+    this.playback.port.postMessage({ type: 'connect', port: fromWorker.port1 } satisfies GtcrnPlaybackConnect, [fromWorker.port1]);
+    let active = isActive();
+    postToWorker(
+      { type: 'open', streamId: this.streamId, capturePort: toWorker.port2, playbackPort: fromWorker.port2, active },
+      [toWorker.port2, fromWorker.port2],
+    );
+    this.activePoll = setInterval(() => {
+      const next = isActive();
+      if (next === active || this.stopped) return;
+      active = next;
+      postToWorker({ type: 'active', streamId: this.streamId, active });
+    }, ACTIVE_POLL_MS);
+
+    // --- per-chunk numbers from the worker (diagnostics only; the audio went straight on) ---
     streamHandlers.set(this.streamId, (msg) => {
       if (this.stopped) return;
       if (msg.type === 'overloaded') {
         // Even with frame skipping and the backlog cap, this machine can't keep up right now.
-        // Stop feeding the worker (raw mic from here on, so nobody hears delay or gaps) and let
-        // the owner decide what's next — today, switch noise cancellation off and say so.
+        // The worker now passes this stream's raw mic straight through (so nobody hears delay
+        // or gaps); let the owner decide what's next — today, switch noise cancellation off and
+        // say so.
         console.warn('[Connect] GTCRN overloaded: falling back to the raw mic');
         this.bypass = true;
         onOverload?.();
         return;
       }
-      this.chunksReturned++;
       this.loadedModels = msg.loadedModels;
+      this.diagBacklogMax = Math.max(this.diagBacklogMax, msg.backlog);
+      this.diagInactiveChunks += msg.inactiveChunks;
+      this.captureGapMaxMs = Math.max(this.captureGapMaxMs, msg.captureGapMs);
+      this.diagCaptureGapMaxMs = Math.max(this.diagCaptureGapMaxMs, msg.captureGapMs);
       if (msg.passthrough) {
         this.diagPassthroughChunks++;
-        this.playback.port.postMessage({ type: 'samples', samples: msg.samples }, [msg.samples.buffer]);
         return;
       }
       this.level = msg.level;
@@ -290,37 +322,7 @@ export class GtcrnNoiseCancelTrack {
       if (msg.inferenceMs > this.diagInferenceMsMax) this.diagInferenceMsMax = msg.inferenceMs;
       this.lastInputRms = msg.inputRms;
       this.lastOutputRms = msg.outputRms;
-      // Transferred straight through to the audio thread — the worker doesn't retain it and
-      // neither does this handler, so nothing is copied anywhere along the path.
-      this.playback.port.postMessage({ type: 'samples', samples: msg.samples }, [msg.samples.buffer]);
     });
-
-    // --- capture stage + the outbound half of the relay ---
-    const captureOptions: GtcrnCaptureOptions = { chunkSize: CAPTURE_CHUNK };
-    this.capture = new AudioWorkletNode(this.ctx, 'gtcrn-capture', {
-      numberOfInputs: 1,
-      numberOfOutputs: 1,
-      outputChannelCount: [1],
-      processorOptions: captureOptions,
-    });
-    this.capture.port.onmessage = (event: MessageEvent<GtcrnCaptureChunk>) => {
-      if (this.stopped) return;
-      const now = performance.now();
-      if (this.lastRelayAt > 0) {
-        const gap = now - this.lastRelayAt;
-        if (gap > this.relayIntervalMaxMs) this.relayIntervalMaxMs = gap;
-        if (gap > this.diagRelayGapMaxMs) this.diagRelayGapMaxMs = gap;
-      }
-      this.lastRelayAt = now;
-      if (!isActive()) return;
-      const samples = event.data.samples;
-      if (this.bypass) {
-        this.playback.port.postMessage({ type: 'samples', samples }, [samples.buffer]);
-        return;
-      }
-      this.chunksSent++;
-      postToWorker({ type: 'samples', streamId: this.streamId, samples }, [samples.buffer]);
-    };
 
     // An AudioWorkletNode is only pulled once it's wired into a graph reaching the destination.
     // The capture node writes nothing to its output, so routing it through a zero gain keeps
@@ -344,8 +346,9 @@ export class GtcrnNoiseCancelTrack {
         // starts skipping frames well before that.
         chunkMsAvg: this.diagInferences ? Math.round((this.diagInferenceMsTotal / this.diagInferences) * 10) / 10 : undefined,
         chunkMsMax: Math.round(this.diagInferenceMsMax),
-        backlogMs: Math.round((this.chunksSent - this.chunksReturned) * chunkMs),
-        relayGapMaxMs: Math.round(this.diagRelayGapMaxMs),
+        backlogMs: Math.round(this.diagBacklogMax * chunkMs),
+        captureGapMaxMs: Math.round(this.diagCaptureGapMaxMs),
+        inactiveChunks: this.diagInactiveChunks,
         underruns: this.playbackStats?.underrunCount,
         droppedSamples: this.playbackStats?.droppedSamples,
         playbackQueuedMs: this.playbackStats ? Math.round(this.playbackStats.queuedMs) : undefined,
@@ -354,8 +357,10 @@ export class GtcrnNoiseCancelTrack {
       this.diagInferences = 0;
       this.diagInferenceMsTotal = 0;
       this.diagInferenceMsMax = 0;
-      this.diagRelayGapMaxMs = 0;
+      this.diagCaptureGapMaxMs = 0;
       this.diagPassthroughChunks = 0;
+      this.diagInactiveChunks = 0;
+      this.diagBacklogMax = 0;
       return data;
     });
 
@@ -366,7 +371,7 @@ export class GtcrnNoiseCancelTrack {
           inferenceCount: this.inferenceCount,
           meanMs: meanMs.toFixed(2),
           maxMs: this.inferenceTimeMaxMs.toFixed(2),
-          relayIntervalMaxMs: this.relayIntervalMaxMs.toFixed(0),
+          captureGapMaxMs: this.captureGapMaxMs.toFixed(0),
           underrunCount: this.playbackStats?.underrunCount ?? 0,
           droppedSamples: this.playbackStats?.droppedSamples ?? 0,
           queuedMs: (this.playbackStats?.queuedMs ?? 0).toFixed(0),
@@ -375,7 +380,7 @@ export class GtcrnNoiseCancelTrack {
           outputRms: this.lastOutputRms.toFixed(4),
           ctxState: this.ctx.state,
         });
-        this.relayIntervalMaxMs = 0;
+        this.captureGapMaxMs = 0;
       }, 3000);
     }
   }
@@ -390,8 +395,9 @@ export class GtcrnNoiseCancelTrack {
     this.detachResumeRetry();
     this.unregisterDiagProbe();
     if (this.statsInterval !== undefined) clearInterval(this.statsInterval);
-    // Drop this stream's DSP state in the worker, and stop routing its results here. The worker
-    // itself stays alive for the page — see getWorker's comment.
+    clearInterval(this.activePoll);
+    // Drop this stream's DSP state (and its ports) in the worker, and stop routing its numbers
+    // here. The worker itself stays alive for the page — see getWorker's comment.
     streamHandlers.delete(this.streamId);
     postToWorker({ type: 'close', streamId: this.streamId });
     this.capture.port.postMessage({ type: 'stop' });

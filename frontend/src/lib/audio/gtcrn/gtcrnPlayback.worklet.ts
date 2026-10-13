@@ -41,6 +41,12 @@ export interface GtcrnPlaybackOptions {
   maxMs: number;
 }
 
+/** main -> worklet: take samples from this port (the inference worker's end) from now on. */
+export interface GtcrnPlaybackConnect {
+  type: 'connect';
+  port: MessagePort;
+}
+
 /** Worklet -> main. Counters are cumulative; `queuedMs` is a live gauge. */
 export interface GtcrnPlaybackStats {
   type: 'stats';
@@ -63,6 +69,8 @@ class GtcrnPlaybackProcessor extends AudioWorkletProcessor {
   private priming = true;
   private stopped = false;
 
+  private input: MessagePort | null = null;
+
   private underrunCount = 0;
   private droppedSamples = 0;
   private samplesSinceStats = 0;
@@ -75,11 +83,20 @@ class GtcrnPlaybackProcessor extends AudioWorkletProcessor {
     this.capacity = this.maxSamples + this.primeSamples + sampleRate;
     this.ring = new Float32Array(this.capacity);
 
-    this.port.onmessage = (event: MessageEvent) => {
-      const msg = event.data as { type: string; samples?: Float32Array };
+    // Samples arrive on a port from the inference worker (see GtcrnPlaybackConnect), or — for
+    // anything still wired the old way — on this node's own port from the page.
+    const onMessage = (event: MessageEvent) => {
+      const msg = event.data as { type: string; samples?: Float32Array; port?: MessagePort };
       if (msg.type === 'samples' && msg.samples) this.write(msg.samples);
-      else if (msg.type === 'stop') this.stopped = true;
+      else if (msg.type === 'connect' && msg.port) {
+        this.input = msg.port;
+        msg.port.onmessage = onMessage;
+      } else if (msg.type === 'stop') {
+        this.stopped = true;
+        this.input?.close();
+      }
     };
+    this.port.onmessage = onMessage;
   }
 
   process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {

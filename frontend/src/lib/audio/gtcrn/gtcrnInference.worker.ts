@@ -14,8 +14,14 @@
  * running ORT in a Worker is a supported, well-trodden deployment. So the pipeline splits three
  * ways: capture and playback stay in AudioWorklets on the render thread (where they need
  * realtime scheduling and no dependencies), inference lives here (where it needs ORT and can
- * take as long as it likes without blocking anything), and the main thread only hands
- * transferable buffers between them.
+ * take as long as it likes without blocking anything).
+ *
+ * Audio never passes through the main thread: each stream arrives with two MessagePorts, one
+ * from the capture worklet and one to the playback worklet, and chunks flow worklet -> here ->
+ * worklet directly. The main thread only opens/closes streams, says when a stream is active
+ * (muted streams aren't worth inferring), and receives per-chunk numbers for diagnostics. It
+ * used to relay every chunk both ways, so any main-thread stall (a background effect loading,
+ * a long render) held up the audio too.
  *
  * ## Ordering
  *
@@ -67,10 +73,14 @@ export type GtcrnWorkerRequest =
    *  download/compile can be warmed up well before any audio needs it. Answered with 'ready' or
    *  'error'. The lighter T=2/T=1 models are loaded later, see maybeLoadLighterModels. */
   | { type: 'init' }
-  /** Begin a stream. Allocates that stream's own DSP state. */
-  | { type: 'open'; streamId: number }
-  /** One chunk of 16kHz mono samples for a stream. `samples` is transferred. */
-  | { type: 'samples'; streamId: number; samples: Float32Array }
+  /**
+   * Begin a stream. Allocates that stream's own DSP state. Chunks arrive on `capturePort` (from
+   * the capture worklet, as GtcrnCaptureChunk) and results go out on `playbackPort` (to the
+   * playback worklet, as { type: 'samples', samples }) — both transferred.
+   */
+  | { type: 'open'; streamId: number; capturePort: MessagePort; playbackPort: MessagePort; active: boolean }
+  /** Whether the stream's audio is going anywhere; inactive chunks are dropped uninferred. */
+  | { type: 'active'; streamId: number; active: boolean }
   /** End a stream and drop its DSP state. */
   | { type: 'close'; streamId: number };
 
@@ -78,11 +88,10 @@ export type GtcrnWorkerRequest =
 export type GtcrnWorkerResponse =
   | { type: 'ready' }
   | { type: 'error'; message: string }
+  /** Numbers for one chunk just sent to playback (the samples themselves went straight there). */
   | {
-      type: 'enhanced';
+      type: 'chunk';
       streamId: number;
-      /** Transferred back, not copied. */
-      samples: Float32Array;
       /** Wall-clock ms this chunk spent in push() — 0 for a passthrough chunk. */
       inferenceMs: number;
       /** Skip level this chunk was processed at. */
@@ -93,6 +102,12 @@ export type GtcrnWorkerResponse =
       passthrough: boolean;
       inputRms: number;
       outputRms: number;
+      /** Chunks still queued for this stream after this one — x64ms is how late it's running. */
+      backlog: number;
+      /** Longest gap between chunks arriving from the capture worklet since the last report. */
+      captureGapMs: number;
+      /** Chunks dropped uninferred since the last report because the stream was inactive. */
+      inactiveChunks: number;
     }
   /** The backlog cap keeps tripping: this machine can't run noise cancellation right now. */
   | { type: 'overloaded'; streamId: number };
@@ -206,7 +221,14 @@ interface StreamState extends LevelState {
    *  samples that arrive during that window queue up behind the pending creation. */
   processor: Promise<GtcrnStreamProcessor>;
   capTrips: number[];
+  /** Once set, this stream's chunks go to playback unprocessed (raw mic) for good. */
   overloaded: boolean;
+  capturePort: MessagePort;
+  playbackPort: MessagePort;
+  active: boolean;
+  lastCaptureAt: number;
+  captureGapMs: number;
+  inactiveChunks: number;
 }
 
 const streams = new Map<number, StreamState>();
@@ -219,6 +241,62 @@ function post(message: GtcrnWorkerResponse, transfer?: Transferable[]) {
 }
 
 type Job = { streamId: number; samples: Float32Array };
+
+type ChunkInfo = Pick<
+  Extract<GtcrnWorkerResponse, { type: 'chunk' }>,
+  'inferenceMs' | 'level' | 'passthrough' | 'inputRms' | 'outputRms'
+>;
+
+/** Sends a finished chunk straight to the stream's playback worklet, and its numbers to the page. */
+function deliver(streamId: number, state: StreamState, samples: Float32Array, info: ChunkInfo) {
+  state.playbackPort.postMessage({ type: 'samples', samples }, [samples.buffer]);
+  post({
+    type: 'chunk',
+    streamId,
+    ...info,
+    loadedModels: loadedModels(),
+    backlog: queue.filter((q) => q.streamId === streamId).length,
+    captureGapMs: state.captureGapMs,
+    inactiveChunks: state.inactiveChunks,
+  });
+  state.captureGapMs = 0;
+  state.inactiveChunks = 0;
+}
+
+/** A chunk from a stream's capture worklet. */
+function onCapture(streamId: number, samples: Float32Array) {
+  const state = streams.get(streamId);
+  if (!state) return;
+  const now = performance.now();
+  if (state.lastCaptureAt) state.captureGapMs = Math.max(state.captureGapMs, now - state.lastCaptureAt);
+  state.lastCaptureAt = now;
+  if (!state.active) {
+    // Muted: the gate downstream zeroes this anyway, so don't spend an inference on it.
+    state.inactiveChunks += 1;
+    return;
+  }
+  if (state.overloaded) {
+    const loudness = rms(samples);
+    deliver(streamId, state, samples, {
+      inferenceMs: 0,
+      level: state.level,
+      passthrough: true,
+      inputRms: loudness,
+      outputRms: loudness,
+    });
+    return;
+  }
+  queue.push({ streamId, samples });
+  void drain();
+}
+
+function closeStream(streamId: number) {
+  const state = streams.get(streamId);
+  if (!state) return;
+  streams.delete(streamId);
+  state.capturePort.close();
+  state.playbackPort.close();
+}
 
 /**
  * Backlog cap. `job` has just been taken off the queue; together with whatever is still queued
@@ -237,20 +315,14 @@ async function enforceBacklogCap(job: Job, state: StreamState, now: number): Pro
   for (const stale of backlog.slice(0, -1)) {
     const index = queue.indexOf(stale);
     if (index !== -1) queue.splice(index, 1);
-    post(
-      {
-        type: 'enhanced',
-        streamId: job.streamId,
-        samples: stale.samples,
-        inferenceMs: 0,
-        level: state.level,
-        loadedModels: loadedModels(),
-        passthrough: true,
-        inputRms: rms(stale.samples),
-        outputRms: rms(stale.samples),
-      },
-      [stale.samples.buffer],
-    );
+    const loudness = rms(stale.samples);
+    deliver(job.streamId, state, stale.samples, {
+      inferenceMs: 0,
+      level: state.level,
+      passthrough: true,
+      inputRms: loudness,
+      outputRms: loudness,
+    });
   }
   queue.splice(queue.indexOf(newest), 1);
   (await state.processor).reset();
@@ -303,20 +375,13 @@ async function drain(): Promise<void> {
         if (usable !== wanted) setLevel(state, usable, now);
         maybeLoadLighterModels(wanted, backlog, now);
 
-        post(
-          {
-            type: 'enhanced',
-            streamId: job.streamId,
-            samples: enhanced,
-            inferenceMs,
-            level,
-            loadedModels: loadedModels(),
-            passthrough: false,
-            inputRms,
-            outputRms: rms(enhanced),
-          },
-          [enhanced.buffer],
-        );
+        deliver(job.streamId, state, enhanced, {
+          inferenceMs,
+          level,
+          passthrough: false,
+          inputRms,
+          outputRms: rms(enhanced),
+        });
       } catch (e) {
         post({ type: 'error', message: `inference failed: ${String(e)}` });
       }
@@ -342,24 +407,33 @@ self.onmessage = (event: MessageEvent<GtcrnWorkerRequest>) => {
         processor: createProcessor(),
         capTrips: [],
         overloaded: false,
+        capturePort: msg.capturePort,
+        playbackPort: msg.playbackPort,
+        active: msg.active,
+        lastCaptureAt: 0,
+        captureGapMs: 0,
+        inactiveChunks: 0,
       };
       streams.set(msg.streamId, state);
+      const streamId = msg.streamId;
+      msg.capturePort.onmessage = (event: MessageEvent<{ samples: Float32Array }>) => onCapture(streamId, event.data.samples);
       // A failed creation is reported once here; every chunk that then queues behind it would
       // otherwise re-report the same failure on each drain iteration.
       state.processor.catch((e) => {
-        streams.delete(msg.streamId);
+        closeStream(msg.streamId);
         post({ type: 'error', message: `stream ${msg.streamId} setup failed: ${String(e)}` });
       });
       break;
     }
 
-    case 'samples':
-      queue.push({ streamId: msg.streamId, samples: msg.samples });
-      void drain();
+    case 'active': {
+      const state = streams.get(msg.streamId);
+      if (state) state.active = msg.active;
       break;
+    }
 
     case 'close':
-      streams.delete(msg.streamId);
+      closeStream(msg.streamId);
       break;
   }
 };
