@@ -2,11 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocalParticipant } from '@livekit/components-react';
 import { ParticipantEvent, Track, type LocalVideoTrack } from 'livekit-client';
 import {
-  MediapipeBackgroundProcessor,
   supportsMediapipeBackground,
   type SegmentationQuality,
   type SlowFrameMeasure,
 } from '../../lib/video/MediapipeBackgroundProcessor';
+import {
+  canSwapQualityInPlace,
+  createBackgroundProcessor,
+  isBackgroundProcessor,
+  isFailedProcessor,
+  removeBackgroundProcessor,
+  type BackgroundProcessor,
+} from '../../lib/video/backgroundProcessor';
 import { BlankFrameProcessor } from '../../lib/video/BlankFrameProcessor';
 import { diagEvent, diagState } from '../../lib/connectDiagnostics';
 import {
@@ -37,7 +44,7 @@ export { PRESETS } from './backgroundLibrary';
  */
 export function useBackgroundEffect(isGuest = false) {
   const { localParticipant } = useLocalParticipant();
-  const processorRef = useRef<MediapipeBackgroundProcessor | null>(null);
+  const processorRef = useRef<BackgroundProcessor | null>(null);
   // Guards the automatic high -> balanced fallback (see handlePerfSlow) so
   // it fires at most once per "high" attempt; setQuality resets it whenever the
   // user picks 'high' again themselves, so a later attempt gets its own chance.
@@ -50,6 +57,8 @@ export function useBackgroundEffect(isGuest = false) {
   const setQualityRef = useRef<
     ((q: SegmentationQuality, opts?: { auto?: boolean }) => Promise<boolean>) | undefined
   >(undefined);
+  // Re-applies the current choice from scratch; see handlePipelineFailure.
+  const reapplyRef = useRef<(() => Promise<unknown>) | undefined>(undefined);
 
   const supported = useMemo(() => supportsMediapipeBackground(), []);
   const stored = useMemo(() => readStoredChoice(isGuest), [isGuest]);
@@ -60,13 +69,11 @@ export function useBackgroundEffect(isGuest = false) {
   // picked a quality before publish) so this hook doesn't rebuild the
   // processor at a different quality the moment it takes over. Otherwise the
   // stored manual override, or a fresh capability-based guess — see
-  // detectSegmentationQuality(). There is no runtime upgrade path (see
-  // MediapipeBackgroundProcessor.init()'s doc comment for why not: only one
-  // segmenter may be alive at a time).
+  // detectSegmentationQuality(). There is no automatic upgrade path (see handlePerfSlow).
   const [quality, setQualityState] = useState<SegmentationQuality>(() => {
     const publication = localParticipant.getTrackPublication(Track.Source.Camera);
     const existing = (publication?.track as LocalVideoTrack | undefined)?.getProcessor();
-    if (existing instanceof MediapipeBackgroundProcessor) return existing.quality;
+    if (isBackgroundProcessor(existing)) return existing.quality;
     return stored.quality ?? detectSegmentationQuality();
   });
   const [busy, setBusy] = useState(false);
@@ -92,11 +99,12 @@ export function useBackgroundEffect(isGuest = false) {
    * call's overall load budget to act on (lighter video first; turning the camera off with an
    * explanation only as a last resort).
    *
-   * There's deliberately no automatic *upgrade* to 'high' any more. Every quality swap rebuilds
-   * the segmenter — a blank-video gap while the model loads, and a main-thread freeze on slower
-   * machines (7s twice in a measured call) — and an upgrade that later proves too heavy swaps
-   * straight back, which is the "video goes black every ~20s" loop that was reported. 'high' is
-   * now only ever the person's own choice (the HD toggle).
+   * There's deliberately no automatic *upgrade* to 'high' any more. On the main-thread processor
+   * every quality swap rebuilds the segmenter — a blank-video gap while the model loads, and a
+   * main-thread freeze on slower machines (7s twice in a measured call) — and an upgrade that
+   * later proves too heavy swaps straight back, which is the "video goes black every ~20s" loop
+   * that was reported. The worker processor swaps without either, but an upgrade that doesn't
+   * hold is still churn for nothing. 'high' is only ever the person's own choice (the HD toggle).
    */
   const handlePerfSlow = useCallback((processorQuality: SegmentationQuality, measure: SlowFrameMeasure) => {
     console.warn('[Connect] background effect running slow', processorQuality, measure);
@@ -110,6 +118,17 @@ export function useBackgroundEffect(isGuest = false) {
       return;
     }
     diagEvent('background-slow', { quality: processorQuality, ...measure });
+  }, []);
+
+  /**
+   * The worker pipeline broke mid-call (see WorkerBackgroundProcessor's onPipelineFailure): its
+   * output has stopped updating. Rebuild from the current choice — the broken processor no longer
+   * counts as reusable, and the worker path is now off for this page, so this lands on the
+   * main-thread processor.
+   */
+  const handlePipelineFailure = useCallback((reason: string) => {
+    diagEvent('background-pipeline-failed', { reason });
+    void reapplyRef.current?.().catch((e) => console.error('[Connect] failed to rebuild background effect:', e));
   }, []);
 
   /**
@@ -127,6 +146,7 @@ export function useBackgroundEffect(isGuest = false) {
    * Brings the camera track in line with the requested effect. Reuses the running
    * processor where it can — rebuilding one means reloading the segmentation
    * model, which is a visible stall (and a 16 MB download on the 'high' model).
+   * The worker processor can even change model in place, with no stall at all.
    *
    * Resolves to the quality actually applied, which is 'balanced' instead of a
    * requested 'high' whenever that model couldn't be loaded in time — callers that
@@ -142,7 +162,7 @@ export function useBackgroundEffect(isGuest = false) {
       if (!track) return nextQuality;
 
       if (nextMode === 'off') {
-        if (track.getProcessor()) await track.stopProcessor();
+        await removeBackgroundProcessor(track);
         processorRef.current = null;
         return nextQuality;
       }
@@ -160,7 +180,7 @@ export function useBackgroundEffect(isGuest = false) {
       const attachedBefore = track.getProcessor();
       if (
         nextQuality === 'high' &&
-        !(attachedBefore instanceof MediapipeBackgroundProcessor && attachedBefore.quality === 'high')
+        !(isBackgroundProcessor(attachedBefore) && attachedBefore.quality === 'high')
       ) {
         effectiveQuality = await qualityWithinLoadDeadline('high');
         if (effectiveQuality !== nextQuality) handleHighModelFallback(nextMode, nextImageId);
@@ -174,21 +194,34 @@ export function useBackgroundEffect(isGuest = false) {
       // processor's own setProcessor() call and intermittently tore down its
       // WebGL context / segmentation pipeline mid-flight.
       const existingOnTrack = track.getProcessor();
-      const current =
-        existingOnTrack instanceof MediapipeBackgroundProcessor ? existingOnTrack : processorRef.current;
-      const isAttached = !!current && track.getProcessor() === current;
-      const qualityMatches = current?.quality === effectiveQuality;
+      const current = isBackgroundProcessor(existingOnTrack) ? existingOnTrack : processorRef.current;
+      const reusable = !!current && track.getProcessor() === current && !isFailedProcessor(current);
 
-      if (isAttached && qualityMatches) {
+      if (reusable && (current.quality === effectiveQuality || canSwapQualityInPlace(current))) {
+        if (processorRef.current !== current) {
+          // Adopting one this hook didn't build (the pre-join screen's): its reports should
+          // come here now, not to the unmounted pre-join hook.
+          current.setCallbacks({
+            onSustainedSlowFrames: (measure) => handlePerfSlow(current.quality, measure),
+            onSustainedFastFrames: undefined,
+            onPipelineFailure: handlePipelineFailure,
+          });
+        }
         processorRef.current = current;
-        await current!.setBackground({
+        // The worker processor loads and warms the new model beside the running one and then
+        // hands over — the published video never pauses or goes black.
+        if (current.quality !== effectiveQuality && canSwapQualityInPlace(current)) {
+          await current.setQuality(effectiveQuality);
+        }
+        await current.setBackground({
           mode: nextMode === 'image' ? 'image' : 'blur',
           imageUrl: imageUrl ?? null,
         });
         return effectiveQuality;
       }
 
-      // Different quality means a whole new processor, which means a new
+      // Otherwise — a main-thread processor at a different quality, a broken worker
+      // pipeline, or nothing attached yet — build a new processor, which means a new
       // segmenter load. MediaPipe's tasks-vision WASM build pools GPU buffers
       // globally rather than scoping them per ImageSegmenter instance, so two
       // segmenters alive at once corrupt each other's GL state — stop the old
@@ -204,7 +237,7 @@ export function useBackgroundEffect(isGuest = false) {
       // "the background effect fell off." See BlankFrameProcessor's doc comment.
       await track.setProcessor(new BlankFrameProcessor());
 
-      const processor = new MediapipeBackgroundProcessor({
+      const processor = createBackgroundProcessor({
         quality: effectiveQuality,
         mode: nextMode === 'image' ? 'image' : 'blur',
         imageUrl: imageUrl ?? null,
@@ -215,8 +248,10 @@ export function useBackgroundEffect(isGuest = false) {
         matteHi: 0.75,
         segmentationFps: detectSegmentationFps(),
         // Every processor reports when it's too heavy (see handlePerfSlow for what happens
-        // next). No onSustainedFastFrames: automatic upgrades are off, see handlePerfSlow.
-        onSustainedSlowFrames: (measure) => handlePerfSlow(effectiveQuality, measure),
+        // next). Read the quality at call time: the worker processor changes it in place.
+        // No onSustainedFastFrames: automatic upgrades are off, see handlePerfSlow.
+        onSustainedSlowFrames: (measure) => handlePerfSlow(processor.quality, measure),
+        onPipelineFailure: handlePipelineFailure,
       });
       // setProcessor() resolves once the model is loaded and the pipeline is wired,
       // not once its output is stable — the processor blanks its own output until
@@ -228,7 +263,7 @@ export function useBackgroundEffect(isGuest = false) {
       processorRef.current = processor;
       return effectiveQuality;
     },
-    [getCameraTrack, imageUrlFor, handlePerfSlow, handleHighModelFallback],
+    [getCameraTrack, imageUrlFor, handlePerfSlow, handleHighModelFallback, handlePipelineFailure],
   );
 
   const commit = useCallback(
@@ -351,6 +386,10 @@ export function useBackgroundEffect(isGuest = false) {
   useEffect(() => {
     setQualityRef.current = setQuality;
   }, [setQuality]);
+
+  useEffect(() => {
+    reapplyRef.current = () => applyEffect(mode, imageId, quality);
+  }, [applyEffect, mode, imageId, quality]);
 
   // Diagnostics timeline (lib/connectDiagnostics). `error` also carries the automatic
   // high <-> balanced switch messages, which is the main thing worth seeing there.

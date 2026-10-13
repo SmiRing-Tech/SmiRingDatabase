@@ -1,22 +1,11 @@
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 import type { Track, TrackProcessor, VideoProcessorOptions } from 'livekit-client';
 import {
-  bindTextureUnit,
-  createProgram,
-  createQuadBuffer,
-  createRenderTarget,
-  createTexture,
-  deleteRenderTarget,
-  drawQuad,
-  type GLProgram,
-  type RenderTarget,
-} from './mediapipeGL';
-import {
-  alphaFragmentShader,
-  compositeFragmentShader,
-  copyFragmentShader,
-  gaussianFragmentShader,
-} from './mediapipeShaders';
+  BackgroundCompositor,
+  type BackgroundMode,
+  type EffectTarget,
+  type MatteOptions,
+} from './backgroundCompositor';
 import { registerDiagProbe } from '../connectDiagnostics';
 
 /**
@@ -170,10 +159,7 @@ export const MODEL_INVERT: Record<SegmentationQuality, number> = {
   high: 1,
 };
 
-export type BackgroundMode = 'blur' | 'image';
-
-/** Which side of the matte the effect lands on. */
-export type EffectTarget = 'background' | 'subject';
+export type { BackgroundMode, EffectTarget };
 
 export type MediapipeBackgroundOptions = {
   /** Replace the background with a blurred copy of it, or with a still image. */
@@ -261,7 +247,8 @@ export type MediapipeBackgroundOptions = {
   onSustainedFastFrames?: (avgFrameMs: number) => void;
 };
 
-const DEFAULTS = {
+/** Shared with WorkerBackgroundProcessor, so both paths start from the same settings. */
+export const MEDIAPIPE_BACKGROUND_DEFAULTS = {
   mode: 'blur' as BackgroundMode,
   target: 'background' as EffectTarget,
   imageUrl: null as string | null,
@@ -294,20 +281,6 @@ export function supportsMediapipeBackground(): boolean {
 
 /** Rolling-average state for one of trackFramePerf's windows (see pushPerfWindow). */
 type PerfWindowState = { durations: number[]; sum: number };
-
-type Programs = {
-  alpha: GLProgram<'u_mask' | 'u_history' | 'u_invert' | 'u_lo' | 'u_hi' | 'u_history_weight'>;
-  gaussian: GLProgram<'u_texture' | 'u_step'>;
-  copy: GLProgram<'u_texture'>;
-  composite: GLProgram<
-    | 'u_frame'
-    | 'u_background'
-    | 'u_alpha'
-    | 'u_background_scale'
-    | 'u_background_offset'
-    | 'u_swap_sides'
-  >;
-};
 
 let instanceCounter = 0;
 
@@ -363,41 +336,14 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
   private canvas?: HTMLCanvasElement;
 
-  private gl?: WebGL2RenderingContext;
+  /** The GL half of the effect (shared with the worker path); MediaPipe renders into its context. */
+  private compositor?: BackgroundCompositor;
 
-  private programs?: Programs;
-
-  private quadBuffer?: WebGLBuffer;
-
-  private vao?: WebGLVertexArrayObject;
-
-  private frameTexture?: WebGLTexture;
-
-  /** Ping-pong pair holding the temporally smoothed matte. */
-  private matte: RenderTarget[] = [];
-
-  private matteIndex = 0;
-
-  private featherScratch?: RenderTarget;
-
-  private feathered?: RenderTarget;
-
-  /** Still image used in `image` mode, already uploaded to the GPU. */
-  private imageTexture?: WebGLTexture;
-
-  private imageAspect = 1;
-
-  /** URL currently held in imageTexture, so we only re-upload on a real change. */
+  /** URL of the image currently loaded into the compositor, so we only re-upload on a real change. */
   private loadedImageUrl?: string | null;
 
   /** Guards against an out-of-order load when the URL changes mid-flight. */
   private imageLoadToken = 0;
-
-  /** Half-resolution step on the way down to the background buffers. */
-  private halfFrame?: RenderTarget;
-
-  /** Ping-pong pair for the downsampled, blurred background. */
-  private background: RenderTarget[] = [];
 
   private sourceTrack?: MediaStreamTrack;
 
@@ -416,8 +362,6 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   private width = 0;
 
   private height = 0;
-
-  private hasMatteHistory = false;
 
   private maskIndex = 0;
 
@@ -535,7 +479,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   /** Marks this frame's contribution towards / away from "stable", from renderFrame(). */
   private trackStability() {
     const wasCounting = this.stableFrameCount > 0;
-    if (this.hasMatteHistory) {
+    if (this.compositor?.hasMatteHistory) {
       this.stableFrameCount += 1;
     } else {
       // Not just "don't count it" — a freshly reset matte (resize, restart)
@@ -607,7 +551,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   }
 
   constructor(options: MediapipeBackgroundOptions = {}) {
-    this.options = { ...DEFAULTS, ...options };
+    this.options = { ...MEDIAPIPE_BACKGROUND_DEFAULTS, ...options };
     this.name = `mediapipe-background-${this.options.quality}`;
     this.log('constructed', { name: this.name, mode: this.options.mode, imageUrl: this.options.imageUrl });
   }
@@ -635,6 +579,15 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   }
 
   /**
+   * Re-points the slow/fast callbacks — for a caller adopting a processor someone else built
+   * (the call taking over the pre-join screen's). Only rebinds where reports go: the starvation
+   * check runs only if onSustainedSlowFrames was set at construction.
+   */
+  setCallbacks(callbacks: Pick<MediapipeBackgroundOptions, 'onSustainedSlowFrames' | 'onSustainedFastFrames'>) {
+    this.options = { ...this.options, ...callbacks };
+  }
+
+  /**
    * Switches between blurred and still-image backgrounds. Rejects if the image
    * cannot be loaded (CORS, 404, expired presigned URL); the processor keeps
    * running and falls back to blur, so callers can surface the error without
@@ -647,8 +600,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   }
 
   private releaseImageTexture() {
-    if (this.imageTexture && this.gl) this.gl.deleteTexture(this.imageTexture);
-    this.imageTexture = undefined;
+    this.compositor?.setImage(null);
     this.loadedImageUrl = undefined;
   }
 
@@ -661,7 +613,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       this.releaseImageTexture();
       return;
     }
-    if (url === this.loadedImageUrl && this.imageTexture) return;
+    if (url === this.loadedImageUrl && this.compositor?.hasImage) return;
 
     const image = new Image();
     // Required: without it a cross-origin image taints the canvas, and a tainted
@@ -676,21 +628,10 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       );
     }
 
-    const gl = this.gl;
-    if (token !== this.imageLoadToken || !gl || this.stopped) return;
+    const compositor = this.compositor;
+    if (token !== this.imageLoadToken || !compositor || this.stopped) return;
 
-    this.releaseImageTexture();
-    const texture = createTexture(gl);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    // Same unpack convention as the camera frame, so the single flip in the
-    // composite pass puts both the right way up.
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-
-    this.imageTexture = texture;
-    this.imageAspect = image.naturalWidth / Math.max(1, image.naturalHeight);
+    compositor.setImage(image, image.naturalWidth / Math.max(1, image.naturalHeight));
     this.loadedImageUrl = url;
   }
 
@@ -715,7 +656,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
   /** False whenever image mode is requested but no image is actually loaded. */
   private usingImageBackground() {
-    return this.options.mode === 'image' && !!this.imageTexture;
+    return this.options.mode === 'image' && !!this.compositor?.hasImage;
   }
 
   /**
@@ -743,18 +684,9 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.canvas.width = this.width;
     this.canvas.height = this.height;
 
-    // Grab the context before MediaPipe does, so our attributes are the ones that
-    // stick — a later getContext('webgl2') on the same canvas returns this object.
-    const gl = this.canvas.getContext('webgl2', {
-      alpha: false,
-      antialias: false,
-      depth: false,
-      stencil: false,
-      premultipliedAlpha: false,
-      powerPreference: 'high-performance',
-    });
-    if (!gl) throw new Error('WebGL2 is not available');
-    this.gl = gl;
+    // Before MediaPipe touches the canvas, so the compositor's context attributes are the ones
+    // that stick — MediaPipe's later getContext('webgl2') on the same canvas returns that object.
+    this.compositor = new BackgroundCompositor(this.canvas);
     // A second concurrent segmenter/GL context (prewarm's) is exactly the kind
     // of thing that can push a browser over its concurrent-WebGL-context
     // budget, which shows up as this firing and the canvas going solid black.
@@ -765,42 +697,6 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.canvas.addEventListener('webglcontextrestored', () => {
       this.log('webglcontextrestored', { frameCount: this.frameCount });
     });
-    // Lets us sample MediaPipe's float mask with linear filtering where supported.
-    gl.getExtension('OES_texture_float_linear');
-    // Our own VAO, so the vertex state we set never lands in whatever VAO
-    // MediaPipe happens to have bound (see resetGLState).
-    this.vao = gl.createVertexArray()!;
-
-    this.programs = {
-      alpha: createProgram(gl, alphaFragmentShader, [
-        'u_mask',
-        'u_history',
-        'u_invert',
-        'u_lo',
-        'u_hi',
-        'u_history_weight',
-      ] as const),
-      gaussian: createProgram(gl, gaussianFragmentShader, ['u_texture', 'u_step'] as const),
-      copy: createProgram(gl, copyFragmentShader, ['u_texture'] as const),
-      // Only the composite flips Y; see the orientation note in mediapipeGL.ts.
-      composite: createProgram(
-        gl,
-        compositeFragmentShader,
-        [
-          'u_frame',
-          'u_background',
-          'u_alpha',
-          'u_background_scale',
-          'u_background_offset',
-          'u_swap_sides',
-        ] as const,
-        true,
-      ),
-    };
-    gl.bindVertexArray(this.vao);
-    this.quadBuffer = createQuadBuffer(gl);
-    this.frameTexture = createTexture(gl);
-    this.allocateTargets(this.width, this.height);
 
     await this.createSegmenter();
     if (this.options.mode === 'image' && this.options.imageUrl) {
@@ -842,33 +738,9 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     await this.segmenter?.close();
     this.segmenter = undefined;
 
-    const gl = this.gl;
-    if (gl) {
-      for (const target of [...this.matte, ...this.background]) deleteRenderTarget(gl, target);
-      if (this.featherScratch) deleteRenderTarget(gl, this.featherScratch);
-      if (this.feathered) deleteRenderTarget(gl, this.feathered);
-      if (this.halfFrame) deleteRenderTarget(gl, this.halfFrame);
-      if (this.imageTexture) gl.deleteTexture(this.imageTexture);
-      if (this.frameTexture) gl.deleteTexture(this.frameTexture);
-      if (this.quadBuffer) gl.deleteBuffer(this.quadBuffer);
-      if (this.vao) gl.deleteVertexArray(this.vao);
-      if (this.programs) {
-        for (const entry of Object.values(this.programs)) gl.deleteProgram(entry.program);
-      }
-    }
-
-    this.matte = [];
-    this.background = [];
-    this.featherScratch = undefined;
-    this.feathered = undefined;
-    this.halfFrame = undefined;
-    this.imageTexture = undefined;
+    this.compositor?.destroy();
+    this.compositor = undefined;
     this.loadedImageUrl = undefined;
-    this.frameTexture = undefined;
-    this.quadBuffer = undefined;
-    this.vao = undefined;
-    this.programs = undefined;
-    this.gl = undefined;
     this.canvas = undefined;
     this.processedTrack = undefined;
   }
@@ -1106,6 +978,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     // Two decimals: on a fast machine a frame costs ~1ms, and one decimal hid ±10% differences.
     const avg = (total: number, count: number) => (count ? Math.round((total / count) * 100) / 100 : undefined);
     const data = {
+      path: 'main',
       quality: this.options.quality,
       mode: this.options.mode,
       delegate: this.options.delegate,
@@ -1152,7 +1025,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
           canvasSize: `${this.canvas.width}x${this.canvas.height}`,
           invert: this.resolvedInvert,
           usingImage: this.usingImageBackground(),
-          glContextLost: this.gl?.isContextLost?.(),
+          glContextLost: this.compositor?.gl.isContextLost(),
         });
       }
       controller.enqueue(new VideoFrame(this.canvas, { timestamp: frame.timestamp }));
@@ -1161,7 +1034,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       this.log('transform() EXCEPTION, passing raw frame through', {
         frameNum: n,
         err: String(err),
-        glContextLost: this.gl?.isContextLost?.(),
+        glContextLost: this.compositor?.gl.isContextLost(),
       });
       if (!handedOff) {
         controller.enqueue(frame);
@@ -1176,83 +1049,22 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
   private resize(width: number, height: number) {
     if (width === this.width && height === this.height) return;
-    if (width <= 0 || height <= 0 || !this.canvas) return;
+    if (width <= 0 || height <= 0 || !this.compositor) return;
     this.width = width;
     this.height = height;
-    this.canvas.width = width;
-    this.canvas.height = height;
-    this.allocateTargets(width, height);
-  }
-
-  private allocateTargets(width: number, height: number) {
-    const gl = this.gl;
-    if (!gl) return;
-
-    for (const target of [...this.matte, ...this.background]) deleteRenderTarget(gl, target);
-    if (this.featherScratch) deleteRenderTarget(gl, this.featherScratch);
-    if (this.feathered) deleteRenderTarget(gl, this.feathered);
-    if (this.halfFrame) deleteRenderTarget(gl, this.halfFrame);
-
-    // Half resolution is plenty for a matte and keeps the feather passes cheap.
-    const matteWidth = Math.max(64, Math.round(width / 2));
-    const matteHeight = Math.max(64, Math.round(height / 2));
-    // Quarter resolution for the background: it is about to be blurred anyway,
-    // and this is where most of the blur cost would otherwise go.
-    const bgWidth = Math.max(16, Math.round(width / 4));
-    const bgHeight = Math.max(16, Math.round(height / 4));
-
-    this.matte = [
-      createRenderTarget(gl, matteWidth, matteHeight),
-      createRenderTarget(gl, matteWidth, matteHeight),
-    ];
-    this.featherScratch = createRenderTarget(gl, matteWidth, matteHeight);
-    this.feathered = createRenderTarget(gl, matteWidth, matteHeight);
-    this.halfFrame = createRenderTarget(gl, matteWidth, matteHeight);
-    this.background = [
-      createRenderTarget(gl, bgWidth, bgHeight),
-      createRenderTarget(gl, bgWidth, bgHeight),
-    ];
-
-    this.matteIndex = 0;
-    this.hasMatteHistory = false;
-  }
-
-  /**
-   * MediaPipe shares this WebGL context with us and leaves its own state behind —
-   * most dangerously a bound VAO and UNPACK_FLIP_Y_WEBGL, which would silently
-   * flip every frame we upload. Re-assert everything we depend on rather than
-   * assuming any of it survived.
-   */
-  private resetGLState() {
-    const gl = this.gl;
-    if (!gl) return;
-    gl.bindVertexArray(this.vao ?? null);
-    gl.disable(gl.BLEND);
-    gl.disable(gl.DEPTH_TEST);
-    gl.disable(gl.SCISSOR_TEST);
-    gl.disable(gl.CULL_FACE);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    this.compositor.resize(width, height);
   }
 
   private renderFrame(source: VideoFrame | HTMLVideoElement) {
-    const gl = this.gl;
-    const programs = this.programs;
-    const quad = this.quadBuffer;
-    if (!gl || !programs || !quad || !this.frameTexture || !this.feathered) return;
+    const compositor = this.compositor;
+    if (!compositor) return;
 
     const t0 = performance.now();
 
-    this.resetGLState();
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-
+    compositor.uploadFrame(source);
     this.updateMatte(source);
 
-    this.resetGLState();
-    if (!this.usingImageBackground()) this.blurBackground();
-    this.composite();
+    compositor.render({ mode: this.options.mode, blurRadius: this.options.blurRadius, target: this.options.target });
     this.trackStability();
 
     // While not yet confirmed stable (fresh processor, matte/temporal-smoothing still
@@ -1260,14 +1072,9 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     // composite() so everything upstream — matte history, temporal smoothing, the
     // stability counter itself — keeps accumulating normally underneath; only what
     // actually reaches the canvas (and from there, the published track) is suppressed.
-    // composite()'s last draw call targets the default framebuffer (see drawQuad(...,
-    // null, ...)), so it's still bound here.
-    if (!this.readyResolved) {
-      gl.clearColor(0, 0, 0, 1);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-    }
+    if (!this.readyResolved) compositor.blank();
 
-    if (this.options.measureGpuSync) gl.finish();
+    if (this.options.measureGpuSync) compositor.gl.finish();
     const frameMs = performance.now() - t0;
     this.starvationFrames += 1;
     this.diagFrames += 1;
@@ -1358,10 +1165,10 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   }
 
   private updateMatte(source: VideoFrame | HTMLVideoElement) {
-    const gl = this.gl;
-    const programs = this.programs;
+    const compositor = this.compositor;
     const segmenter = this.segmenter;
-    if (!gl || !programs || !segmenter || !this.feathered || !this.featherScratch) return;
+    if (!compositor || !segmenter) return;
+    const hasMatteHistory = compositor.hasMatteHistory;
 
     // Throttle inference; in-between frames reuse the matte we already have.
     const now = performance.now();
@@ -1369,11 +1176,11 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       const elapsed = this.lastSchedulerAt ? now - this.lastSchedulerAt : Infinity;
       this.lastSchedulerAt = now;
       this.segmentationCredit = Math.min(2, this.segmentationCredit + (elapsed * this.options.segmentationFps) / 1000);
-      if (this.hasMatteHistory && this.segmentationCredit < 1) return;
+      if (hasMatteHistory && this.segmentationCredit < 1) return;
       this.segmentationCredit = Math.max(0, this.segmentationCredit - 1);
     } else {
       const minInterval = 1000 / Math.max(1, this.options.segmentationFps);
-      if (this.hasMatteHistory && now - this.lastSegmentationMs < minInterval) return;
+      if (hasMatteHistory && now - this.lastSegmentationMs < minInterval) return;
     }
     this.lastSegmentationMs = now;
 
@@ -1402,7 +1209,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
 
         const mask = masks[this.maskIndex];
         if (!mask) return;
-        this.composeMatte(mask.getAsWebGLTexture());
+        compositor.composeMatte(mask.getAsWebGLTexture(), this.matteOptions());
       } finally {
         result.close();
       }
@@ -1418,124 +1225,14 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     if (segmentMs > this.diagSegmentMsMax) this.diagSegmentMsMax = segmentMs;
   }
 
-  private composeMatte(maskTexture: WebGLTexture) {
-    const gl = this.gl!;
-    const programs = this.programs!;
-    const quad = this.quadBuffer!;
-    const scratch = this.featherScratch!;
-    const feathered = this.feathered!;
-
-    // We are inside MediaPipe's segmentation callback here, so its GL state is live.
-    this.resetGLState();
-
-    const write = this.matte[this.matteIndex];
-    const history = this.matte[1 - this.matteIndex];
-
-    // Pass 1 — confidence mask to alpha matte, blended with the previous frame.
-    const alpha = programs.alpha;
-    gl.useProgram(alpha.program);
-    bindTextureUnit(gl, 0, maskTexture, alpha.uniforms.u_mask);
-    bindTextureUnit(gl, 1, history.texture, alpha.uniforms.u_history);
-    gl.uniform1f(alpha.uniforms.u_invert, this.resolvedInvert);
-    // A wide ramp: only clip what is almost certainly background, only saturate
-    // what is almost certainly body, and let everything between stay translucent.
-    gl.uniform1f(alpha.uniforms.u_lo, this.options.matteLo ?? 0.3);
-    gl.uniform1f(alpha.uniforms.u_hi, this.options.matteHi ?? 0.75);
-    gl.uniform1f(
-      alpha.uniforms.u_history_weight,
-      this.hasMatteHistory ? Math.min(0.95, Math.max(0, this.options.temporalSmoothing)) : 0,
-    );
-    drawQuad(gl, quad, alpha.position, write, write.width, write.height);
-
-    // Pass 2/3 — separable feather, so the silhouette hands over gradually.
-    const featherTexels = Math.max(0.5, (this.options.edgeFeather / 2) * 0.5);
-    const gaussian = programs.gaussian;
-    gl.useProgram(gaussian.program);
-
-    bindTextureUnit(gl, 0, write.texture, gaussian.uniforms.u_texture);
-    gl.uniform2f(gaussian.uniforms.u_step, featherTexels / write.width, 0);
-    drawQuad(gl, quad, gaussian.position, scratch, scratch.width, scratch.height);
-
-    bindTextureUnit(gl, 0, scratch.texture, gaussian.uniforms.u_texture);
-    gl.uniform2f(gaussian.uniforms.u_step, 0, featherTexels / scratch.height);
-    drawQuad(gl, quad, gaussian.position, feathered, feathered.width, feathered.height);
-
-    this.matteIndex = 1 - this.matteIndex;
-    this.hasMatteHistory = true;
-  }
-
-  private blurBackground() {
-    const gl = this.gl!;
-    const programs = this.programs!;
-    const quad = this.quadBuffer!;
-    const [bufferA, bufferB] = this.background;
-    if (!bufferA || !bufferB) return;
-
-    // Downsample first — a quarter-size buffer makes the blur roughly 16x cheaper
-    // and the reduction itself contributes to the softening. Go via half
-    // resolution so each step is a clean bilinear 2x2 box; jumping straight to a
-    // quarter would take one tap out of every 4x4 block and shimmer on detailed
-    // backgrounds.
-    const half = this.halfFrame;
-    const copy = programs.copy;
-    gl.useProgram(copy.program);
-    bindTextureUnit(gl, 0, this.frameTexture!, copy.uniforms.u_texture);
-    if (half) {
-      drawQuad(gl, quad, copy.position, half, half.width, half.height);
-      bindTextureUnit(gl, 0, half.texture, copy.uniforms.u_texture);
-    }
-    drawQuad(gl, quad, copy.position, bufferA, bufferA.width, bufferA.height);
-
-    const sigma = Math.max(1, this.options.blurRadius / 4);
-    const passes = Math.min(4, Math.max(1, Math.ceil(sigma / 4)));
-    const spread = Math.max(0.5, sigma / passes / 2);
-
-    const gaussian = programs.gaussian;
-    gl.useProgram(gaussian.program);
-    for (let i = 0; i < passes; i += 1) {
-      bindTextureUnit(gl, 0, bufferA.texture, gaussian.uniforms.u_texture);
-      gl.uniform2f(gaussian.uniforms.u_step, spread / bufferA.width, 0);
-      drawQuad(gl, quad, gaussian.position, bufferB, bufferB.width, bufferB.height);
-
-      bindTextureUnit(gl, 0, bufferB.texture, gaussian.uniforms.u_texture);
-      gl.uniform2f(gaussian.uniforms.u_step, 0, spread / bufferB.height);
-      drawQuad(gl, quad, gaussian.position, bufferA, bufferA.width, bufferA.height);
-    }
-  }
-
-  private composite() {
-    const gl = this.gl!;
-    const programs = this.programs!;
-    const quad = this.quadBuffer!;
-    const composite = programs.composite;
-
-    // Cover-fit the still image; the blurred frame already matches the output
-    // aspect exactly, so it maps 1:1.
-    const useImage = this.usingImageBackground();
-    let scaleX = 1;
-    let scaleY = 1;
-    if (useImage) {
-      const outputAspect = this.width / Math.max(1, this.height);
-      if (this.imageAspect > outputAspect) {
-        scaleX = outputAspect / this.imageAspect;
-      } else {
-        scaleY = this.imageAspect / outputAspect;
-      }
-    }
-
-    gl.useProgram(composite.program);
-    bindTextureUnit(gl, 0, this.frameTexture!, composite.uniforms.u_frame);
-    bindTextureUnit(
-      gl,
-      1,
-      useImage ? this.imageTexture! : this.background[0].texture,
-      composite.uniforms.u_background,
-    );
-    bindTextureUnit(gl, 2, this.feathered!.texture, composite.uniforms.u_alpha);
-    gl.uniform2f(composite.uniforms.u_background_scale, scaleX, scaleY);
-    gl.uniform2f(composite.uniforms.u_background_offset, (1 - scaleX) / 2, (1 - scaleY) / 2);
-    gl.uniform1f(composite.uniforms.u_swap_sides, this.options.target === 'subject' ? 1 : 0);
-    drawQuad(gl, quad, composite.position, null, this.width, this.height);
+  private matteOptions(): MatteOptions {
+    return {
+      invert: this.resolvedInvert,
+      matteLo: this.options.matteLo ?? 0.3,
+      matteHi: this.options.matteHi ?? 0.75,
+      temporalSmoothing: this.options.temporalSmoothing,
+      edgeFeather: this.options.edgeFeather,
+    };
   }
 }
 

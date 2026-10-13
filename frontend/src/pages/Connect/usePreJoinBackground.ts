@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LocalVideoTrack } from 'livekit-client';
+import { supportsMediapipeBackground, type SegmentationQuality } from '../../lib/video/MediapipeBackgroundProcessor';
 import {
-  MediapipeBackgroundProcessor,
-  supportsMediapipeBackground,
-  type SegmentationQuality,
-} from '../../lib/video/MediapipeBackgroundProcessor';
+  canSwapQualityInPlace,
+  createBackgroundProcessor,
+  isBackgroundProcessor,
+  isFailedProcessor,
+  removeBackgroundProcessor,
+  type BackgroundProcessor,
+} from '../../lib/video/backgroundProcessor';
 import { BlankFrameProcessor } from '../../lib/video/BlankFrameProcessor';
 import {
   useBackgroundLibrary,
@@ -45,12 +49,10 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
   // Starts at whatever the track already has attached, so a remount doesn't
   // rebuild a processor at a different quality than what's already running.
   // Otherwise: the stored manual override, or a fresh capability-based guess —
-  // see detectSegmentationQuality(). There is no runtime upgrade path anymore
-  // (see MediapipeBackgroundProcessor.init()'s comment for why); quality is
-  // decided once, before the only processor this screen builds exists.
+  // see detectSegmentationQuality().
   const [quality, setQualityState] = useState<SegmentationQuality>(() => {
     const existing = track?.getProcessor();
-    if (existing instanceof MediapipeBackgroundProcessor) return existing.quality;
+    if (isBackgroundProcessor(existing)) return existing.quality;
     return stored.quality ?? detectSegmentationQuality();
   });
   const [busy, setBusy] = useState(false);
@@ -63,12 +65,14 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
     return initial;
   });
 
-  const processorRef = useRef<MediapipeBackgroundProcessor | null>(null);
+  const processorRef = useRef<BackgroundProcessor | null>(null);
   // See useBackgroundEffect.ts for why these exist — this hook mirrors its automatic
   // high <-> balanced adjustment in both directions.
   const autoDowngradedRef = useRef(false);
   const autoUpgradedRef = useRef(false);
   const setQualityRef = useRef<((q: SegmentationQuality) => Promise<boolean>) | undefined>(undefined);
+  // Re-applies the current choice from scratch; see handlePipelineFailure.
+  const reapplyRef = useRef<(() => Promise<unknown>) | undefined>(undefined);
 
   const { uploads, imageUrlFor, uploadBackground, deleteBackground } =
     useBackgroundLibrary(supported);
@@ -91,6 +95,11 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
     void setQualityRef.current?.('high').then((ok) => {
       if (ok) setError('処理に余裕があるため、背景エフェクトを高精細画質に切り替えました。');
     });
+  }, []);
+
+  /** See useBackgroundEffect.ts's handlePipelineFailure — same idea, pre-join track. */
+  const handlePipelineFailure = useCallback(() => {
+    void reapplyRef.current?.().catch((e) => console.error('[PreJoin] failed to rebuild background effect:', e));
   }, []);
 
   /**
@@ -127,7 +136,7 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
       if (!track) return nextQuality;
 
       if (nextMode === 'off') {
-        if (track.getProcessor()) await track.stopProcessor();
+        await removeBackgroundProcessor(track);
         processorRef.current = null;
         hookLog('applyEffect() mode=off, isReady=true immediately');
         setIsReady(true);
@@ -145,7 +154,7 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
       const attachedBefore = track.getProcessor();
       if (
         nextQuality === 'high' &&
-        !(attachedBefore instanceof MediapipeBackgroundProcessor && attachedBefore.quality === 'high')
+        !(isBackgroundProcessor(attachedBefore) && attachedBefore.quality === 'high')
       ) {
         effectiveQuality = await qualityWithinLoadDeadline('high');
         hookLog('applyEffect() high model deadline result', { effectiveQuality });
@@ -157,15 +166,16 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
       // doesn't recognize the ref rebuilds a working processor from scratch,
       // tearing down its WebGL context / segmentation pipeline mid-flight.
       const existingOnTrack = track.getProcessor();
-      const current =
-        existingOnTrack instanceof MediapipeBackgroundProcessor ? existingOnTrack : processorRef.current;
-      const isAttached = !!current && track.getProcessor() === current;
+      const current = isBackgroundProcessor(existingOnTrack) ? existingOnTrack : processorRef.current;
+      const reusable = !!current && track.getProcessor() === current && !isFailedProcessor(current);
       const qualityMatches = current?.quality === effectiveQuality;
-      hookLog('applyEffect() decision', { isAttached, qualityMatches, currentQuality: current?.quality });
+      hookLog('applyEffect() decision', { reusable, qualityMatches, currentQuality: current?.quality });
 
-      if (isAttached && qualityMatches) {
+      if (reusable && (qualityMatches || canSwapQualityInPlace(current))) {
         processorRef.current = current;
-        await current!.setBackground({
+        // The worker processor changes model in place, with the preview running throughout.
+        if (!qualityMatches && canSwapQualityInPlace(current)) await current.setQuality(effectiveQuality);
+        await current.setBackground({
           mode: nextMode === 'image' ? 'image' : 'blur',
           imageUrl: imageUrl ?? null,
         });
@@ -173,14 +183,14 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
         // mean the *next* composited frame is out yet, let alone verified (matte
         // polarity, temporal smoothing) — wait for the processor to confirm its
         // own output before telling the caller it's safe to show.
-        await current!.waitUntilReady();
+        await current.waitUntilReady();
         hookLog('applyEffect() reuse path done, isReady=true');
         setIsReady(true);
         return effectiveQuality;
       }
 
-      // A different quality (only reachable via the manual toggle now — see
-      // BackgroundControls) means a whole new processor, which means a new
+      // Otherwise — a main-thread processor at a different quality, a broken worker
+      // pipeline, or nothing attached yet — build a new processor, which means a new
       // segmenter load. Only one segmenter may be alive at a time (see
       // MediapipeBackgroundProcessor.init()'s doc comment), so the old one has
       // to be torn down first — block the preview for that gap instead of
@@ -201,7 +211,7 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
       // BlankFrameProcessor's doc comment.
       await track.setProcessor(new BlankFrameProcessor());
 
-      const processor = new MediapipeBackgroundProcessor({
+      const processor = createBackgroundProcessor({
         quality: effectiveQuality,
         mode: nextMode === 'image' ? 'image' : 'blur',
         imageUrl: imageUrl ?? null,
@@ -212,9 +222,15 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
         matteHi: 0.75,
         segmentationFps: detectSegmentationFps(),
         // Only 'high' has anywhere lighter to fall back to, and only 'balanced' has
-        // anywhere heavier to try — never both on the same processor.
-        onSustainedSlowFrames: effectiveQuality === 'high' ? handlePerfDowngrade : undefined,
-        onSustainedFastFrames: effectiveQuality === 'balanced' ? handlePerfUpgrade : undefined,
+        // anywhere heavier to try. Checked at call time: the worker processor changes
+        // quality in place, so the same processor can be either over its life.
+        onSustainedSlowFrames: () => {
+          if (processor.quality === 'high') handlePerfDowngrade();
+        },
+        onSustainedFastFrames: () => {
+          if (processor.quality === 'balanced') handlePerfUpgrade();
+        },
+        onPipelineFailure: handlePipelineFailure,
       });
       hookLog('applyEffect() calling track.setProcessor()');
       const tSetProcessor = performance.now();
@@ -233,7 +249,7 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
       setIsReady(true);
       return effectiveQuality;
     },
-    [track, imageUrlFor, handlePerfDowngrade, handlePerfUpgrade, handleHighModelFallback],
+    [track, imageUrlFor, handlePerfDowngrade, handlePerfUpgrade, handleHighModelFallback, handlePipelineFailure],
   );
 
   const commit = useCallback(
@@ -293,6 +309,10 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
   useEffect(() => {
     setQualityRef.current = setQuality;
   }, [setQuality]);
+
+  useEffect(() => {
+    reapplyRef.current = () => applyEffect(mode, imageId, quality);
+  }, [applyEffect, mode, imageId, quality]);
 
   // The track may not exist yet on first render (still being created), or may be
   // replaced (device switch) — (re-)apply the stored effect whenever it shows up.

@@ -5,7 +5,7 @@ import {
   MediapipeBackgroundProcessor,
   supportsMediapipeBackground,
 } from '../../lib/video/MediapipeBackgroundProcessor';
-import { supportsWorkerBackgroundSpike, WorkerBackgroundSpike } from '../../lib/video/WorkerBackgroundSpike';
+import { supportsWorkerBackground, WorkerBackgroundProcessor } from '../../lib/video/WorkerBackgroundProcessor';
 
 /**
  * Dev-only bench for the MediaPipe background processor.
@@ -25,8 +25,8 @@ import { supportsWorkerBackgroundSpike, WorkerBackgroundSpike } from '../../lib/
  *    makes the per-frame timings include it instead.
  *
  * "メイン vs Worker" runs the same configurations on the main-thread processor and on the worker
- * spike (lib/video/backgroundSpike.worker.ts) alternately, to decide whether moving the pipeline
- * off the main thread is worth the real refactor: same cost, and no page freeze while loading.
+ * pipeline (lib/video/WorkerBackgroundProcessor.ts) alternately: same cost, no page freeze while
+ * loading. The swap test switches models on both and measures black-screen time and stalls.
  *
  * Rule from the product side: segmentation never runs at less than half the camera's frame rate
  * (below that the matte visibly lags behind motion), so every configuration here respects it.
@@ -64,12 +64,12 @@ interface LabConfig {
   segFps: number;
   /** 'interval' reproduces the app exactly (≈ half the camera rate in practice); 'exact' hits segFps. */
   scheduler: 'interval' | 'exact';
-  /** Where the pipeline runs: the app's processor on the main thread, or the worker spike. */
+  /** Which pipeline: the main-thread processor, or the worker one (what the app uses on Chrome/Edge). */
   path: RunPath;
 }
 
-type RunPath = 'main' | 'worker' | 'split';
-const PATH_LABELS: Record<RunPath, string> = { main: 'メイン', worker: 'Worker', split: 'Worker分離' };
+type RunPath = 'main' | 'worker';
+const PATH_LABELS: Record<RunPath, string> = { main: 'メイン', worker: 'Worker' };
 
 const APP_DEFAULT: LabConfig = {
   label: '基準（本番と同じ）',
@@ -106,7 +106,7 @@ const PATH_SUITE: LabConfig[] = ([
   { ...APP_DEFAULT, model: 'high', label: 'モデル: 高精細' },
   { ...APP_DEFAULT, cameraFps: 10, segFps: 5, scheduler: 'exact', label: 'カメラ10fps / 切り抜き5' },
   { ...APP_DEFAULT, label: '基準（再計測）' },
-] satisfies LabConfig[]).flatMap((c): LabConfig[] => [c, { ...c, path: 'worker' }, { ...c, path: 'split' }]);
+] satisfies LabConfig[]).flatMap((c): LabConfig[] => [c, { ...c, path: 'worker' }]);
 
 for (const c of [...SUITE, ...PATH_SUITE]) {
   if (c.scheduler === 'exact' && c.segFps < c.cameraFps / 2) throw new Error(`suite config breaks the half-rate rule: ${c.label}`);
@@ -254,7 +254,7 @@ interface SwapResult {
   lagMaxMs: number;
 }
 
-const SWAP_PATHS: RunPath[] = ['main', 'split'];
+const SWAP_PATHS: RunPath[] = ['main', 'worker'];
 const SWAPS_PER_PATH = 4;
 const QUALITY_LABELS = { balanced: '標準', high: '高精細' } as const;
 
@@ -267,7 +267,7 @@ export default function BackgroundBlurLabPage() {
   const cancelSuiteRef = useRef(false);
 
   const [supported] = useState(() => supportsMediapipeBackground());
-  const [workerSupported] = useState(() => supportsWorkerBackgroundSpike());
+  const [workerSupported] = useState(() => supportsWorkerBackground());
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('カメラ未起動');
@@ -339,15 +339,16 @@ export default function BackgroundBlurLabPage() {
         await main.init({ kind: Track.Kind.Video, track: cameraTrack });
         processor = main;
       } else {
-        const spike = new WorkerBackgroundSpike({
+        const worker = new WorkerBackgroundProcessor({
           ...common,
           quality,
-          modelUrl: config.model === 'square' ? SQUARE_MODEL_URL : undefined,
-          split: config.path === 'split',
+          assetPaths: config.model === 'square' ? { modelAssetPath: SQUARE_MODEL_URL } : undefined,
+          mode,
         });
-        processorRef.current = spike;
-        await spike.init({ track: cameraTrack });
-        processor = spike;
+        processorRef.current = worker;
+        await worker.init({ kind: Track.Kind.Video, track: cameraTrack });
+        if (worker.pipeline !== 'worker') throw new Error('Worker版を起動できず、メインスレッド版で動いています（Consoleを確認してください）');
+        processor = worker;
       }
       const processedTrack = processor.processedTrack;
       if (!processedTrack) throw new Error('processedTrack が生成されませんでした');
@@ -389,15 +390,15 @@ export default function BackgroundBlurLabPage() {
   );
 
   /**
-   * Switches the running processor's model. Split worker: the seamless hand-over. Otherwise what
-   * the app does today: stop the running processor, then build the new one.
+   * Switches the running processor's model. Worker: the seamless in-place hand-over. Main thread:
+   * what the app has to do there — stop the running processor, then build the new one.
    */
   const swapModel = useCallback(
     async (config: LabConfig, target: 'balanced' | 'high') => {
       const current = processorRef.current;
       const cameraTrack = cameraStreamRef.current?.getVideoTracks()[0];
       if (!current || !cameraTrack) throw new Error('カメラが起動していません');
-      if (config.path === 'split' && current instanceof WorkerBackgroundSpike) {
+      if (current instanceof WorkerBackgroundProcessor && current.canSwapQuality) {
         await current.setQuality(target);
         return;
       }
@@ -479,7 +480,7 @@ export default function BackgroundBlurLabPage() {
       setLive({
         ...snap,
         outputFps: outputFramesRef.current,
-        busyMsPerSec: num(snap.busyMsPerSec) ?? (frameMs !== undefined && fps !== undefined ? Math.round(frameMs * fps) : undefined),
+        busyMsPerSec: frameMs !== undefined && fps !== undefined ? Math.round(frameMs * fps) : undefined,
         longTaskMs: Math.round(longTasks.total),
         captureFps: cameraStreamRef.current?.getVideoTracks()[0]?.getSettings().frameRate,
       });
@@ -505,7 +506,6 @@ export default function BackgroundBlurLabPage() {
       await fetch(SQUARE_MODEL_URL).catch(() => {});
       const warmups: LabConfig[] = [APP_DEFAULT, { ...APP_DEFAULT, model: 'high' }];
       if (suite.some((c) => c.path === 'worker')) warmups.push({ ...APP_DEFAULT, path: 'worker' });
-      if (suite.some((c) => c.path === 'split')) warmups.push({ ...APP_DEFAULT, path: 'split' });
       for (const warm of warmups) {
         await launch(warm, false).catch(() => {});
       }
@@ -525,8 +525,11 @@ export default function BackgroundBlurLabPage() {
         outputFramesRef.current = 0;
         const t0 = performance.now();
         await sleep(measureSec * 1000);
-        const seconds = (performance.now() - t0) / 1000;
+        const wallSeconds = (performance.now() - t0) / 1000;
         const snap = await processor.takePerfSnapshot();
+        // The worker path reports once a second; for its own counts, the span it covered is the
+        // honest denominator. Things this page measures itself use the wall clock.
+        const seconds = num(snap.seconds) ?? wallSeconds;
         const longTasks = meter.take();
         meter.stop();
 
@@ -536,13 +539,13 @@ export default function BackgroundBlurLabPage() {
         collected.push({
           config,
           captureFps: cameraTrack.getSettings().frameRate,
-          outputFps: outputFramesRef.current / seconds,
+          outputFps: outputFramesRef.current / wallSeconds,
           procFps,
           frameMsAvg: frameMs,
           segPerSec: segmentations / seconds,
           segmentMsAvg: num(snap.segmentMsAvg),
-          busyMsPerSec: num(snap.busyMsPerSec) ?? (frameMs !== undefined && procFps !== undefined ? frameMs * procFps : undefined),
-          longTaskMsPerSec: longTasks.total / seconds,
+          busyMsPerSec: frameMs !== undefined && procFps !== undefined ? frameMs * procFps : undefined,
+          longTaskMsPerSec: longTasks.total / wallSeconds,
           loadMs,
           loadLongTaskMaxMs: loadLongTasks.max,
           loadLagMaxMs: loadJank.lagMax,
@@ -813,7 +816,7 @@ export default function BackgroundBlurLabPage() {
       <section className="space-y-3 border border-gray-800 rounded-2xl p-4">
         <h2 className="font-bold text-sm">モデル切り替えテスト（標準 ⇄ 高精細）</h2>
         <p className="text-[11px] text-gray-500">
-          本番と同じ方式（メイン: 止めて作り直す）と Worker分離（裏で準備して差し替える）で、それぞれ{SWAPS_PER_PATH}回切り替えます。右の「プロセッサ適用後」が黒くなった時間と、止まった時間を測ります。約2分。
+          メイン（止めて作り直す）と Worker（裏で準備して差し替える）で、それぞれ{SWAPS_PER_PATH}回切り替えます。右の「プロセッサ適用後」が黒くなった時間と、止まった時間を測ります。約2分。
         </p>
         <div className="flex flex-wrap items-end gap-3 text-xs">
           {suiteRunning ? (
@@ -926,12 +929,9 @@ export default function BackgroundBlurLabPage() {
           <label className="space-y-1">
             <span className="block text-gray-400">実行場所</span>
             <select value={path} onChange={(e) => setPath(e.target.value as RunPath)} disabled={locked || running} className={selectClass}>
-              <option value="main">メインスレッド（本番）</option>
+              <option value="main">メインスレッド（Safari/Firefoxの本番）</option>
               <option value="worker" disabled={!workerSupported}>
-                Worker（試作・ぼかしのみ）
-              </option>
-              <option value="split" disabled={!workerSupported}>
-                Worker分離（試作・切替で止まらない）
+                Worker（Chrome/Edgeの本番）
               </option>
             </select>
           </label>
@@ -949,6 +949,22 @@ export default function BackgroundBlurLabPage() {
           >
             {busy ? '準備中…' : running ? '停止' : 'カメラを開始'}
           </button>
+          {running && (
+            <button
+              onClick={() => {
+                // Deliberately blocks this page's main thread, like a model load used to.
+                const until = performance.now() + 3000;
+                while (performance.now() < until) {
+                  // busy-wait
+                }
+              }}
+              disabled={locked}
+              className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 font-bold"
+              title="Worker版なら、止めている間も右の映像は動き続けるはずです"
+            >
+              画面スレッドを3秒止める
+            </button>
+          )}
           {running && model !== 'square' && (
             <button
               onClick={() => void swapManual()}

@@ -1,18 +1,16 @@
 /**
- * SPIKE (blur lab only): segmentation alone, in its own worker, for the "split" pipeline — the
- * compositor worker (backgroundSpike.worker.ts in 'external' mode) keeps rendering every frame
- * and sends this worker a frame whenever it wants a fresh matte; this worker answers with the
- * mask as an ImageBitmap.
+ * Segmentation for the worker background pipeline (see WorkerBackgroundProcessor): runs the
+ * MediaPipe segmenter on frames the compositor worker sends over a MessagePort, and answers with
+ * the mask as an ImageBitmap.
  *
- * Why a separate worker at all: tasks-vision pools GPU buffers per WASM instance, so two
- * segmenters can never be alive in one thread (see MediapipeBackgroundProcessor.init()). A
- * worker is its own WASM instance, so swapping models becomes "load and warm the new one here,
- * then point the compositor at it" — nothing on the outgoing video ever stops or goes black.
+ * Its own worker, not part of the compositor, because tasks-vision pools GPU buffers per WASM
+ * instance — two segmenters can never be alive in one thread (see
+ * MediapipeBackgroundProcessor.init()). A worker is its own WASM instance, so changing models is
+ * "load and warm a new one of these, then point the compositor at it": the video never pauses.
  *
- * The mask never leaves the GPU: it is drawn (downscaled) onto this worker's canvas and handed
- * over with transferToImageBitmap(). The first version read it back with getAsFloat32Array()
- * instead — a synchronous GPU->CPU readback that measured 13ms per mask on an M4 (34ms on the
- * high model), against ~2ms for the whole inference when the mask stays on the GPU.
+ * The mask never leaves the GPU: it is drawn onto this worker's canvas at roughly the model's own
+ * resolution and handed over with transferToImageBitmap(). Reading it back to the CPU instead
+ * (getAsFloat32Array) measured 13ms per mask on an M4, against ~2ms for the whole inference.
  */
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 import { createProgram, createQuadBuffer, drawQuad, type GLProgram } from './mediapipeGL';
@@ -24,6 +22,7 @@ export type SegmenterRequest =
       wasmBase: string;
       model: { buffer: ArrayBuffer } | { url: string };
       delegate: 'GPU' | 'CPU';
+      /** 1 when this model's mask scores background (see MODEL_INVERT). */
       invert: number;
       /** Size of the mask handed to the compositor; the width follows the camera's aspect. */
       maskHeight: number;
@@ -31,26 +30,31 @@ export type SegmenterRequest =
     }
   | { type: 'stop' };
 
+export type SegmenterLoadTimings = { filesetMs: number; createSegmenterMs: number; firstSegmentationMs: number };
+
 export type SegmenterResponse =
-  | { type: 'ready'; loadTimings: { filesetMs: number; createSegmenterMs: number; firstSegmentationMs: number } }
-  | { type: 'error'; message: string }
+  | { type: 'ready'; loadTimings: SegmenterLoadTimings }
+  | { type: 'error'; message: string; fatal: boolean }
   | { type: 'stopped' };
 
 /** Compositor -> segmenter, over the MessagePort. */
 export type SegmentRequest = { frame: VideoFrame; sentAt: number };
 
-/** Segmenter -> compositor, over the MessagePort. */
-export type SegmentResult = {
-  mask: ImageBitmap;
-  invert: number;
-  /** This worker's whole time for the request: inference + drawing the mask + handing it over. */
-  workMs: number;
-  /** segmentForVideo up to its callback, i.e. the inference alone. */
-  segmentMs: number;
-  sentAt: number;
-};
+/** Segmenter -> compositor, over the MessagePort. Always exactly one reply per request. */
+export type SegmentReply =
+  | {
+      ok: true;
+      mask: ImageBitmap;
+      invert: number;
+      /** This worker's whole time for the request: inference + drawing the mask + handing it over. */
+      workMs: number;
+      /** segmentForVideo up to its callback, i.e. the inference alone. */
+      segmentMs: number;
+      sentAt: number;
+    }
+  | { ok: false; sentAt: number };
 
-/** Copies the confidence mask's single channel into all of RGB, so any reader can take .r. */
+/** Copies the confidence mask's single channel into RGB, so the compositor can read .r as usual. */
 const maskCopyFragmentShader = `#version 300 es
 precision highp float;
 in vec2 texCoords;
@@ -60,6 +64,9 @@ void main() {
   float confidence = texture(u_mask, texCoords).r;
   fragColor = vec4(confidence, confidence, confidence, 1.0);
 }`;
+
+/** This many failed frames in a row means the segmenter is broken, not unlucky. */
+const MAX_CONSECUTIVE_FAILURES = 10;
 
 const post = (message: SegmenterResponse) => self.postMessage(message);
 
@@ -74,8 +81,10 @@ let maskIndex = 0;
 let lastMaskCount = 0;
 let invert = 0;
 let lastTimestampMs = 0;
+let consecutiveFailures = 0;
 let stopped = false;
 
+/** MediaPipe requires strictly increasing timestamps in VIDEO mode. */
 function nextTimestamp() {
   const timestamp = Math.max(lastTimestampMs + 1, Math.round(performance.now()));
   lastTimestampMs = timestamp;
@@ -90,17 +99,14 @@ function segmentToCanvas(source: VideoFrame | ImageData): number | null {
   const s0 = performance.now();
   let segmentMs: number | null = null;
   segmenter!.segmentForVideo(source, nextTimestamp(), (result) => {
-    segmentMs = performance.now() - s0;
     try {
       lastMaskCount = result.confidenceMasks?.length ?? 0;
       const mask = result.confidenceMasks?.[maskIndex] ?? result.confidenceMasks?.[0];
-      if (!mask) {
-        segmentMs = null;
-        return;
-      }
+      if (!mask) return;
+      segmentMs = performance.now() - s0;
       const texture = mask.getAsWebGLTexture();
       // MediaPipe shares this context and leaves its own state behind (see
-      // MediapipeBackgroundProcessor.resetGLState).
+      // BackgroundCompositor.resetGLState).
       gl.bindVertexArray(vao);
       gl.disable(gl.BLEND);
       gl.disable(gl.DEPTH_TEST);
@@ -110,8 +116,8 @@ function segmentToCanvas(source: VideoFrame | ImageData): number | null {
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.uniform1i(maskProgram.uniforms.u_mask, 0);
-      // flipY: the canvas's top row becomes the bitmap's top row, so this puts the image's top
-      // row on top — the same way up as a camera frame uploaded by the compositor.
+      // Drawn with flipY: the canvas's top row becomes the bitmap's top row, so this puts the
+      // image's top row on top — the same way up as a camera frame the compositor uploads.
       drawQuad(gl, quad, maskProgram.position, null, canvas.width, canvas.height);
     } finally {
       result.close();
@@ -122,17 +128,29 @@ function segmentToCanvas(source: VideoFrame | ImageData): number | null {
 
 function onFrame({ frame, sentAt }: SegmentRequest) {
   const t0 = performance.now();
+  let reply: SegmentReply = { ok: false, sentAt };
   try {
     if (stopped || !segmenter) return;
     const segmentMs = segmentToCanvas(frame);
-    if (segmentMs === null || stopped) return;
-    const mask = canvas.transferToImageBitmap();
-    const message: SegmentResult = { mask, invert, workMs: performance.now() - t0, segmentMs, sentAt };
-    port?.postMessage(message, [mask]);
+    if (segmentMs !== null) {
+      const mask = canvas.transferToImageBitmap();
+      reply = { ok: true, mask, invert, workMs: performance.now() - t0, segmentMs, sentAt };
+    }
   } catch (err) {
-    console.error('[bg-segmenter spike] frame failed:', err);
+    console.error('[bg-segmenter] frame failed:', err);
   } finally {
     frame.close();
+    // Always answer: the compositor sends nothing new until it hears back.
+    if (reply.ok) {
+      consecutiveFailures = 0;
+      port?.postMessage(reply, [reply.mask]);
+    } else if (!stopped) {
+      port?.postMessage(reply);
+      consecutiveFailures += 1;
+      if (consecutiveFailures === MAX_CONSECUTIVE_FAILURES) {
+        post({ type: 'error', message: `${MAX_CONSECUTIVE_FAILURES} frames in a row failed`, fatal: true });
+      }
+    }
   }
 }
 
@@ -140,8 +158,14 @@ async function init(request: Extract<SegmenterRequest, { type: 'init' }>) {
   invert = request.invert;
   const maskWidth = Math.round(request.maskHeight * request.aspect);
   canvas = new OffscreenCanvas(maskWidth, request.maskHeight);
+  canvas.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    post({ type: 'error', message: 'segmenter WebGL context lost', fatal: true });
+  });
 
   const t0 = performance.now();
+  // useModule: the ES-module build of the WASM loader — the classic one needs importScripts,
+  // which module workers don't have.
   const fileset = await FilesetResolver.forVisionTasks(request.wasmBase, true);
   const t1 = performance.now();
   const model = request.model;
@@ -167,13 +191,13 @@ async function init(request: Extract<SegmenterRequest, { type: 'init' }>) {
   maskProgram = createProgram(gl, maskCopyFragmentShader, ['u_mask'] as const, true);
   quad = createQuadBuffer(gl);
 
-  // Warm up here, on a blank image, so the first-inference shader compile happens before the
-  // compositor ever depends on this worker — that compile is the multi-second stall on slow GPUs.
+  // Warm up on a blank image, so the first-inference shader compile — the multi-second stall
+  // on slow GPUs — happens before the compositor depends on this worker, not on its first frame.
   segmentToCanvas(new ImageData(maskWidth, request.maskHeight));
   canvas.transferToImageBitmap().close();
   const t3 = performance.now();
-  // Same mask choice as the main-thread processor: the label named "background" when there is one
-  // mask per label, else the only mask there is.
+  // Same mask choice as the main-thread processor: the label named "background" when there is
+  // one mask per label, else the only mask there is.
   const backgroundIndex = labels.findIndex((label) => label.toLowerCase() === 'background');
   maskIndex = lastMaskCount === labels.length && backgroundIndex >= 0 ? backgroundIndex : 0;
 
@@ -192,11 +216,17 @@ async function init(request: Extract<SegmenterRequest, { type: 'init' }>) {
 self.onmessage = async (event: MessageEvent<SegmenterRequest>) => {
   const message = event.data;
   if (message.type === 'init') {
-    init(message).catch((err) => post({ type: 'error', message: err instanceof Error ? err.message : String(err) }));
+    init(message).catch((err) =>
+      post({ type: 'error', message: err instanceof Error ? err.message : String(err), fatal: true }),
+    );
   } else if (message.type === 'stop') {
     stopped = true;
     port?.close();
-    await segmenter?.close();
+    try {
+      segmenter?.close();
+    } catch {
+      // Already broken; nothing left to release.
+    }
     segmenter = undefined;
     post({ type: 'stopped' });
   }
