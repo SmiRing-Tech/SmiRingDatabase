@@ -91,7 +91,7 @@ import { useRecording } from './useRecording';
 import { useRecordingSync } from './useRecordingSync';
 import { useParticipantPresenceSounds } from './useParticipantPresenceSounds';
 import { useCallStatsLogger } from './useCallStatsLogger';
-import { diagEvent, diagState } from '../../lib/connectDiagnostics';
+import { diagEvent, diagState, registerDiagProbe } from '../../lib/connectDiagnostics';
 import {
   DiagnosticsDialog,
   DiagnosticsMenuItem,
@@ -317,9 +317,21 @@ function vadLog(msg: string, data?: Record<string, unknown>) {
  *   currently in, not something the app can know in advance, hence a live-adjustable setting
  *   rather than a constant — see the comment above VAD_POSITIVE_SPEECH_THRESHOLD.
  * @param noiseCancelEnabled GTCRN noise cancellation on/off.
+ * @param onNoiseCancelOverload Called if GTCRN reports this machine can't keep up even at its
+ *   lightest setting (see GtcrnNoiseCancelTrack.create). Read through a ref, so a new function
+ *   identity doesn't rebuild the pipeline.
  */
-function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnabled: boolean) {
+function useVadAutoGate(
+  enabled: boolean,
+  sensitivity: number,
+  noiseCancelEnabled: boolean,
+  onNoiseCancelOverload?: () => void,
+) {
   const { localParticipant, isMicrophoneEnabled } = useLocalParticipant();
+  const onNoiseCancelOverloadRef = useRef(onNoiseCancelOverload);
+  useEffect(() => {
+    onNoiseCancelOverloadRef.current = onNoiseCancelOverload;
+  }, [onNoiseCancelOverload]);
   const [loading, setLoading] = useState(false);
   const [trackEpoch, setTrackEpoch] = useState(0);
 
@@ -387,6 +399,7 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
     const myGeneration = ++generationRef.current;
     let cancelled = false;
     let vad: MicVAD | null = null;
+    let unregisterVadProbe: (() => void) | null = null;
     let vadTrack: MediaStreamTrack | null = null;
     let misfireHoldTimer: ReturnType<typeof setTimeout> | null = null;
     let gateCtx: AudioContext | null = null;
@@ -612,6 +625,7 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
           noiseCancelTrack = await GtcrnNoiseCancelTrack.create(
             track.mediaStreamTrack,
             () => isMicrophoneEnabledRef.current,
+            () => onNoiseCancelOverloadRef.current?.(),
           );
         } catch (e) {
           console.error('[Connect] failed to start noise cancellation, falling back to raw mic:', e);
@@ -742,6 +756,19 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
         }
         vadRef.current = vad;
         setGate(false, 'vad ready, initial close');
+        // Diagnostics: VAD inference runs on the main thread (vad-web), one frame per 32ms
+        // (v5) — fewer than ~31 frames/s processed means it isn't keeping up. That only ever
+        // makes the gate decide late (clipped word onsets), never delays the audio itself:
+        // audio goes through the DelayNode/GainNode in real time either way.
+        let lastFrameCount = frameCount;
+        let lastReadAt = performance.now();
+        unregisterVadProbe = registerDiagProbe('vad', () => {
+          const now = performance.now();
+          const fps = ((frameCount - lastFrameCount) / (now - lastReadAt)) * 1000;
+          lastFrameCount = frameCount;
+          lastReadAt = now;
+          return { framesPerSec: Math.round(fps * 10) / 10, expectedFramesPerSec: 31.25, gateOpen };
+        });
       } catch (e) {
         console.error('[Connect] failed to start VAD auto-gate:', e);
       } finally {
@@ -760,6 +787,7 @@ function useVadAutoGate(enabled: boolean, sensitivity: number, noiseCancelEnable
       if (selfHealInterval !== null) clearInterval(selfHealInterval);
       setGateRef.current = null;
       vadRef.current = null;
+      unregisterVadProbe?.();
       detachTrackListeners?.();
       // Stopped immediately, before the slow `await vad?.destroy()` below, so a new run's own
       // GTCRN instance (built right away if noiseCancelEnabled stays true) doesn't spend that
@@ -1057,7 +1085,18 @@ function useMediaEnhancementsState(isGuest: boolean) {
   const [autoGateEnabled, setAutoGateEnabled] = useState(false);
   const [vadSensitivity, setVadSensitivity] = useState(VAD_POSITIVE_SPEECH_THRESHOLD);
   const [noiseCancelEnabled, setNoiseCancelEnabled] = useState(true);
-  const autoGateLoading = useVadAutoGate(autoGateEnabled, vadSensitivity, noiseCancelEnabled);
+  // Shown once when noise cancellation had to be switched off because this machine couldn't keep
+  // up (see GtcrnNoiseCancelTrack's onOverload) — the switch flips by itself, so say why.
+  const [noiseCancelNotice, setNoiseCancelNotice] = useState('');
+  const handleNoiseCancelOverload = useCallback(() => {
+    diagEvent('noise-cancel-overloaded');
+    setNoiseCancelEnabled(false);
+    setNoiseCancelNotice(
+      'パソコンの処理が追いつかないため、ノイズキャンセリングをOFFにしました（マイク設定からONに戻せます）。',
+    );
+  }, []);
+  const dismissNoiseCancelNotice = useCallback(() => setNoiseCancelNotice(''), []);
+  const autoGateLoading = useVadAutoGate(autoGateEnabled, vadSensitivity, noiseCancelEnabled, handleNoiseCancelOverload);
   useEffect(() => {
     diagState('noiseCancel', noiseCancelEnabled);
     diagState('autoMute', autoGateEnabled);
@@ -1079,10 +1118,31 @@ function useMediaEnhancementsState(isGuest: boolean) {
     setVadSensitivity,
     noiseCancelEnabled,
     setNoiseCancelEnabled,
+    noiseCancelNotice,
+    dismissNoiseCancelNotice,
   };
 }
 
 type MediaEnhancementsState = ReturnType<typeof useMediaEnhancementsState>;
+
+/** Notice for an automatic noise-cancel switch-off; dismisses itself after a while. */
+function NoiseCancelNotice({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  useEffect(() => {
+    const timer = setTimeout(onDismiss, 12_000);
+    return () => clearTimeout(timer);
+  }, [onDismiss]);
+  return (
+    <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 w-[min(92vw,32rem)]">
+      <div className="flex items-start gap-2 px-4 py-2.5 bg-amber-950/90 border border-amber-500/50 backdrop-blur-md rounded-xl text-xs font-semibold text-white shadow-2xl">
+        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-px" />
+        <span className="flex-1">{message}</span>
+        <button onClick={onDismiss} className="text-amber-200 hover:text-white shrink-0">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Device menu for Audio Input (Microphone), Audio Output (Speaker), and Noise Suppression
@@ -2595,6 +2655,13 @@ function CustomVideoConference({
         />
       )}
       <DiagnosticsResultDialog controller={diagnostics} />
+
+      {mediaEnhancements.noiseCancelNotice && (
+        <NoiseCancelNotice
+          message={mediaEnhancements.noiseCancelNotice}
+          onDismiss={mediaEnhancements.dismissNoiseCancelNotice}
+        />
+      )}
 
       {recording.error && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50">

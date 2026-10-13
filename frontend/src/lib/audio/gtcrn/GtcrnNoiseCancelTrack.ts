@@ -40,10 +40,10 @@ import captureWorkletUrl from './gtcrnCapture.worklet.ts?worker&url';
  * priority regardless, and a main-thread stall only delays the relay.
  */
 
-// 1024 samples @ 16kHz = 64ms. Unchanged from the ScriptProcessorNode this replaced, so
-// GTCRN_PIPELINE_LATENCY_MS below — and everything downstream that compensates for it, notably
-// the video delay pipeline — keeps the same value it had. With inference off the main thread
-// there is now headroom to lower this for less latency; that's a separate, measurable change.
+// 1024 samples @ 16kHz = 64ms = exactly one GTCRN_FRAMES_PER_BATCH batch of hops, which is
+// what lets the worker run 4 frames per session.run() with no added latency. Keep it a multiple
+// of 1024 (or change the batch size with it); a smaller chunk would make the worker wait for the
+// rest of a batch anyway.
 const CAPTURE_CHUNK = 1024;
 
 /** How long a stall the playback worklet can hide before listeners hear anything. Paid for
@@ -73,8 +73,10 @@ let worker: Worker | null = null;
 let workerReady: Promise<void> | null = null;
 let nextStreamId = 1;
 
-/** streamId -> that instance's handler for 'enhanced' messages. */
-const streamHandlers = new Map<number, (msg: Extract<GtcrnWorkerResponse, { type: 'enhanced' }>) => void>();
+type StreamMessage = Extract<GtcrnWorkerResponse, { type: 'enhanced' | 'overloaded' }>;
+
+/** streamId -> that instance's handler for its 'enhanced' / 'overloaded' messages. */
+const streamHandlers = new Map<number, (msg: StreamMessage) => void>();
 
 function postToWorker(message: GtcrnWorkerRequest, transfer?: Transferable[]) {
   worker?.postMessage(message, transfer ?? []);
@@ -96,7 +98,7 @@ function getWorker(): Promise<void> {
           // since by then there's a live pipeline that simply produces nothing for that chunk.
           console.error('[Connect] GTCRN worker:', msg.message);
           reject(new Error(msg.message));
-        } else if (msg.type === 'enhanced') {
+        } else if (msg.type === 'enhanced' || msg.type === 'overloaded') {
           streamHandlers.get(msg.streamId)?.(msg);
         }
       };
@@ -169,6 +171,14 @@ export class GtcrnNoiseCancelTrack {
   private diagInferenceMsTotal = 0;
   private diagInferenceMsMax = 0;
   private diagRelayGapMaxMs = 0;
+  private diagPassthroughChunks = 0;
+  /** Skip level of the most recent processed chunk (see GtcrnSkipLevel). */
+  private level = 0;
+  /** Frames-per-run models the worker has loaded so far (T=4 first, T=2/T=1 lazily). */
+  private loadedModels: number[] = [];
+  /** Set once the worker reports it can't keep up at all: from then on, chunks bypass the
+   *  worker and go straight to playback (raw mic) until this instance is replaced. */
+  private bypass = false;
   private readonly unregisterDiagProbe: () => void;
 
   /**
@@ -179,10 +189,14 @@ export class GtcrnNoiseCancelTrack {
    *   the single biggest lever on battery use here without touching quality while unmuted.
    *   Deliberately polled at the relay rather than pushed down into the capture worklet: a
    *   worklet that stops posting while muted could never be told that the mute had ended.
+   * @param onOverload Called once if the worker reports it can't keep up even at its lightest
+   *   setting (see the worker's header). By then this instance has already switched itself to
+   *   passing the raw mic through, so there's no delay or gap while the caller reacts.
    */
   static async create(
     source: MediaStreamTrack,
     isActive: () => boolean = () => true,
+    onOverload?: () => void,
   ): Promise<GtcrnNoiseCancelTrack> {
     await getWorker();
     // Model is fixed at 16kHz; creating the context at that rate lets the browser's own
@@ -207,7 +221,7 @@ export class GtcrnNoiseCancelTrack {
       void ctx.close();
       throw e;
     }
-    return new GtcrnNoiseCancelTrack(ctx, detachResumeRetry, source, isActive);
+    return new GtcrnNoiseCancelTrack(ctx, detachResumeRetry, source, isActive, onOverload);
   }
 
   private constructor(
@@ -215,6 +229,7 @@ export class GtcrnNoiseCancelTrack {
     detachResumeRetry: () => void,
     source: MediaStreamTrack,
     isActive: () => boolean,
+    onOverload: (() => void) | undefined,
   ) {
     this.ctx = ctx;
     this.detachResumeRetry = detachResumeRetry;
@@ -250,10 +265,26 @@ export class GtcrnNoiseCancelTrack {
     postToWorker({ type: 'open', streamId: this.streamId });
     streamHandlers.set(this.streamId, (msg) => {
       if (this.stopped) return;
+      if (msg.type === 'overloaded') {
+        // Even with frame skipping and the backlog cap, this machine can't keep up right now.
+        // Stop feeding the worker (raw mic from here on, so nobody hears delay or gaps) and let
+        // the owner decide what's next — today, switch noise cancellation off and say so.
+        console.warn('[Connect] GTCRN overloaded: falling back to the raw mic');
+        this.bypass = true;
+        onOverload?.();
+        return;
+      }
+      this.chunksReturned++;
+      this.loadedModels = msg.loadedModels;
+      if (msg.passthrough) {
+        this.diagPassthroughChunks++;
+        this.playback.port.postMessage({ type: 'samples', samples: msg.samples }, [msg.samples.buffer]);
+        return;
+      }
+      this.level = msg.level;
       this.inferenceCount++;
       this.inferenceTimeTotalMs += msg.inferenceMs;
       if (msg.inferenceMs > this.inferenceTimeMaxMs) this.inferenceTimeMaxMs = msg.inferenceMs;
-      this.chunksReturned++;
       this.diagInferences++;
       this.diagInferenceMsTotal += msg.inferenceMs;
       if (msg.inferenceMs > this.diagInferenceMsMax) this.diagInferenceMsMax = msg.inferenceMs;
@@ -283,6 +314,10 @@ export class GtcrnNoiseCancelTrack {
       this.lastRelayAt = now;
       if (!isActive()) return;
       const samples = event.data.samples;
+      if (this.bypass) {
+        this.playback.port.postMessage({ type: 'samples', samples }, [samples.buffer]);
+        return;
+      }
       this.chunksSent++;
       postToWorker({ type: 'samples', streamId: this.streamId, samples }, [samples.buffer]);
     };
@@ -300,9 +335,13 @@ export class GtcrnNoiseCancelTrack {
       const chunkMs = (CAPTURE_CHUNK / GTCRN_SAMPLE_RATE) * 1000;
       const data = {
         active: isActive(),
+        bypass: this.bypass,
+        level: this.level,
+        loadedModels: this.loadedModels.join(','),
+        passthroughChunks: this.diagPassthroughChunks,
         inferences: this.diagInferences,
-        // Per 1024-sample chunk (4 model runs). Real time allows 64ms; anything near that
-        // means the worker is about to fall behind.
+        // Per 1024-sample chunk (one batched run at level 0). Real time allows 64ms; the worker
+        // starts skipping frames well before that.
         chunkMsAvg: this.diagInferences ? Math.round((this.diagInferenceMsTotal / this.diagInferences) * 10) / 10 : undefined,
         chunkMsMax: Math.round(this.diagInferenceMsMax),
         backlogMs: Math.round((this.chunksSent - this.chunksReturned) * chunkMs),
@@ -316,6 +355,7 @@ export class GtcrnNoiseCancelTrack {
       this.diagInferenceMsTotal = 0;
       this.diagInferenceMsMax = 0;
       this.diagRelayGapMaxMs = 0;
+      this.diagPassthroughChunks = 0;
       return data;
     });
 

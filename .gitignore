@@ -36,3 +36,6 @@ logs/
 # deploy-specific values, never commit them. Edit the .template instead.
 hetzner-livekit/livekit.yaml
 hetzner-livekit/egress.yaml
+
+# noise-cancel-research の実験出力（音声・ONNXモデル、数十MB）。再生成は experiment_*.py で
+noise-cancel-research/sample_noise/experiment/
