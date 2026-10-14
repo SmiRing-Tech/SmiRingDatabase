@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocalParticipant, useRoomContext } from '@livekit/components-react';
 import { Track, TrackEvent, type LocalVideoTrack } from 'livekit-client';
 import { subscribeLoadSignals } from '../../../lib/loadSignals';
-import { applyCaptureConstraints } from '../../../lib/video/backgroundProcessor';
+import { applyCaptureConstraints, cameraSourceTrack } from '../../../lib/video/backgroundProcessor';
 import { diagEvent, diagState } from '../../../lib/connectDiagnostics';
 import { recordTelemetry, startTelemetry, stopTelemetry } from '../../../lib/connectTelemetry';
 import { VIDEO_CAPTURE_CONSTRAINTS } from '../../../components/Connect/captureConstraints';
@@ -140,7 +140,7 @@ export function useLoadGovernor({
   const syncCameraProfile = useCallback(
     (level: VideoLevel, force = false) => {
       const track = cameraTrack();
-      const mst = track?.mediaStreamTrack;
+      const mst = track ? cameraSourceTrack(track) : undefined;
       if (!track || !mst || mst.readyState !== 'live') return;
       const profile = videoProfileFor(level, BASE_PROFILE);
       const now = performance.now();
@@ -195,7 +195,8 @@ export function useLoadGovernor({
   // re-applies the current level.
   useEffect(() => {
     const forget = () => {
-      const mst = cameraTrack()?.mediaStreamTrack;
+      const track = cameraTrack();
+      const mst = track ? cameraSourceTrack(track) : undefined;
       if (mst) appliedRef.current.delete(mst);
     };
     const track = cameraTrack();

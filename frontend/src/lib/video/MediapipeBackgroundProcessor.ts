@@ -562,6 +562,11 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.log('constructed', { name: this.name, mode: this.options.mode, imageUrl: this.options.imageUrl });
   }
 
+  /** The camera track this processor reads (LiveKit's track.mediaStreamTrack is its *output*). */
+  get inputTrack(): MediaStreamTrack | undefined {
+    return this.sourceTrack;
+  }
+
   /** The model this processor was built with; changing it requires a new instance. */
   get quality(): SegmentationQuality {
     return this.options.quality;

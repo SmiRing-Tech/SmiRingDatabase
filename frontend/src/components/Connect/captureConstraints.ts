@@ -22,7 +22,11 @@ export const VIDEO_CAPTURE_CONSTRAINTS: MediaTrackConstraints = isMobileDevice()
       width: { ideal: 640 },
       height: { ideal: 360 },
       aspectRatio: { ideal: 16 / 9 },
-      frameRate: { ideal: 30 },
+      // 20fps: phones publish VideoPresets.h360, which LiveKit caps at 20fps, so capturing 30 only
+      // fed the background effect (and the encoder's frame dropping) 10 frames a second nobody
+      // receives — measured on a Pixel 7 processing 30 frames/s. Also keeps the background
+      // effect's 10 segmentations/s at half the camera rate, the agreed floor.
+      frameRate: { ideal: 20 },
     }
   : {
       width: { ideal: 1280 },

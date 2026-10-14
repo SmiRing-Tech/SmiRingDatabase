@@ -191,6 +191,11 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
     return this.fallback?.quality ?? this.currentQuality;
   }
 
+  /** The camera track this processor reads (LiveKit's track.mediaStreamTrack is its *output*). */
+  get inputTrack(): MediaStreamTrack | undefined {
+    return this.fallback?.inputTrack ?? this.sourceTrack;
+  }
+
   /** True when setQuality() can change the model without rebuilding (no fallback, not failed). */
   get canSwapQuality() {
     return !this.fallback && !this.failedReason && !!this.compositor;

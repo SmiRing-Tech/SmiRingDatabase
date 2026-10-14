@@ -74,12 +74,25 @@ export async function removeBackgroundProcessor(track: LocalVideoTrack) {
 }
 
 /**
+ * The camera itself behind a LocalVideoTrack. Not `track.mediaStreamTrack`: with a processor
+ * attached, LiveKit returns the processor's *output* there, and constraints applied to that change
+ * nothing about the camera. Undefined while some other processor (the blank bridge) is attached.
+ */
+export function cameraSourceTrack(track: LocalVideoTrack): MediaStreamTrack | undefined {
+  const processor = track.getProcessor();
+  if (!processor) return track.mediaStreamTrack;
+  return isBackgroundProcessor(processor) ? processor.inputTrack : undefined;
+}
+
+/**
  * Changes the camera's capture settings (the load governor lowering or restoring resolution/fps).
- * Applied to the track LiveKit holds, and passed on to a worker processor that reads its own copy
+ * Applied to the camera track itself, and passed on to a worker processor that reads its own copy
  * of the camera (Safari), which wouldn't follow otherwise.
  */
 export async function applyCaptureConstraints(track: LocalVideoTrack, constraints: MediaTrackConstraints) {
-  await track.mediaStreamTrack.applyConstraints(constraints);
+  const camera = cameraSourceTrack(track);
+  if (!camera) return;
+  await camera.applyConstraints(constraints);
   const processor = track.getProcessor();
   if (processor instanceof WorkerBackgroundProcessor) processor.applySourceConstraints(constraints);
 }
