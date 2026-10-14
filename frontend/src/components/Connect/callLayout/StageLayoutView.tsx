@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { isTrackReference, type TrackReferenceOrPlaceholder } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import { Minimize2, ZoomIn, ZoomOut } from 'lucide-react';
@@ -6,6 +6,7 @@ import { CustomParticipantTile, type ProfileAccess } from './ParticipantTileCont
 import { computeGridGeometry, useElementSize } from './geometry';
 import { useLiveTileIds, useScrollWindow } from './useScrollWindow';
 import { useZoomPan } from './useZoomPan';
+import { RESIZE_HANDLE_CLASS, RESIZE_HANDLE_LINE_CLASS, readStoredWidth, startWidthDrag, storeWidth } from './dragResize';
 import {
   STRIP_CAPACITY,
   STRIP_ORIENTATION_WIDTH,
@@ -14,6 +15,17 @@ import {
   tileId,
   trackRevisionKey,
 } from './tileIdentity';
+
+const STRIP_WIDTH_KEY = 'smiring.layout.stripWidth';
+const STRIP_MIN_WIDTH = 120;
+/** Share of the speaker view the strip may take when dragged wider. */
+const STRIP_MAX_SHARE = 0.6;
+/**
+ * Tile width at the default strip width (at most 220px minus padding). Dragging the strip wider than that keeps
+ * the tiles' default shape and scales them up — fewer fit, the rest scroll — instead of stretching
+ * them into ever wider letterboxes.
+ */
+const STRIP_BASE_TILE_W = 220;
 
 interface StripProps {
   tracks: TrackReferenceOrPlaceholder[];
@@ -57,8 +69,11 @@ function FilmStrip({
   // axis instead would produce tiles taller than the strip.
   const contentH = Math.max(1, height - TILE_GAP * 2);
   const contentW = Math.max(1, width - TILE_GAP * 2);
+  const capacityH = Math.max(1, Math.floor((contentH - TILE_GAP * (STRIP_CAPACITY - 1)) / STRIP_CAPACITY));
   const tileH = isVertical
-    ? Math.max(1, Math.floor((contentH - TILE_GAP * (STRIP_CAPACITY - 1)) / STRIP_CAPACITY))
+    ? contentW > STRIP_BASE_TILE_W
+      ? Math.floor((capacityH * contentW) / STRIP_BASE_TILE_W)
+      : capacityH
     : contentH;
   const tileW = isVertical ? contentW : Math.max(1, Math.floor(tileH * TILE_RATIO));
 
@@ -80,7 +95,7 @@ function FilmStrip({
       ref={setScrollEl}
       className={
         isVertical
-          ? 'shrink-0 h-full w-[clamp(140px,18%,220px)] overflow-y-auto overflow-x-hidden'
+          ? 'shrink-0 h-full w-[var(--strip-w,clamp(140px,18%,220px))] max-w-[60%] overflow-y-auto overflow-x-hidden'
           : 'shrink-0 w-full h-28 overflow-x-auto overflow-y-hidden'
       }
       style={{ scrollbarGutter: 'stable' }}
@@ -180,7 +195,7 @@ function StageTile({
       </div>
 
       {zoomEnabled && (
-        <div className="absolute bottom-2 right-2 z-20 flex items-center gap-1 rounded-xl border border-gray-700/80 bg-gray-950/85 p-1 backdrop-blur-md">
+        <div className="absolute bottom-2 right-2 z-20 flex items-center gap-1 rounded-xl border border-gray-700/80 bg-gray-950/85 p-1">
           <button
             type="button"
             onClick={zoomOut}
@@ -268,6 +283,12 @@ export default function StageLayoutView({
 
   const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
 
+  // User-dragged strip width (vertical strip only), inherited by FilmStrip as a CSS variable.
+  // Unset = the default clamp() width.
+  const [stripWidth, setStripWidth] = useState(() => readStoredWidth(STRIP_WIDTH_KEY));
+  const rootStyle = (stripWidth ? { '--strip-w': `${stripWidth}px` } : undefined) as CSSProperties | undefined;
+  const showStripHandle = isVertical && stripTracks.length > 0;
+
   // Same geometry helper as the grid, so 1 pinned tile fills the stage, 2 sit side by
   // side, 3-4 form a 2x2, and larger counts keep tiling with no extra code.
   const stageGeometry = useMemo(
@@ -286,6 +307,7 @@ export default function StageLayoutView({
   return (
     <div
       ref={setRootEl}
+      style={rootStyle}
       className={`w-full h-full min-h-0 min-w-0 flex ${isVertical ? 'flex-row' : 'flex-col'}`}
     >
       <div ref={setStageEl} className="flex-1 min-w-0 min-h-0 relative">
@@ -319,6 +341,40 @@ export default function StageLayoutView({
           </div>
         )}
       </div>
+
+      {showStripHandle && (
+        // Zero-width slot so the handle doesn't take layout space from the stage or the strip.
+        <div className="relative shrink-0 w-0">
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            title="ドラッグで幅を変更（ダブルクリックで元に戻す）"
+            className={`${RESIZE_HANDLE_CLASS} -left-1`}
+            onPointerDown={(e) => {
+              if (!rootEl || !stageEl) return;
+              const rootW = rootEl.getBoundingClientRect().width;
+              startWidthDrag(e, {
+                startWidth: rootW - stageEl.getBoundingClientRect().width,
+                direction: -1,
+                min: STRIP_MIN_WIDTH,
+                max: Math.max(STRIP_MIN_WIDTH, Math.floor(rootW * STRIP_MAX_SHARE)),
+                apply: (w) => rootEl.style.setProperty('--strip-w', `${w}px`),
+                commit: (w) => {
+                  setStripWidth(w);
+                  storeWidth(STRIP_WIDTH_KEY, w);
+                },
+              });
+            }}
+            onDoubleClick={() => {
+              rootEl?.style.removeProperty('--strip-w');
+              setStripWidth(null);
+              storeWidth(STRIP_WIDTH_KEY, null);
+            }}
+          >
+            <div className={RESIZE_HANDLE_LINE_CLASS} />
+          </div>
+        </div>
+      )}
 
       <FilmStrip
         tracks={stripTracks}

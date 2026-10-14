@@ -95,6 +95,9 @@ export function LoadGovernorPanel({
               : 'none'}
           </div>
           <div>
+            react {s.render ? `${fmt(s.render.perSec, 1)}回/s ${fmt(s.render.msPerSec, 1)}ms/s max ${fmt(s.render.maxMs, 1)}ms` : '-'}
+          </div>
+          <div>
             cam {s.cameraOn ? 'on' : 'off'} | share {s.sharing ? 'on' : 'off'} | {s.visible ? 'visible' : 'hidden'}
           </div>
         </>

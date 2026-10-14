@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocalParticipant, useRoomContext } from '@livekit/components-react';
 import { Track, TrackEvent, type LocalVideoTrack } from 'livekit-client';
 import { subscribeLoadSignals } from '../../../lib/loadSignals';
+import { takeRenderMeter } from '../../../lib/renderMeter';
 import { applyCaptureConstraints, cameraSourceTrack } from '../../../lib/video/backgroundProcessor';
 import { diagEvent, diagState } from '../../../lib/connectDiagnostics';
 import { recordTelemetry, startTelemetry, stopTelemetry } from '../../../lib/connectTelemetry';
@@ -332,6 +333,7 @@ export function useLoadGovernor({
 
     let lastSampleAt = performance.now();
     let running = false;
+    takeRenderMeter(); // drop whatever was counted before this call's first window
     const sampleTimer = setInterval(async () => {
       if (running) return;
       running = true;
@@ -343,6 +345,7 @@ export function useLoadGovernor({
         const recv = await receiveStats(seconds).catch(() => undefined);
         const t = totals;
         totals = createSignalTotals();
+        const rendered = takeRenderMeter();
         // The playback queue also runs dry whenever the mic is muted (muted chunks are never
         // processed), so only count underruns from windows where audio was flowing throughout.
         const audioFlowing = t.audioChunks >= ((now - lastSampleAt) / AUDIO_CHUNK_MS) * 0.8;
@@ -366,6 +369,11 @@ export function useLoadGovernor({
           audioUnderruns: audioFlowing ? t.audioUnderruns : 0,
           audioOverloaded: t.audioOverloaded,
           recv,
+          render: {
+            perSec: rendered.renders / seconds,
+            msPerSec: rendered.renderMs / seconds,
+            maxMs: rendered.maxMs,
+          },
         };
         lastSampleAt = now;
         lagMax = 0;
@@ -442,5 +450,9 @@ function compactSample(s: LoadSample, step: GovernorStep) {
     rdrop: s.recv?.droppedPerSec ? r1(s.recv.droppedPerSec) : undefined,
     rfrz: s.recv?.freezes || undefined,
     rh: s.recv?.streams ? s.recv.maxHeight : undefined,
+    // React re-rendering the call screen: passes/s, ms/s, slowest pass ms.
+    rr: s.render?.perSec ? r1(s.render.perSec) : undefined,
+    rms: s.render?.perSec ? r1(s.render.msPerSec) : undefined,
+    rmax: s.render?.perSec ? r1(s.render.maxMs) : undefined,
   };
 }

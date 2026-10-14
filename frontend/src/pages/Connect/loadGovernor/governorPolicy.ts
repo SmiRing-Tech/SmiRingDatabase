@@ -82,6 +82,16 @@ export interface LoadSample {
    * not judged yet (lightening what's received is a later step).
    */
   recv?: ReceiveStats;
+  /** React re-rendering the call screen (lib/renderMeter). Telemetry only — not judged. */
+  render?: RenderStats;
+}
+
+export interface RenderStats {
+  perSec: number;
+  /** Main-thread ms per second spent rendering + committing. */
+  msPerSec: number;
+  /** Slowest single pass in the window, ms. */
+  maxMs: number;
 }
 
 export interface ReceiveStats {

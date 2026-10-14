@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useLocalParticipant, useParticipants } from '@livekit/components-react';
+import { RoomEvent } from 'livekit-client';
 import {
   Plus,
   Users,
@@ -26,6 +27,12 @@ import type { ChatMessage, ChatThread } from '../../types/chat';
 import { useAuth } from '../../context/AuthContext';
 import ChatRichEditor, { chatContentStyles } from './ChatRichEditor';
 import EmojiPickerPopover from './EmojiPickerPopover';
+
+const CHAT_PARTICIPANT_EVENTS = [
+  RoomEvent.ParticipantConnected,
+  RoomEvent.ParticipantDisconnected,
+  RoomEvent.ParticipantNameChanged,
+];
 
 const URL_REGEX = /(https?:\/\/[^\s]+)/g;
 const HTML_TAG_REGEX = /<[a-z][\s\S]*>/i;
@@ -111,7 +118,10 @@ export default function AdvancedChat({
   const { localParticipant } = useLocalParticipant();
   // 招待URLのゲストは user を持たないので、通話上のID（guest_*）を自分として扱う（CallRoomPage と同じ）
   const selfIdentity = user?.id || localParticipant.identity;
-  const participants = useParticipants();
+  // Only who is in the room matters here (identities for DMs and online dots). The default event
+  // list also includes speaking and connection-quality changes, which re-rendered this whole panel
+  // several times a second in a lively meeting.
+  const participants = useParticipants({ updateOnlyOn: CHAT_PARTICIPANT_EVENTS });
 
   const [showNewDmModal, setShowNewDmModal] = useState(false);
   const [showMemberList, setShowMemberList] = useState(false);

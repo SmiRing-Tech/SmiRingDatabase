@@ -15,6 +15,7 @@ import { r2, BUCKET_NAME } from '../lib/r2';
  *
  * summary の見方: 段階(lv)は「b=背景を標準に落とした / 数字=カメラの段階0-2 / x=カメラOFF」。
  * 「重い」理由(reasons)は governorPolicy.ts の classify() が付けたもの。
+ * React再描画は通話画面の再描画にかかった画面スレッドの時間(lib/renderMeter.ts)。
  */
 
 const PREFIX = 'connect-telemetry/';
@@ -94,6 +95,7 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
   let audioChunks = 0;
   let audioPass = 0;
   let audioUnderruns = 0;
+  const react = { samples: 0, perSec: 0, msPerSec: 0, maxMsPerSec: 0, maxPass: 0 };
   const recv = { samples: 0, maxStreams: 0, fps: 0, decodeMax: 0, decodeSum: 0, decodeN: 0, dropped: 0, freezes: 0, maxHeight: 0 };
   for (const e of samples) {
     levelTime[e.lv] = (levelTime[e.lv] ?? 0) + 1;
@@ -110,6 +112,13 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
     audioStressed += e.as ?? 0;
     audioPass += e.ap ?? 0;
     audioUnderruns += e.au ?? 0;
+    if (e.rr) {
+      react.samples += 1;
+      react.perSec += e.rr;
+      react.msPerSec += e.rms ?? 0;
+      react.maxMsPerSec = Math.max(react.maxMsPerSec, e.rms ?? 0);
+      react.maxPass = Math.max(react.maxPass, e.rmax ?? 0);
+    }
     if (e.rv) {
       recv.samples += 1;
       recv.maxStreams = Math.max(recv.maxStreams, e.rv);
@@ -146,6 +155,11 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
           recv.decodeN ? (recv.decodeSum / recv.decodeN).toFixed(1) : '-'
         }ms 最大${recv.decodeMax}ms/コマ | 取りこぼし ${Math.round(recv.dropped)}コマ | 固まり ${recv.freezes}回 | 最大${recv.maxHeight}p | デコーダ ${decoders.join(', ') || '?'}`
       : '  受信: (映像の受信なし)',
+  );
+  console.log(
+    react.samples
+      ? `  React再描画: 平均${(react.perSec / visible).toFixed(1)}回/秒 ${(react.msPerSec / visible).toFixed(1)}ms/秒 | 最大 ${react.maxMsPerSec}ms/秒 | 1回の最長 ${react.maxPass}ms`
+      : '  React再描画: (記録なし)',
   );
   console.log(`  段階ごとの時間: ${Object.entries(levelTime).map(([k, v]) => `${k}:${((v * 2) / 60).toFixed(1)}分`).join(' ')}`);
   // The governor's actions and the call's own state changes/events, in time order.

@@ -191,7 +191,7 @@ export function ParticipantTileContent({
         {isPinned && (
           <span
             title="ピン留め中"
-            className="p-1 rounded-lg bg-sky-500/90 text-white backdrop-blur-sm shadow-sm pointer-events-none"
+            className="p-1 rounded-lg bg-sky-500/90 text-white shadow-sm pointer-events-none"
           >
             <Pin className="w-3 h-3 fill-current" />
           </span>
@@ -202,7 +202,7 @@ export function ParticipantTileContent({
             aria-label="プロフィールを見る"
             title="プロフィールを見る"
             onClick={() => onOpenProfile?.(participant.identity)}
-            className="p-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white shadow-md shadow-sky-500/25 backdrop-blur-md transition-all"
+            className="p-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white shadow-md shadow-sky-500/25 transition-all"
           >
             <User className="w-3.5 h-3.5" />
           </button>
@@ -227,7 +227,7 @@ export function ParticipantTileContent({
               <button
                 type="button"
                 aria-label="タイル操作メニュー"
-                className={`p-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white shadow-md shadow-sky-500/25 backdrop-blur-md transition-all ${
+                className={`p-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white shadow-md shadow-sky-500/25 transition-all ${
                   isOpen ? '!opacity-100 ring-2 ring-white/60' : 'opacity-0 group-hover:opacity-100'
                 } ${isPinned ? '!opacity-90' : ''}`}
               >

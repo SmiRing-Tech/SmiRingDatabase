@@ -105,6 +105,8 @@ import { useLoadGovernor } from './loadGovernor/useLoadGovernor';
 import { CameraOffDialog, LoadGovernorPanel } from './loadGovernor/LoadGovernorUI';
 import { playSpeakerTestTone, useMicLevel } from '../../components/Connect/audioTest';
 import { codecPublishOptions, readVideoCodecPreference } from '../../lib/videoCodecPreference';
+import { renderMeterBegin, renderMeterEnd } from '../../lib/renderMeter';
+import ResizableAside from '../../components/Connect/callLayout/ResizableAside';
 import { useMiniRooms, type UseMiniRoomsResult, type ReconnectTarget } from '../../hooks/useMiniRooms';
 import { useDocumentPiP } from '../../hooks/useDocumentPiP';
 import { useActiveSpeakerVideoPip } from '../../hooks/useActiveSpeakerVideoPip';
@@ -1193,7 +1195,7 @@ function NoiseCancelNotice({ message, onDismiss }: { message: string; onDismiss:
   }, [onDismiss]);
   return (
     <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 w-[min(92vw,32rem)]">
-      <div className="flex items-start gap-2 px-4 py-2.5 bg-amber-950/90 border border-amber-500/50 backdrop-blur-md rounded-xl text-xs font-semibold text-white shadow-2xl">
+      <div className="flex items-start gap-2 px-4 py-2.5 bg-amber-950/90 border border-amber-500/50 rounded-xl text-xs font-semibold text-white shadow-2xl">
         <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-px" />
         <span className="flex-1">{message}</span>
         <button onClick={onDismiss} className="text-amber-200 hover:text-white shrink-0">
@@ -1254,7 +1256,7 @@ function MicMenuDropdown({
 
   return (
     <DropdownPortal anchorRef={anchorRef} onClose={onClose} align="left">
-      <div className="w-80 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl p-3.5 text-white space-y-3">
+      <div className="w-80 bg-gray-900/95 border border-gray-700/80 rounded-2xl shadow-2xl p-3.5 text-white space-y-3">
         <div className="flex items-center justify-between border-b border-gray-800 pb-2 px-1">
           <div className="flex items-center gap-1.5">
             <Mic className="w-3.5 h-3.5 text-sky-400" />
@@ -1472,7 +1474,7 @@ function CameraMenuDropdown({
 
   return (
     <DropdownPortal anchorRef={anchorRef} onClose={onClose} align="left">
-      <div className="w-80 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl p-3.5 text-white space-y-3">
+      <div className="w-80 bg-gray-900/95 border border-gray-700/80 rounded-2xl shadow-2xl p-3.5 text-white space-y-3">
         <div className="flex items-center justify-between border-b border-gray-800 pb-2 px-1">
           <div className="flex items-center gap-1.5">
             <Video className="w-3.5 h-3.5 text-sky-400" />
@@ -1992,7 +1994,7 @@ function RecordingReviewMenuDropdown({
 }) {
   return (
     <DropdownPortal anchorRef={anchorRef} onClose={onClose} align="left">
-      <div className="w-64 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl p-1.5 text-white">
+      <div className="w-64 bg-gray-900/95 border border-gray-700/80 rounded-2xl shadow-2xl p-1.5 text-white">
         <button
           onClick={() => {
             onOpenReview();
@@ -2243,7 +2245,7 @@ function MoreMenu({
 
       {isOpen && (
         <DropdownPortal anchorRef={triggerRef} onClose={() => setIsOpen(false)} align="left">
-          <div className="w-56 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl p-2 text-white">
+          <div className="w-56 bg-gray-900/95 border border-gray-700/80 rounded-2xl shadow-2xl p-2 text-white">
             {collapsedItems.map((item) => (
               <div key={item.key}>{item.renderMenuItem(close)}</div>
             ))}
@@ -2296,7 +2298,7 @@ function LayoutModeButton({
 
       {isOpen && (
         <DropdownPortal anchorRef={triggerRef} onClose={() => setIsOpen(false)} align="right" direction="down">
-          <div className="w-52 bg-gray-900/95 border border-gray-700/80 backdrop-blur-xl rounded-2xl shadow-2xl p-2 text-white">
+          <div className="w-52 bg-gray-900/95 border border-gray-700/80 rounded-2xl shadow-2xl p-2 text-white">
             <div className="px-2.5 py-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider">表示レイアウト</div>
             {LAYOUT_MODE_OPTIONS.map(({ mode: optionMode, label, icon: Icon }) => {
               const isActive = optionMode === mode;
@@ -2384,6 +2386,8 @@ function CustomVideoConference({
   /** When set, takes over the stage (everyone's tiles, screen share included, move to the strip). */
   surveyStage?: ReactNode;
 }) {
+  renderMeterBegin('conference');
+  useLayoutEffect(() => renderMeterEnd('conference'));
   const { localParticipant } = useLocalParticipant();
   // Prefer the authenticated user id (matches useAdvancedChat's selfIdentity and the
   // backend's LiveKit identity for logged-in joiners; localParticipant.identity is empty
@@ -2744,7 +2748,7 @@ function CustomVideoConference({
 
       {recording.error && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50">
-          <div className="px-4 py-2 bg-rose-950/90 border border-rose-500/50 backdrop-blur-md rounded-xl text-xs font-semibold text-white shadow-2xl">
+          <div className="px-4 py-2 bg-rose-950/90 border border-rose-500/50 rounded-xl text-xs font-semibold text-white shadow-2xl">
             {recording.error}
           </div>
         </div>
@@ -2753,9 +2757,9 @@ function CustomVideoConference({
       {/* Screen Share PiP Suggestion Banner (Only for local screen share) */}
       {isLocalScreenSharing && isPipSupported && !isPipActive && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-top-2 duration-300">
-          <div className="flex items-center gap-3 px-4 py-2 bg-sky-950/90 hover:bg-sky-900/90 border border-sky-500/50 backdrop-blur-md rounded-2xl shadow-2xl text-white">
+          <div className="flex items-center gap-3 px-4 py-2 bg-sky-950/90 hover:bg-sky-900/90 border border-sky-500/50 rounded-2xl shadow-2xl text-white">
             <div className="flex items-center gap-2">
-              <ScreenShare className="w-4 h-4 text-sky-400 animate-pulse" />
+              <ScreenShare className="w-4 h-4 text-sky-400" />
               <span className="text-xs font-semibold">画面共有中：PiPを開くと参加者の顔を確認できます</span>
             </div>
             <button
@@ -2829,7 +2833,7 @@ function CustomVideoConference({
               Center items collapse into the "..." menu by priority once the bar is too
               narrow to fit everything (measured via ResizeObserver, not a viewport
               breakpoint, since the chat sidebar can squeeze this even on wide screens). */}
-          <div className="shrink-0 px-3 sm:px-6 py-2.5 border-t border-gray-800/80 bg-gray-950/80 backdrop-blur-md">
+          <div className="shrink-0 px-3 sm:px-6 py-2.5 border-t border-gray-800/80 bg-gray-950/80">
             <div className="flex items-center justify-between w-full gap-2">
               {/* Left: Mic & Camera */}
               <div className="flex items-center gap-2 shrink-0">
@@ -2862,7 +2866,7 @@ function CustomVideoConference({
           button) below `sm` — same right-hand dock as Chat below (Chat/Participants/Profile are
           mutually exclusive, so only one of the three asides here is ever showing at once). */}
       {showParticipants && (
-        <aside className="w-full sm:w-80 md:w-96 h-full shrink-0 z-30 shadow-2xl animate-in slide-in-from-right duration-200">
+        <ResizableAside>
           <ParticipantsPanel
             isHost={isMiniRoomHost}
             selfIdentity={selfIdentity}
@@ -2878,25 +2882,25 @@ function CustomVideoConference({
             onTogglePin={layout.togglePin}
             pinnedIds={layout.pinned}
           />
-        </aside>
+        </ResizableAside>
       )}
 
       {/* Chat: docked sidebar on sm+ screens, full-screen page (with a back-to-video
           button) below `sm` — see the comment on the main conference area above. */}
       {showChat && (
-        <aside className="w-full sm:w-80 md:w-96 h-full shrink-0 z-30 shadow-2xl animate-in slide-in-from-right duration-200">
+        <ResizableAside>
           <AdvancedChat chat={chat} onBackToVideo={() => setShowChat(false)} />
-        </aside>
+        </ResizableAside>
       )}
 
       {/* Profile: docked sidebar on sm+ screens, full-screen page below `sm` */}
       {selectedProfileUserId && (
-        <aside className="w-full sm:w-80 md:w-96 h-full shrink-0 z-30 shadow-2xl animate-in slide-in-from-right duration-200">
+        <ResizableAside>
           <ProfileSidebarPanel
             userId={selectedProfileUserId}
             onClose={() => setSelectedProfileUserId?.(null)}
           />
-        </aside>
+        </ResizableAside>
       )}
 
       <RoomAudioRenderer />
@@ -2956,6 +2960,8 @@ function CallRoomInner({
   initialMediaChoices?: PreJoinChoices | null;
   profileAccess?: ProfileAccess;
 }) {
+  renderMeterBegin('call-inner');
+  useLayoutEffect(() => renderMeterEnd('call-inner'));
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showParticipants, setShowParticipants] = useState(false);
@@ -3248,7 +3254,7 @@ function CallRoomInner({
   return (
     <div className="h-full w-full flex flex-col overflow-hidden select-none">
       {/* Custom Slim In-Room Header */}
-      <header className="h-11 shrink-0 bg-gray-950/90 border-b border-gray-800/80 backdrop-blur-md px-4 md:px-6 flex items-center justify-between z-30">
+      <header className="h-11 shrink-0 bg-gray-950/90 border-b border-gray-800/80 px-4 md:px-6 flex items-center justify-between z-30">
         <div className="flex items-center gap-2.5 min-w-0">
           {recording.isRecording ? (
             <div className="flex items-center gap-1.5 px-2 py-0.5 bg-rose-500/15 border border-rose-500/30 rounded-md text-xs font-bold text-rose-400 animate-pulse shrink-0">
@@ -3256,7 +3262,7 @@ function CallRoomInner({
               <span>録画中</span>
             </div>
           ) : (
-            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            <div className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
           )}
           <h2 className="font-bold text-sm text-gray-100 truncate max-w-[180px] sm:max-w-xs md:max-w-md">
             {roomTitle || 'ミーティング'}
