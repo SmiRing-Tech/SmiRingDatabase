@@ -32,7 +32,16 @@ import { isMobileDevice } from '../Connect/backgroundLibrary';
  */
 
 const DESKTOP_VIDEO_ENCODING = { ...VideoPresets.h720.encoding, maxFramerate: 20 };
-const FPS_STEPS = [60, 10, 5] as const;
+/**
+ * The SFU picks the lowest temporal layer whose *measured* fps is at least the request, and a
+ * 20fps camera's layers measure a bit under 5/10/20 — so asking for exactly 10 got the 20fps layer
+ * (first run). Ask below each layer instead: 6 → the half-rate layer, 1 → the quarter-rate one.
+ */
+const FPS_STEPS = [
+  { request: 60, label: '全部' },
+  { request: 6, label: '半分' },
+  { request: 1, label: '4分の1' },
+] as const;
 
 type OutboundRow = {
   rid: string;
@@ -94,6 +103,8 @@ export default function TemporalLayerLabPage() {
   const localPreview = useRef<HTMLVideoElement>(null);
   const prevOut = useRef(new Map<string, { at: number; frames: number; encodeTime: number }>());
   const prevIn = useRef(new Map<string, Counters>());
+  // Each remote's decoder over time: catches a hardware decoder falling back to software, and when.
+  const decoderLog = useRef(new Map<string, { since: number; entries: string[] }>());
   const inboundRef = useRef(inbound);
   inboundRef.current = inbound;
 
@@ -225,6 +236,13 @@ export default function TemporalLayerLabPage() {
             };
             const prev = prevIn.current.get(key);
             prevIn.current.set(key, cur);
+            const decoderNow = `${s.decoderImplementation ?? '?'}${s.powerEfficientDecoder ? '(HW)' : ''}`;
+            const log = decoderLog.current.get(key) ?? { since: now, entries: [] };
+            decoderLog.current.set(key, log);
+            const lastEntry = log.entries[log.entries.length - 1];
+            if (!lastEntry || !lastEntry.endsWith(decoderNow)) {
+              log.entries.push(`${Math.round((now - log.since) / 1000)}秒: ${decoderNow}`);
+            }
             if (!prev) return;
             const sec = (now - prev.at) / 1000;
             const dDecoded = cur.decoded - prev.decoded;
@@ -272,7 +290,7 @@ export default function TemporalLayerLabPage() {
     setTesting(true);
     const lines = [header(), `受信テスト（受け取る画質: ${quality}）:`];
     const results: Record<string, string[]> = {};
-    for (const fps of FPS_STEPS) {
+    for (const { request: fps, label } of FPS_STEPS) {
       setAllFps(fps);
       await new Promise((r) => setTimeout(r, 4000));
       const acc: Record<string, InboundRow[]> = {};
@@ -285,7 +303,7 @@ export default function TemporalLayerLabPage() {
         const avg = (f: (x: InboundRow) => number) => rows.reduce((s, x) => s + (Number.isFinite(f(x)) ? f(x) : 0), 0) / (rows.length || 1);
         const last = rows[rows.length - 1];
         (results[r.name] ??= []).push(
-          `  要求${fps === 60 ? '全部' : fps}: ${fmt(avg((x) => x.fps))}fps ${last?.size ?? '-'} デコード${fmt(avg((x) => x.decodeMsPerFrame), 2)}ms/コマ = ${fmt(
+          `  要求${label}: ${fmt(avg((x) => x.fps))}fps ${last?.size ?? '-'} デコード${fmt(avg((x) => x.decodeMsPerFrame), 2)}ms/コマ = ${fmt(
             avg((x) => x.decodeMsPerSec),
           )}ms/秒 ${fmt(avg((x) => x.kbps), 0)}kbps 取りこぼし${fmt(avg((x) => x.dropped))}/秒 固まり${rows.reduce((s, x) => s + x.freezes, 0)} ${last?.decoder ?? ''}`,
         );
@@ -293,6 +311,10 @@ export default function TemporalLayerLabPage() {
     }
     setAllFps(60);
     for (const [name, rows] of Object.entries(results)) lines.push(` ${name} から受信:`, ...rows);
+    for (const r of remotes) {
+      const log = decoderLog.current.get(r.key);
+      if (log) lines.push(` ${r.name} のデコーダの変化（受信開始からの秒数）:`, ...log.entries.map((e) => `  ${e}`));
+    }
     if (remotes.length === 0) lines.push(' (受信している相手がいません)');
     setReport(lines.join('\n'));
     setTesting(false);
@@ -386,14 +408,14 @@ export default function TemporalLayerLabPage() {
         <h2 className="font-bold">受信（{remotes.length}人）</h2>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-gray-400">受け取るコマ数:</span>
-          {FPS_STEPS.map((fps) => (
+          {FPS_STEPS.map(({ request: fps, label }) => (
             <button
               key={fps}
               disabled={testing}
               onClick={() => setAllFps(fps)}
               className={`px-3 py-1 rounded ${requestedFps === fps ? 'bg-sky-600' : 'bg-gray-800 hover:bg-gray-700'}`}
             >
-              {fps === 60 ? '全部' : `${fps}fps`}
+              {label}
             </button>
           ))}
           <span className="text-gray-400 ml-3">受け取る画質:</span>
