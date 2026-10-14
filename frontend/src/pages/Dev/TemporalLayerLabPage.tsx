@@ -42,6 +42,11 @@ const FPS_STEPS = [
   { request: 6, label: '半分' },
   { request: 1, label: '4分の1' },
 ] as const;
+/**
+ * The automatic test sweeps every request instead: asking for 6 still got 20fps and 5 got 10, so
+ * the SFU's per-layer fps estimate isn't what the layers actually deliver. This maps it out.
+ */
+const SWEEP = [60, 8, 5, 4, 3, 2, 1] as const;
 
 type OutboundRow = {
   rid: string;
@@ -290,11 +295,12 @@ export default function TemporalLayerLabPage() {
     setTesting(true);
     const lines = [header(), `受信テスト（受け取る画質: ${quality}）:`];
     const results: Record<string, string[]> = {};
-    for (const { request: fps, label } of FPS_STEPS) {
+    for (const fps of SWEEP) {
+      const label = fps === 60 ? '全部(60)' : String(fps);
       setAllFps(fps);
-      await new Promise((r) => setTimeout(r, 4000));
+      await new Promise((r) => setTimeout(r, 3000));
       const acc: Record<string, InboundRow[]> = {};
-      for (let i = 0; i < 6; i++) {
+      for (let i = 0; i < 4; i++) {
         await new Promise((r) => setTimeout(r, 1000));
         for (const [k, v] of Object.entries(inboundRef.current)) (acc[k] ??= []).push(v);
       }
@@ -434,7 +440,7 @@ export default function TemporalLayerLabPage() {
             onClick={runAutoTest}
             className="ml-3 px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50"
           >
-            {testing ? '計測中…(約30秒)' : '自動テスト（全部→10→5）'}
+            {testing ? '計測中…(約50秒)' : '自動テスト（60→8→5→4→3→2→1を順に要求）'}
           </button>
         </div>
         <div className="flex flex-wrap gap-3">
