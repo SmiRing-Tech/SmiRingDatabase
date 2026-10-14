@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useRoomContext } from '@livekit/components-react';
-import { ConnectionQuality, RoomEvent, Track, type Participant, type Room } from 'livekit-client';
+import { ConnectionQuality, RoomEvent, Track, type LocalVideoTrack, type Participant, type Room } from 'livekit-client';
+import { cameraSourceTrack } from '../../lib/video/backgroundProcessor';
 import {
   collectDiagProbes,
   diagEvent,
@@ -356,7 +357,9 @@ function reportLocalMediaState(room: Room) {
   diagState('camera', local.isCameraEnabled);
   diagState('microphone', local.isMicrophoneEnabled);
   diagState('screenShare', local.isScreenShareEnabled);
-  const cam = local.getTrackPublication(Track.Source.Camera)?.track?.mediaStreamTrack;
+  // The camera itself: with the background effect on, track.mediaStreamTrack is the effect's output.
+  const cameraTrack = local.getTrackPublication(Track.Source.Camera)?.track as LocalVideoTrack | undefined;
+  const cam = cameraTrack ? cameraSourceTrack(cameraTrack) : undefined;
   if (cam && cam.readyState === 'live') diagState('cameraCapture', captureLabel(cam.getSettings()));
   const share = local.getTrackPublication(Track.Source.ScreenShare)?.track?.mediaStreamTrack;
   if (share && share.readyState === 'live') diagState('screenShareCapture', captureLabel(share.getSettings()));

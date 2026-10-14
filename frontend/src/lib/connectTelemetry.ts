@@ -1,11 +1,14 @@
 import { apiRequest } from './apiClient';
-import { collectEnvironment } from './connectDiagnostics';
+import { collectEnvironment, currentDiagState, setDiagMirror } from './connectDiagnostics';
 
 /**
  * Always-on, numbers-only load telemetry for SmiRing Connect: what the load governor measured and
  * decided during every call, uploaded automatically so its thresholds can be tuned from real calls
  * without anyone pressing the diagnostics button. No audio, video or content — just the governor's
- * samples, its actions, and the machine's facts (browser, GPU, cores).
+ * samples, its actions, the machine's facts (browser, GPU, cores), and the call's state changes
+ * and events the diagnostics recorder knows about (noise cancel / auto-mute / camera / screen share
+ * toggles, layout, participants joining, reconnects) — so most questions about a call can be
+ * answered without anyone having pressed "通話の診断".
  *
  * Uploaded in parts (POST /api/connect/rooms/:roomId/telemetry?session=..&seq=..): every few
  * minutes, and once more when the call ends. Small parts so the last one fits a keepalive request
@@ -52,6 +55,17 @@ export function startTelemetry(roomId: string, context: Record<string, unknown>)
   };
   session = current;
   window.addEventListener('pagehide', onPageHide);
+  const state = currentDiagState();
+  delete state.cameraDevice;
+  delete state.microphoneDevice;
+  current.entries.push({ t: startedAt, type: 'state-snapshot', state });
+  setDiagMirror((entry) => {
+    const { t, type, ...data } = entry;
+    // Numbers and switches only: no participant names, no device labels (which can carry a name).
+    if (type === 'participant-joined' || type === 'participant-left') return;
+    if (type === 'state' && (data.key === 'cameraDevice' || data.key === 'microphoneDevice')) return;
+    current.entries.push({ ...data, t, type: type === 'state' ? 'state' : `event:${type}` });
+  });
   void collectEnvironment()
     .then((env) => {
       current.env = env;
@@ -68,6 +82,7 @@ export function stopTelemetry() {
   const current = session;
   if (!current) return;
   session = null;
+  setDiagMirror(null);
   clearInterval(current.timer);
   window.removeEventListener('pagehide', current.onPageHide);
   void send(current, true);

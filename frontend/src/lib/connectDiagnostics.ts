@@ -94,9 +94,23 @@ export function isDiagnosticsRecording(): boolean {
 
 // ---------------------------------------------------------------- recording API
 
-/** Records a discrete event (only while recording). */
+/** Also receives every event and state change, recording or not (the always-on telemetry). */
+let mirror: ((entry: DiagnosticsEntry & { type: string }) => void) | null = null;
+
+export function setDiagMirror(listener: typeof mirror) {
+  mirror = listener;
+}
+
+/** The latest reported value of every piece of call state (see diagState). */
+export function currentDiagState(): Record<string, unknown> {
+  return { ...currentState };
+}
+
+/** Records a discrete event (only while recording; always mirrored to telemetry). */
 export function diagEvent(type: string, data?: Record<string, unknown>) {
-  session?.events.push({ t: Date.now(), type, ...data });
+  const entry = { t: Date.now(), type, ...data };
+  session?.events.push(entry);
+  mirror?.(entry);
 }
 
 /**
@@ -107,7 +121,9 @@ export function diagState(key: string, value: unknown) {
   if (Object.is(currentState[key], value)) return;
   const from = currentState[key];
   currentState[key] = value;
-  session?.events.push({ t: Date.now(), type: 'state', key, from, to: value });
+  const entry = { t: Date.now(), type: 'state', key, from, to: value };
+  session?.events.push(entry);
+  mirror?.(entry);
 }
 
 /** Adds one stats row (only while recording). */

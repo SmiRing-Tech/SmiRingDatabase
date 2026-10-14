@@ -148,9 +148,17 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
       : '  受信: (映像の受信なし)',
   );
   console.log(`  段階ごとの時間: ${Object.entries(levelTime).map(([k, v]) => `${k}:${((v * 2) / 60).toFixed(1)}分`).join(' ')}`);
-  for (const a of actions) {
-    const at = s.startedAt ? `${((a.t - s.startedAt) / 60_000).toFixed(1)}分` : '?';
-    console.log(`  → ${at} ${JSON.stringify(a.action)} ${a.applied ? '実行' : '(判断のみ)'} 理由: ${(a.reasons ?? []).join('+')}`);
+  // The governor's actions and the call's own state changes/events, in time order.
+  for (const e of s.entries) {
+    const at = s.startedAt ? `${((e.t - s.startedAt) / 60_000).toFixed(1)}分` : '?';
+    if (e.type === 'action') {
+      console.log(`  → ${at} ${JSON.stringify(e.action)} ${e.applied ? '実行' : '(判断のみ)'} 理由: ${(e.reasons ?? []).join('+')}`);
+    } else if (e.type === 'state' && !['participants', 'pageVisible', 'cpuPressure', 'connectionQuality'].includes(e.key)) {
+      console.log(`    ${at} ${e.key}: ${JSON.stringify(e.from)} → ${JSON.stringify(e.to)}`);
+    } else if (e.type.startsWith('event:') && e.type !== 'event:load-governor') {
+      const { t: _t, type, ...data } = e;
+      console.log(`    ${at} ${type.slice(6)} ${Object.keys(data).length ? JSON.stringify(data) : ''}`);
+    }
   }
 }
 
