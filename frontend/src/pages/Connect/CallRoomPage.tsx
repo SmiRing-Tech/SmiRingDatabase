@@ -93,6 +93,7 @@ import { useRecordingSync } from './useRecordingSync';
 import { useParticipantPresenceSounds } from './useParticipantPresenceSounds';
 import { useCallStatsLogger } from './useCallStatsLogger';
 import { diagEvent, diagState, registerDiagProbe } from '../../lib/connectDiagnostics';
+import { toggleMicrophone } from '../../lib/toggleMicrophone';
 import {
   DiagnosticsDialog,
   DiagnosticsMenuItem,
@@ -1559,11 +1560,7 @@ function MicButton({ mediaEnhancements }: { mediaEnhancements: MediaEnhancements
   const containerRef = useRef<HTMLDivElement>(null);
 
   const toggleMic = useCallback(async () => {
-    try {
-      await localParticipant.setMicrophoneEnabled(!isMicrophoneEnabled);
-    } catch (e) {
-      console.error('Failed to toggle mic:', e);
-    }
+    await toggleMicrophone(localParticipant, isMicrophoneEnabled, 'main');
   }, [localParticipant, isMicrophoneEnabled]);
 
   return (

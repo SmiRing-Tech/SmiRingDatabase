@@ -1,6 +1,15 @@
 import { useEffect } from 'react';
 import { useRoomContext } from '@livekit/components-react';
-import { ConnectionQuality, RoomEvent, Track, type LocalVideoTrack, type Participant, type Room } from 'livekit-client';
+import {
+  ConnectionQuality,
+  RoomEvent,
+  Track,
+  TrackEvent,
+  type LocalAudioTrack,
+  type LocalVideoTrack,
+  type Participant,
+  type Room,
+} from 'livekit-client';
 import { cameraSourceTrack } from '../../lib/video/backgroundProcessor';
 import {
   collectDiagProbes,
@@ -422,10 +431,49 @@ function useDiagnosticsRoomEvents(room: Room) {
       syncLocal();
     };
 
+    // The mic's own life signs. A raw `mute` that lasts 5s makes LiveKit tell the server "muted"
+    // (upstream paused) without the local UI changing — the one way the buttons and what everyone
+    // else sees can disagree — so log those, plus the track ending or restarting.
+    let detachMic: (() => void) | null = null;
+    const watchMic = () => {
+      detachMic?.();
+      detachMic = null;
+      const track = room.localParticipant.getTrackPublication(Track.Source.Microphone)?.track as
+        | LocalAudioTrack
+        | undefined;
+      if (!track) return;
+      const raw = track.mediaStreamTrack;
+      const mark = (type: string) => () =>
+        diagEvent(type, { upstreamPaused: track.isUpstreamPaused, rawEnabled: raw.enabled, rawState: raw.readyState });
+      const handlers: [string, () => void][] = [
+        ['mic-raw-mute', mark('mic-raw-mute')],
+        ['mic-raw-unmute', mark('mic-raw-unmute')],
+        ['mic-raw-ended', mark('mic-raw-ended')],
+      ];
+      for (const [name, fn] of handlers) raw.addEventListener(name.replace('mic-raw-', ''), fn);
+      const paused = mark('mic-upstream-paused');
+      const resumed = mark('mic-upstream-resumed');
+      const restarted = mark('mic-restarted');
+      track.on(TrackEvent.UpstreamPaused, paused);
+      track.on(TrackEvent.UpstreamResumed, resumed);
+      track.on(TrackEvent.Restarted, restarted);
+      detachMic = () => {
+        for (const [name, fn] of handlers) raw.removeEventListener(name.replace('mic-raw-', ''), fn);
+        track.off(TrackEvent.UpstreamPaused, paused);
+        track.off(TrackEvent.UpstreamResumed, resumed);
+        track.off(TrackEvent.Restarted, restarted);
+      };
+    };
+    const onLocalPublished = () => {
+      syncLocal();
+      watchMic();
+    };
+
+    watchMic();
     syncLocal();
     diagState('participants', participantCount(room));
     room
-      .on(RoomEvent.LocalTrackPublished, syncLocal)
+      .on(RoomEvent.LocalTrackPublished, onLocalPublished)
       .on(RoomEvent.LocalTrackUnpublished, syncLocal)
       .on(RoomEvent.TrackMuted, syncLocal)
       .on(RoomEvent.TrackUnmuted, syncLocal)
@@ -438,8 +486,9 @@ function useDiagnosticsRoomEvents(room: Room) {
       .on(RoomEvent.Disconnected, onDisconnected)
       .on(RoomEvent.ActiveDeviceChanged, onDevice);
     return () => {
+      detachMic?.();
       room
-        .off(RoomEvent.LocalTrackPublished, syncLocal)
+        .off(RoomEvent.LocalTrackPublished, onLocalPublished)
         .off(RoomEvent.LocalTrackUnpublished, syncLocal)
         .off(RoomEvent.TrackMuted, syncLocal)
         .off(RoomEvent.TrackUnmuted, syncLocal)

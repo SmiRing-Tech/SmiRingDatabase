@@ -25,6 +25,7 @@ import {
   MessageSquare,
   Smile,
 } from 'lucide-react';
+import { toggleMicrophone } from '../../lib/toggleMicrophone';
 import type { useAdvancedChat } from '../../hooks/useAdvancedChat';
 import AdvancedChat from '../../components/Connect/AdvancedChat';
 import ClampedVideoTrack from '../../components/Connect/callLayout/ClampedVideoTrack';
@@ -354,11 +355,7 @@ export default function DocumentPipContent({
   // Actions
   const toggleMic = async () => {
     if (!localParticipant) return;
-    try {
-      await localParticipant.setMicrophoneEnabled(!isMicrophoneEnabled);
-    } catch (e) {
-      console.error('[PiP] Failed to toggle microphone:', e);
-    }
+    await toggleMicrophone(localParticipant, isMicrophoneEnabled, 'pip');
   };
 
   const toggleCam = async () => {
