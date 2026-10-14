@@ -12,6 +12,7 @@ import {
 import type { CompositorRequest, CompositorResponse, CompositorSettings, CompositorStats } from './backgroundCompositor.worker';
 import type { SegmenterLoadTimings, SegmenterRequest, SegmenterResponse } from './backgroundSegmenter.worker';
 import { diagEvent, registerDiagProbe } from '../connectDiagnostics';
+import { emitLoadSignal } from '../loadSignals';
 
 /**
  * The background effect with all per-frame work off the main thread — the same effect as
@@ -506,6 +507,16 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
     return run;
   }
 
+  /**
+   * The camera's capture settings changed (the load governor lowering resolution/fps). In 'track'
+   * mode the compositor reads its own copy of the camera, which doesn't follow the original's
+   * constraints, so pass them on; in 'streams' mode it reads the original and there's nothing to do.
+   */
+  applySourceConstraints(constraints: MediaTrackConstraints) {
+    if (this.fallback || pageHasTrackStreams()) return;
+    this.postToCompositor({ type: 'sourceConstraints', constraints });
+  }
+
   /** Re-points the callbacks — see MediapipeBackgroundProcessor.setCallbacks. */
   setCallbacks(
     callbacks: Pick<WorkerBackgroundOptions, 'onSustainedSlowFrames' | 'onSustainedFastFrames' | 'onPipelineFailure'>,
@@ -620,6 +631,13 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
     addTotals(this.diag, stats);
     this.diag.seconds += stats.intervalMs / 1000;
     this.starvationFrames += stats.frames;
+    emitLoadSignal({
+      kind: 'background',
+      frames: stats.frames,
+      seconds: stats.intervalMs / 1000,
+      costMsTotal: stats.compositeMsTotal + stats.segmenterWorkMsTotal,
+      expectedFps: this.expectedFps(),
+    });
     this.history.push(stats);
     if (this.history.length > PERF_FAST_WINDOW_S) this.history.shift();
     if (this.readyResolved) this.checkFrameCost();

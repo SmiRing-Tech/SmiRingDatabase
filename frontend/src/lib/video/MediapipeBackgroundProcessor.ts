@@ -7,6 +7,7 @@ import {
   type MatteOptions,
 } from './backgroundCompositor';
 import { registerDiagProbe } from '../connectDiagnostics';
+import { emitLoadSignal } from '../loadSignals';
 
 /**
  * A LiveKit `TrackProcessor` that blurs the camera background using MediaPipe
@@ -574,6 +575,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       | 'edgeFeather'
       | 'temporalSmoothing'
       | 'segmentationFps'
+      | 'segmentationScheduler'
       | 'target'
       | 'invertMask'
       | 'matteLo'
@@ -713,6 +715,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     }
     this.startPipeline();
     this.startStarvationMonitor();
+    this.startLoadSignals();
     this.unregisterDiagProbe?.();
     this.unregisterDiagProbe = registerDiagProbe('background', () => this.takePerfSnapshot());
     this.log('init() done', {
@@ -737,6 +740,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     this.stopped = true;
     this.stopPipeline();
     this.stopStarvationMonitor();
+    this.stopLoadSignals();
     this.unregisterDiagProbe?.();
     this.unregisterDiagProbe = undefined;
 
@@ -948,6 +952,38 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   private diagLastReadAt = 0;
   private unregisterDiagProbe?: () => void;
 
+  // Feeds the load governor (lib/loadSignals) once a second; separate from the diagnostics
+  // counters above, which are reset whenever the recorder reads them.
+  private signalFrames = 0;
+  private signalCostMs = 0;
+  private signalSince = 0;
+  private signalTimer?: ReturnType<typeof setInterval>;
+
+  private startLoadSignals() {
+    this.stopLoadSignals();
+    this.signalFrames = 0;
+    this.signalCostMs = 0;
+    this.signalSince = performance.now();
+    this.signalTimer = setInterval(() => {
+      const now = performance.now();
+      emitLoadSignal({
+        kind: 'background',
+        frames: this.signalFrames,
+        seconds: (now - this.signalSince) / 1000,
+        costMsTotal: this.signalCostMs,
+        expectedFps: this.expectedFps(),
+      });
+      this.signalFrames = 0;
+      this.signalCostMs = 0;
+      this.signalSince = now;
+    }, 1000);
+  }
+
+  private stopLoadSignals() {
+    if (this.signalTimer !== undefined) clearInterval(this.signalTimer);
+    this.signalTimer = undefined;
+  }
+
   /** The camera's own frame rate — what "keeping up" means for this processor. */
   private expectedFps(): number {
     const rate = this.sourceTrack?.getSettings().frameRate;
@@ -1116,6 +1152,8 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     if (this.options.measureGpuSync) compositor.gl.finish();
     const frameMs = performance.now() - t0;
     this.starvationFrames += 1;
+    this.signalFrames += 1;
+    this.signalCostMs += frameMs;
     this.diagFrames += 1;
     this.diagFrameMsTotal += frameMs;
     if (frameMs > this.diagFrameMsMax) this.diagFrameMsMax = frameMs;

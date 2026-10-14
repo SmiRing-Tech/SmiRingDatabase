@@ -72,3 +72,14 @@ export async function removeBackgroundProcessor(track: LocalVideoTrack) {
     void element.play().catch(() => {});
   }
 }
+
+/**
+ * Changes the camera's capture settings (the load governor lowering or restoring resolution/fps).
+ * Applied to the track LiveKit holds, and passed on to a worker processor that reads its own copy
+ * of the camera (Safari), which wouldn't follow otherwise.
+ */
+export async function applyCaptureConstraints(track: LocalVideoTrack, constraints: MediaTrackConstraints) {
+  await track.mediaStreamTrack.applyConstraints(constraints);
+  const processor = track.getProcessor();
+  if (processor instanceof WorkerBackgroundProcessor) processor.applySourceConstraints(constraints);
+}

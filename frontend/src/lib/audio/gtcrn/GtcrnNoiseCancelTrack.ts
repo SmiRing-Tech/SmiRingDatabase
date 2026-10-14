@@ -1,4 +1,5 @@
-import { GTCRN_SAMPLE_RATE } from './GtcrnStreamProcessor';
+import { GTCRN_MAX_SKIP_LEVEL, GTCRN_SAMPLE_RATE } from './GtcrnStreamProcessor';
+import { emitLoadSignal } from '../../loadSignals';
 import { keepAudioContextResumed } from '../keepAudioContextResumed';
 import { registerDiagProbe } from '../../connectDiagnostics';
 import type { GtcrnPlaybackConnect, GtcrnPlaybackOptions, GtcrnPlaybackStats } from './gtcrnPlayback.worklet';
@@ -268,6 +269,7 @@ export class GtcrnNoiseCancelTrack {
     });
     this.playback.port.onmessage = (event: MessageEvent<GtcrnPlaybackStats>) => {
       this.playbackStats = event.data;
+      emitLoadSignal({ kind: 'audio-playback', underrunCount: event.data.underrunCount });
     };
     this.destination = this.ctx.createMediaStreamDestination();
     this.playback.connect(this.destination);
@@ -308,9 +310,11 @@ export class GtcrnNoiseCancelTrack {
         // say so.
         console.warn('[Connect] GTCRN overloaded: falling back to the raw mic');
         this.bypass = true;
+        emitLoadSignal({ kind: 'audio-overload' });
         onOverload?.();
         return;
       }
+      emitLoadSignal({ kind: 'audio-chunk', level: msg.level, maxLevel: GTCRN_MAX_SKIP_LEVEL, passthrough: msg.passthrough });
       this.loadedModels = msg.loadedModels;
       this.diagBacklogMax = Math.max(this.diagBacklogMax, msg.backlog);
       this.diagInactiveChunks += msg.inactiveChunks;

@@ -424,6 +424,8 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
     error,
     commit,
     setQuality,
+    // The load governor only runs in the call; nothing lowers the segmentation rate here.
+    setPerformanceProfile: () => {},
     handleUpload,
     handleDelete,
     imageUrlFor,

@@ -3923,6 +3923,67 @@ router.post(
 );
 
 // ==========================================
+// 📈 負荷テレメトリ（SmiRing Connect）
+// ==========================================
+
+/** 保存先プレフィックス。取り出しは backend/src/scripts/connectTelemetry.ts。 */
+const TELEMETRY_PREFIX = 'connect-telemetry/';
+const TELEMETRY_SESSION_RE = /^[0-9]{14}-[0-9a-f]{8}$/;
+
+// POST /api/connect/rooms/:roomId/telemetry?session=<id>&seq=<n>  (body: gzip済みJSON。生でも可)
+// 通話中の負荷ガバナー(frontend/src/lib/connectTelemetry.ts)が数分おきと退出時に自動で送ってくる。
+// 中身は数値だけ(映像・音声・内容は含まない)。診断ログと同じく解釈せずにそのまま R2 に置く。
+// 1セッションを複数パートに分けて送る(退出時の keepalive 送信の上限 64KB に収めるため)。
+router.post(
+  '/api/connect/rooms/:roomId/telemetry',
+  authenticateChatCaller,
+  express.raw({ type: 'application/octet-stream', limit: '2mb' }),
+  async (req: Request, res: Response) => {
+    try {
+      const roomId = req.params.roomId as string;
+      const session = String(req.query.session ?? '');
+      const seq = Number(req.query.seq);
+      if (!isValidRoomName(roomId) || !TELEMETRY_SESSION_RE.test(session) || !Number.isInteger(seq) || seq < 0 || seq > 9999) {
+        return res.status(400).json({ error: 'invalid request' });
+      }
+      const body = req.body;
+      if (!Buffer.isBuffer(body) || body.length === 0) {
+        return res.status(400).json({ error: 'empty body' });
+      }
+      const isGzip = body[0] === 0x1f && body[1] === 0x8b;
+      const gz = isGzip ? body : zlib.gzipSync(body);
+
+      const user = req.user!;
+      const metadata: Record<string, string> = { uploader_id: user.id, room_id: roomId };
+      // 名前は最初のパートにだけ付ける(パートごとにプロフィールを引かない)。
+      if (seq === 0) {
+        const isGuest = (user as { aud?: string }).aud === 'guest';
+        const name = isGuest
+          ? String(user.user_metadata?.guest_name || user.id)
+          : (await getDisplayProfile(user.id, user.email || user.id)).displayName;
+        metadata.uploader = encodeURIComponent(name);
+      }
+
+      // 日付(セッション開始日)/セッション/連番。ユーザーIDを含めて、他人のセッションを上書きできないようにする。
+      const day = `${session.slice(0, 4)}-${session.slice(4, 6)}-${session.slice(6, 8)}`;
+      await r2.send(
+        new PutObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: `${TELEMETRY_PREFIX}${day}/${user.id}_${session}/${String(seq).padStart(4, '0')}.json.gz`,
+          Body: gz,
+          ContentType: 'application/gzip',
+          Metadata: metadata,
+        }),
+      );
+      res.json({ ok: true });
+    } catch (error: any) {
+      console.error('テレメトリ保存エラー:', error);
+      res.status(500).json({ error: error.message });
+    }
+  },
+);
+
+// ==========================================
 // 🖼️ バーチャル背景（SmiRing Connect）
 // ==========================================
 // 各ユーザーが自分でアップロードした背景画像を R2 に保存し、次回以降も選べるようにする。

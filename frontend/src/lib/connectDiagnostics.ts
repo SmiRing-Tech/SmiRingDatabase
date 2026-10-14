@@ -401,7 +401,8 @@ interface NavigatorExtras {
   getBattery?: () => Promise<{ charging: boolean; level: number }>;
 }
 
-async function collectEnvironment(): Promise<Record<string, unknown>> {
+/** Browser, hardware, GPU and codec facts — shared with the always-on telemetry (connectTelemetry). */
+export async function collectEnvironment(): Promise<Record<string, unknown>> {
   const nav = navigator as Navigator & NavigatorExtras;
   const env: Record<string, unknown> = {
     userAgent: nav.userAgent,

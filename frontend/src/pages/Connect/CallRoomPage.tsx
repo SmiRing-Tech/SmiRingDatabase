@@ -99,6 +99,8 @@ import {
   DiagnosticsResultDialog,
 } from './ConnectDiagnostics';
 import { useDiagnosticsController } from './useDiagnosticsController';
+import { useLoadGovernor } from './loadGovernor/useLoadGovernor';
+import { CameraOffDialog, LoadGovernorPanel } from './loadGovernor/LoadGovernorUI';
 import { playSpeakerTestTone, useMicLevel } from '../../components/Connect/audioTest';
 import { codecPublishOptions, readVideoCodecPreference } from '../../lib/videoCodecPreference';
 import { useMiniRooms, type UseMiniRoomsResult, type ReconnectTarget } from '../../hooks/useMiniRooms';
@@ -2370,6 +2372,19 @@ function CustomVideoConference({
     host: window.location.host,
   }));
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+
+  // Lightens the camera side when this machine can't keep up (loadGovernor/governorPolicy.ts),
+  // and records what it measured to the always-on telemetry.
+  const syncRecordingAfterGovernor = useRecordingSync();
+  const [governorNotice, setGovernorNotice] = useState('');
+  const dismissGovernorNotice = useCallback(() => setGovernorNotice(''), []);
+  const governor = useLoadGovernor({
+    background: mediaEnhancements.background,
+    roomId: miniRooms.currentRoomId,
+    onNotice: setGovernorNotice,
+    onCameraTurnedOff: syncRecordingAfterGovernor,
+  });
+
   useEffect(() => {
     diagState('layout', layout.mode);
     diagState('pip', isPipActive);
@@ -2656,12 +2671,22 @@ function CustomVideoConference({
       )}
       <DiagnosticsResultDialog controller={diagnostics} />
 
-      {mediaEnhancements.noiseCancelNotice && (
+      {mediaEnhancements.noiseCancelNotice ? (
         <NoiseCancelNotice
           message={mediaEnhancements.noiseCancelNotice}
           onDismiss={mediaEnhancements.dismissNoiseCancelNotice}
         />
+      ) : (
+        governorNotice && <NoiseCancelNotice message={governorNotice} onDismiss={dismissGovernorNotice} />
       )}
+      {governor.cameraOffNotice && (
+        <CameraOffDialog
+          notice={governor.cameraOffNotice}
+          onClose={governor.dismissCameraOffNotice}
+          onTurnOffBackground={() => void mediaEnhancements.background.commit({ mode: 'off' })}
+        />
+      )}
+      {governor.showPanel && <LoadGovernorPanel mode={governor.mode} step={governor.lastStep} />}
 
       {recording.error && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50">

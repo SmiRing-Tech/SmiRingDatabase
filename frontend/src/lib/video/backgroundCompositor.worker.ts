@@ -59,6 +59,8 @@ export type CompositorRequest =
    * the camera light) running — so the page mirrors it over.
    */
   | { type: 'sourceState'; enabled: boolean; ended: boolean }
+  /** 'track' mode: the page lowered/raised the camera's capture settings; apply them to the copy too. */
+  | { type: 'sourceConstraints'; constraints: MediaTrackConstraints }
   /** Start (or switch to) getting mattes from this segmenter worker's port. */
   | { type: 'attachSegmenter'; port: MessagePort }
   | { type: 'settings'; settings: Partial<CompositorSettings> }
@@ -371,6 +373,9 @@ self.onmessage = (event: MessageEvent<CompositorRequest>) => {
         } else {
           sourceTrack.enabled = message.enabled;
         }
+        break;
+      case 'sourceConstraints':
+        sourceTrack?.applyConstraints(message.constraints).catch((err) => console.warn('[bg-compositor] applyConstraints failed:', err));
         break;
       case 'settings':
         settings = { ...settings, ...message.settings };

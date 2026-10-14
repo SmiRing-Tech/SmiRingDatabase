@@ -59,6 +59,8 @@ export function useBackgroundEffect(isGuest = false) {
   >(undefined);
   // Re-applies the current choice from scratch; see handlePipelineFailure.
   const reapplyRef = useRef<(() => Promise<unknown>) | undefined>(undefined);
+  // Segmentation rate set by the load governor (null = the device default); see setPerformanceProfile.
+  const perfProfileRef = useRef<PerformanceProfile | null>(null);
 
   const supported = useMemo(() => supportsMediapipeBackground(), []);
   const stored = useMemo(() => readStoredChoice(isGuest), [isGuest]);
@@ -246,7 +248,8 @@ export function useBackgroundEffect(isGuest = false) {
         edgeFeather: 1.5,
         matteLo: 0.3,
         matteHi: 0.75,
-        segmentationFps: detectSegmentationFps(),
+        segmentationFps: perfProfileRef.current?.segmentationFps ?? detectSegmentationFps(),
+        segmentationScheduler: perfProfileRef.current?.segmentationScheduler ?? 'interval',
         // Every processor reports when it's too heavy (see handlePerfSlow for what happens
         // next). Read the quality at call time: the worker processor changes it in place.
         // No onSustainedFastFrames: automatic upgrades are off, see handlePerfSlow.
@@ -391,6 +394,23 @@ export function useBackgroundEffect(isGuest = false) {
     reapplyRef.current = () => applyEffect(mode, imageId, quality);
   }, [applyEffect, mode, imageId, quality]);
 
+  /**
+   * The load governor's segmentation rate for the current camera frame rate (null = back to the
+   * device default). Applied to the running processor in place, and to any processor built later.
+   */
+  const setPerformanceProfile = useCallback(
+    (profile: PerformanceProfile | null) => {
+      perfProfileRef.current = profile;
+      const processor = getCameraTrack()?.getProcessor();
+      if (!isBackgroundProcessor(processor)) return;
+      processor.updateOptions({
+        segmentationFps: profile?.segmentationFps ?? detectSegmentationFps(),
+        segmentationScheduler: profile?.segmentationScheduler ?? 'interval',
+      });
+    },
+    [getCameraTrack],
+  );
+
   // Diagnostics timeline (lib/connectDiagnostics). `error` also carries the automatic
   // high <-> balanced switch messages, which is the main thing worth seeing there.
   useEffect(() => {
@@ -411,6 +431,7 @@ export function useBackgroundEffect(isGuest = false) {
     error,
     commit,
     setQuality,
+    setPerformanceProfile,
     handleUpload,
     handleDelete,
     imageUrlFor,
@@ -418,3 +439,8 @@ export function useBackgroundEffect(isGuest = false) {
 }
 
 export type BackgroundEffectState = ReturnType<typeof useBackgroundEffect>;
+
+export interface PerformanceProfile {
+  segmentationFps: number;
+  segmentationScheduler: 'interval' | 'exact';
+}
