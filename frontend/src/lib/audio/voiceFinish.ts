@@ -2,8 +2,10 @@ import type { VoiceLevelerSettingsMessage, VoiceLevelerState } from './voiceLeve
 import voiceLevelerWorkletUrl from './voiceLeveler.worklet.ts?worker&url';
 
 /**
- * Voice "finishing" chain, prototyped in /dev/audio-gain-lab: the processing that makes speech
- * *sound* loud and clear at a given level, as opposed to just measuring loud.
+ * Voice "finishing" chain: the processing that makes speech *sound* loud and clear at a given
+ * level, as opposed to just measuring loud. Runs on every outgoing mic in the call (see
+ * VOICE_FINISH_ENABLED in CallRoomPage); /dev/audio-gain-lab has it with live controls, which is
+ * where DEFAULT_VOICE_FINISH was tuned by ear.
  *
  *   input -> leveler -> low cut (90Hz) -> presence boost (~3kHz) -+-> compressor -> gain -> limiter -> output
  *                                                                  |                ^
@@ -62,7 +64,7 @@ export const DEFAULT_VOICE_FINISH: VoiceFinishParams = {
   compression: 'light',
   gainDb: 0,
   air: 5,
-  leveler: false,
+  leveler: true,
   levelerTargetDb: -24,
   levelerMaxGainDb: 12,
 };

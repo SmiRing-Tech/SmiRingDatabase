@@ -21,11 +21,12 @@ import type { VoiceLevelerState } from '../../lib/audio/voiceLeveler.worklet';
  *  - マイク: the capture track exactly as the browser delivers it, i.e. after its own echo
  *    cancellation / noise suppression / AGC (on by default, as in the app — see
  *    AUDIO_CAPTURE_CONSTRAINTS). Low here = the mic/AGC is the problem.
- *  - GTCRN後: the same audio after the real GtcrnNoiseCancelTrack. The gate graph after it in
- *    the call is a 0/1 gain, and Opus doesn't change level, so this is what gets sent. Lower
- *    than マイク by more than a dB or two = noise cancellation is eating speech level.
- *  - 仕上げ後: an experimental VoiceFinishChain (EQ + compressor, lib/audio/voiceFinish.ts) after
- *    GTCRN, tunable live, for hearing whether it makes speech clearer before it goes in the call.
+ *  - GTCRN後: the same audio after the real GtcrnNoiseCancelTrack. Lower than マイク by more than
+ *    a dB or two = noise cancellation is eating speech level.
+ *  - 仕上げ後: after VoiceFinishChain (leveler, EQ, compressor, ... — lib/audio/voiceFinish.ts),
+ *    tunable live. As in the call, it follows GTCRN when that's on, else the mic. The call's
+ *    gate after it is a 0/1 gain and Opus doesn't change level, so with the app's settings
+ *    this is what gets sent.
  *  - タブ音声: any tab's audio output via getDisplayMedia — Zoom's web client, Meet, or a Connect
  *    call in another tab — for comparing what each app actually plays out, same speaker, same
  *    passage.
@@ -42,8 +43,8 @@ type StageId = 'mic' | 'gtcrn' | 'finish' | 'tab';
 const STAGE_IDS: StageId[] = ['mic', 'gtcrn', 'finish', 'tab'];
 const STAGE_LABELS: Record<StageId, string> = {
   mic: 'マイク（ブラウザ処理後）',
-  gtcrn: 'GTCRN後（＝今の通話で送信される音）',
-  finish: '仕上げ後（試作）',
+  gtcrn: 'GTCRN後',
+  finish: '仕上げ後（＝通話で送信される音）',
   tab: 'タブ音声（そのタブが再生している音）',
 };
 
@@ -64,8 +65,8 @@ const APP_CAPTURE: CaptureConfig = {
   autoGainControl: AUDIO_CAPTURE_CONSTRAINTS.autoGainControl === true,
   // On by default in the call (CallRoomPage's noiseCancelEnabled).
   gtcrn: true,
-  // Not in the app (yet).
-  finish: false,
+  // VOICE_FINISH_ENABLED in CallRoomPage.
+  finish: true,
 };
 
 const TOGGLES: Array<{ key: keyof Omit<CaptureConfig, 'deviceId'>; label: string }> = [
@@ -73,7 +74,7 @@ const TOGGLES: Array<{ key: keyof Omit<CaptureConfig, 'deviceId'>; label: string
   { key: 'noiseSuppression', label: 'ブラウザのノイズ抑制' },
   { key: 'echoCancellation', label: 'エコーキャンセル' },
   { key: 'gtcrn', label: 'GTCRN（アプリのノイズキャンセル）' },
-  { key: 'finish', label: '仕上げ（試作）を追加' },
+  { key: 'finish', label: '仕上げ' },
 ];
 
 
@@ -311,7 +312,7 @@ export default function AudioGainLabPage() {
           const created = await GtcrnNoiseCancelTrack.create(
             track,
             () => true,
-            () => setError('この機械では GTCRN が処理しきれず、生マイクをそのまま通しています（GTCRN後 = マイク になります）。'),
+            () => setError('この機械では GTCRN が処理しきれず、ノイズ除去なしで通しています（GTCRN後 ≒ マイク になります）。'),
           );
           if (cancelled) {
             created.stop();
@@ -562,7 +563,7 @@ export default function AudioGainLabPage() {
       <header className="space-y-1">
         <h1 className="text-xl font-bold">音量計測</h1>
         <p className="text-xs text-gray-400">
-          LiveKit サーバー不要。マイクの音を「ブラウザ処理後」「GTCRN後」の各段で同時に測り、同じ文章を読んだときの発話レベルを比較します。
+          LiveKit サーバー不要。マイクの音を「ブラウザ処理後」「GTCRN後」「仕上げ後」の各段で同時に測り、同じ文章を読んだときの発話レベルを比較します。
           ほかのタブ（Zoom のブラウザ版・Meet・Connect）が再生している音も取り込んで測れます。
         </p>
         <p className="text-xs text-gray-400">
@@ -669,7 +670,7 @@ export default function AudioGainLabPage() {
         {config.finish && (
           <div className="space-y-2 border-t border-gray-800 pt-3 text-xs">
             <p className="text-gray-400">
-              仕上げ（試作）の設定 — 計測中以外はいつでも変えられ、すぐ反映されます。「ヘッドホンで聴く」を「仕上げ後」にして喋りながら調整できます。
+              仕上げの設定（初期値 = 通話と同じ）— 計測中以外はいつでも変えられ、すぐ反映されます。「ヘッドホンで聴く」を「仕上げ後」にして喋りながら調整できます。
             </p>
             <div className="flex flex-wrap items-center gap-4">
               <label className="flex items-center gap-1.5">
@@ -917,7 +918,7 @@ export default function AudioGainLabPage() {
           <p>発話レベル: 声が出ている部分だけの平均レベル（ITU-T P.56）。間の長さに左右されないので、同じ文章を読んだ計測どうしを比べられます。</p>
           <p>対マイク: GTCRN を通したことで発話レベルが何 dB 変わったか。大きくマイナスなら、ノイズキャンセルが声まで削っています。</p>
           <p>
-            録音: 「GTCRN後」が相手に送られる音そのものです（通話と同じ Opus で録音しているので、音量はそのまま）。いつも Connect を聞いている音量・ヘッドホンのまま再生すると、相手にどう聞こえているかに近くなります。
+            録音: 本番と同じ設定なら「仕上げ後」が相手に送られる音そのものです（通話と同じ Opus で録音しているので、音量はそのまま）。いつも Connect を聞いている音量・ヘッドホンのまま再生すると、相手にどう聞こえているかに近くなります。
             本当に相手の耳に届いた音を確かめたいときは、別の端末で Connect に入り、その端末でこのページの「タブ音声を追加」から Connect のタブを録音してください。
           </p>
           <p>

@@ -36,6 +36,7 @@ import {
 import { MicVAD } from '@ricky0123/vad-web';
 import { GtcrnNoiseCancelTrack, GTCRN_PIPELINE_LATENCY_MS } from '../../lib/audio/gtcrn/GtcrnNoiseCancelTrack';
 import { keepAudioContextResumed } from '../../lib/audio/keepAudioContextResumed';
+import { DEFAULT_VOICE_FINISH, loadVoiceFinish, VoiceFinishChain } from '../../lib/audio/voiceFinish';
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import '@livekit/components-styles';
@@ -249,6 +250,19 @@ const GATE_DELAY_MS = 200;
 const GATE_RAMP_MS = 15;
 
 /**
+ * Whether the outgoing mic goes through VoiceFinishChain (lib/audio/voiceFinish.ts): a slow
+ * leveler, low cut, presence boost, light compression, a synthesized above-8kHz band and a
+ * limiter. ON. Tuned by ear in /dev/audio-gain-lab, after voices through GTCRN measured at a
+ * perfectly normal level but still sounded muffled and quieter than on Zoom — GTCRN runs at
+ * 16kHz, so nothing above 8kHz survives it.
+ *
+ * Being on is also what keeps useVadAutoGate's graph built when both VAD and noise-cancel are
+ * off (e.g. after a GTCRN overload switches noise-cancel off): the sender has to be routed
+ * through that graph to get any of this.
+ */
+const VOICE_FINISH_ENABLED = true;
+
+/**
  * Whether outgoing camera video is held back to stay level with the audio pipeline's own
  * latency (see useVideoDelay). OFF.
  *
@@ -311,6 +325,11 @@ function vadLog(msg: string, data?: Record<string, unknown>) {
  * pieces of code race to call sender.replaceTrack() on the same track. When VAD is off but
  * noise-cancel is on, the gate/delay stage still runs, just permanently open with zero delay —
  * a transparent pass-through around the (still active) noise-cancel stage.
+ *
+ * Between the delay and the gate sits the voice finishing chain (VOICE_FINISH_ENABLED), so it
+ * always runs, with or without either feature:
+ *
+ *   [GTCRN or raw mic] -> delay -> VoiceFinishChain -> gate gain -> sender
  *
  * @param enabled VAD auto-gate on/off.
  * @param sensitivity positiveSpeechThreshold — how loud/clear speech has to be before the gate
@@ -396,7 +415,7 @@ function useVadAutoGate(
   }, [localParticipant]);
 
   useEffect(() => {
-    if (!enabled && !noiseCancelEnabled) return;
+    if (!enabled && !noiseCancelEnabled && !VOICE_FINISH_ENABLED) return;
 
     const myGeneration = ++generationRef.current;
     let cancelled = false;
@@ -407,6 +426,8 @@ function useVadAutoGate(
     let gateCtx: AudioContext | null = null;
     let delayNode: DelayNode | null = null;
     let gainNode: GainNode | null = null;
+    let voiceFinish: VoiceFinishChain | null = null;
+    let unregisterVoiceFinishProbe: (() => void) | null = null;
     // Seeded from the live ref, not hardcoded true: React runs every changed effect's cleanup
     // (in hook-declaration order) before running any changed effect's setup, so when `enabled`
     // itself is what's changing, the isMicrophoneEnabledRef effect above — which tries to
@@ -564,6 +585,19 @@ function useVadAutoGate(
       // before only because that's a fresh gesture landing close enough to a resume() attempt to
       // work; this makes *any* later tap/click do the same instead of needing that specific one.
       detachGateResumeRetry = keepAudioContextResumed(gateCtx);
+      // Loaded before any node exists, so a failure just leaves the chain out (the call works the
+      // way it did before it existed) rather than leaving a half-built graph.
+      const finishLoaded =
+        VOICE_FINISH_ENABLED &&
+        (await loadVoiceFinish(gateCtx).then(
+          () => true,
+          (e) => {
+            console.error('[Connect] failed to load the voice finishing chain, sending without it:', e);
+            diagEvent('voice-finish-failed', { error: String(e) });
+            return false;
+          },
+        ));
+      if (cancelled) return;
       // The delay only exists to preserve onset audio for the VAD gate (see GATE_DELAY_MS's
       // comment) — with VAD off there's nothing to preserve it for, so skip straight to a
       // (still gate-controlled, just permanently-open) pass-through instead of adding latency
@@ -571,10 +605,30 @@ function useVadAutoGate(
       const activeDelayMs = enabled ? GATE_DELAY_MS : 0;
       delayNode = gateCtx.createDelay(Math.max(activeDelayMs, 1) / 1000 + 0.1);
       delayNode.delayTime.value = activeDelayMs / 1000;
+      // Re-read rather than trusting the value seeded at the top of the effect: setGate() drops
+      // changes while gainNode doesn't exist yet, and there have been awaits since (GTCRN's
+      // startup, the module load above) for a mute to land in.
+      gateOpen = isMicrophoneEnabledRef.current;
       gainNode = gateCtx.createGain();
       gainNode.gain.value = gateOpen ? 1 : 0;
       const destination = gateCtx.createMediaStreamDestination();
-      delayNode.connect(gainNode);
+      if (finishLoaded) {
+        // The synthesized high band stands in for what GTCRN's 16kHz processing removes; the
+        // raw mic still has the real thing, and stacking a fake band on top just adds hiss.
+        voiceFinish = new VoiceFinishChain(gateCtx, noiseCancelTrack ? DEFAULT_VOICE_FINISH : { ...DEFAULT_VOICE_FINISH, air: 0 });
+        delayNode.connect(voiceFinish.input);
+        voiceFinish.output.connect(gainNode);
+        const finish = voiceFinish;
+        unregisterVoiceFinishProbe = registerDiagProbe('voiceFinish', () => {
+          const state = finish.levelerState;
+          return {
+            levelerGainDb: state ? Math.round(state.gainDb * 10) / 10 : undefined,
+            speechDb: state?.speechDb != null ? Math.round(state.speechDb * 10) / 10 : undefined,
+          };
+        });
+      } else {
+        delayNode.connect(gainNode);
+      }
       gainNode.connect(destination);
       gatedOutputTrack = destination.stream.getAudioTracks()[0];
       reattachUpstream(track);
@@ -582,6 +636,7 @@ function useVadAutoGate(
       vadLog('gate graph installed', {
         delayMs: activeDelayMs,
         noiseCancelEnabled,
+        voiceFinish: !!voiceFinish,
         gatedOutputTrackId: gatedOutputTrack.id,
         senderTrackId: track.sender?.track?.id ?? '(no sender)',
         gateCtxState: gateCtx.state,
@@ -790,6 +845,7 @@ function useVadAutoGate(
       setGateRef.current = null;
       vadRef.current = null;
       unregisterVadProbe?.();
+      unregisterVoiceFinishProbe?.();
       detachTrackListeners?.();
       // Stopped immediately, before the slow `await vad?.destroy()` below, so a new run's own
       // GTCRN instance (built right away if noiseCancelEnabled stays true) doesn't spend that
@@ -844,6 +900,7 @@ function useVadAutoGate(
         }
         currentSourceTrack?.stop();
         gatedOutputTrack?.stop();
+        voiceFinish?.disconnect();
         detachGateResumeRetry?.();
         void gateCtx?.close().catch(() => {});
       })();
