@@ -4,7 +4,7 @@ import { Mic, MicOff, Video, VideoOff, Loader2, RotateCcw, Volume2 } from 'lucid
 import PreJoinBackgroundPanel from './PreJoinBackgroundPanel';
 import { usePreJoinBackground } from '../../pages/Connect/usePreJoinBackground';
 import { warmupGtcrnModel } from '../../lib/audio/gtcrn/GtcrnNoiseCancelTrack';
-import { VIDEO_CAPTURE_CONSTRAINTS } from './captureConstraints';
+import { AUDIO_CAPTURE_CONSTRAINTS, VIDEO_CAPTURE_CONSTRAINTS } from './captureConstraints';
 import { useMicLevel, playSpeakerTestTone } from './audioTest';
 import {
   isContinuityDevice,
@@ -15,12 +15,6 @@ import {
 } from '../../lib/continuityDevices';
 
 const CUSTOM_USERNAME_KEY = 'smiring_connect_custom_username';
-
-const AUDIO_CAPTURE_CONSTRAINTS: MediaTrackConstraints = {
-  echoCancellation: true,
-  noiseSuppression: true,
-  autoGainControl: true,
-};
 
 export interface PreJoinChoices {
   username: string;

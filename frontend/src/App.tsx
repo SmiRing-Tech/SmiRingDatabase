@@ -1,6 +1,7 @@
 import { createBrowserRouter, RouterProvider, Navigate, useLocation } from 'react-router-dom';
 import BackgroundBlurLabPage from './pages/Dev/BackgroundBlurLabPage';
 import NoiseCancelLabPage from './pages/Dev/NoiseCancelLabPage';
+import AudioGainLabPage from './pages/Dev/AudioGainLabPage';
 import { useEffect } from 'react';
 import type { PermissionAction } from './context/AuthContext';
 
@@ -183,8 +184,10 @@ const AppShell = () => {
 const router = createBrowserRouter([
   // 0. 計測ページ。背景エフェクトの計測は本番でも公開（ログイン不要）：自分のカメラを使うだけで
   //    サーバーには一切アクセスしないため、誰が開いても問題ない。遅いPCの持ち主にその場で開いて
-  //    もらえるように。ノイズキャンセルの方は開発時のみ。
+  //    もらえるように。音量計測も同じ理由で公開（自分のマイクと自サイトのモデルファイルしか使わない）。
+  //    ノイズキャンセルの方は開発時のみ。
   { path: '/dev/blur-lab', element: <BackgroundBlurLabPage /> },
+  { path: '/dev/audio-gain-lab', element: <AudioGainLabPage /> },
   ...(import.meta.env.DEV ? [{ path: '/dev/noise-cancel-lab', element: <NoiseCancelLabPage /> }] : []),
 
   // 1. 公開ルート

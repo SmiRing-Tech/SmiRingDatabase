@@ -32,9 +32,11 @@ import {
  *    is in use (hardware or not).
  *  - `recv` (everyone else's screen share): `freezeCount`/`totalFreezesDuration` — Chrome's own
  *    measure of "the picture visibly stopped" — plus dropped frames, jitter-buffer delay, loss.
- *  - `audio-send` (this browser's mic): bitrate, and loss/RTT on the way to the server.
+ *  - `audio-send` (this browser's mic): bitrate, loss/RTT on the way to the server, and the level
+ *    actually handed to the encoder (`levelDb`, see audioLevelDb).
  *  - `audio-recv` (everyone else's mic): the share of audio the decoder had to *invent* to cover
- *    gaps (concealment — what choppy audio actually is), packet loss, jitter-buffer delay.
+ *    gaps (concealment — what choppy audio actually is), packet loss, jitter-buffer delay, and
+ *    the level as decoded here (`levelDb`).
  *  - `cam-send` / `cam-recv`: the same as `send` / `recv`, for cameras instead of screen shares.
  *  - `room`: how many participants / subscribed videos this browser is handling.
  *
@@ -98,6 +100,24 @@ function codecOf(stats: Stats, s: Stat): string | undefined {
 function implLabel(name: string | undefined, powerEfficient: unknown): string {
   const hw = powerEfficient === true ? 'hw' : powerEfficient === false ? 'sw' : '?';
   return `${name ?? '?'}(${hw})`;
+}
+
+/**
+ * Mean level over the interval, from a stats object's cumulative totalAudioEnergy /
+ * totalSamplesDuration (media-source on the send side, inbound-rtp on the receive side).
+ *
+ * Two things to know when reading it: it averages over everything, pauses included, so it
+ * reads lower the more someone pauses (a closed VAD gate reads as silence); and libwebrtc
+ * builds totalAudioEnergy from each 10ms frame's *peak*, not its RMS, so it sits several dB
+ * above an RMS figure. Compare it across participants and between send and receive — not
+ * against /dev/audio-gain-lab's speech levels, which are RMS-based and leave pauses out.
+ */
+function audioLevelDb(d: Deltas, s: Stat | undefined): number | undefined {
+  if (!s) return undefined;
+  const energy = d.of(s, 'totalAudioEnergy');
+  const duration = d.of(s, 'totalSamplesDuration');
+  if (energy === undefined || !duration) return undefined;
+  return round(energy > 0 ? Math.max(-100, 10 * Math.log10(energy / duration)) : -100, 1);
 }
 
 const selectedPair = (stats: Stats) =>
@@ -239,6 +259,7 @@ function logAudioSend(stats: Stats, d: Deltas, now: number) {
   const out = values.find((s) => s.type === 'outbound-rtp' && s.kind === 'audio');
   if (!out) return;
   const remote = values.find((s) => s.type === 'remote-inbound-rtp' && s.localId === out.id);
+  const source = values.find((s) => s.type === 'media-source' && s.kind === 'audio');
   const entry = {
     t: now,
     dir: 'audio-send',
@@ -246,11 +267,14 @@ function logAudioSend(stats: Stats, d: Deltas, now: number) {
     rttMs: round((num(remote, 'roundTripTime') ?? NaN) * 1000),
     lossPct: round((num(remote, 'fractionLost') ?? NaN) * 100, 1),
     jitterMs: round((num(remote, 'jitter') ?? NaN) * 1000),
+    levelDb: audioLevelDb(d, source),
   };
   d.remember(out);
+  if (source) d.remember(source);
   emit(
     entry,
-    `[stats audio-send] ${entry.kbps ?? '?'}kbps | rtt ${entry.rttMs ?? '?'}ms loss ${entry.lossPct ?? '?'}% jitter ${entry.jitterMs ?? '?'}ms`,
+    `[stats audio-send] ${entry.kbps ?? '?'}kbps | rtt ${entry.rttMs ?? '?'}ms loss ${entry.lossPct ?? '?'}% jitter ${entry.jitterMs ?? '?'}ms` +
+      ` | level ${entry.levelDb ?? '?'}dB`,
     (entry.lossPct ?? 0) >= 2,
   );
 }
@@ -272,12 +296,13 @@ function logAudioRecv(from: string, stats: Stats, d: Deltas, now: number) {
     lost: d.of(inb, 'packetsLost'),
     jitterBufferMs: emitted ? round(((d.of(inb, 'jitterBufferDelay') ?? NaN) / emitted) * 1000) : undefined,
     kbps: d.kbps(inb, 'bytesReceived'),
+    levelDb: audioLevelDb(d, inb),
   };
   d.remember(inb);
   emit(
     entry,
     `[stats audio-recv ${from}] concealed ${entry.concealedPct ?? '?'}% (events+${entry.concealEvents ?? '?'})` +
-      ` | lost+${entry.lost ?? '?'} | jb ${entry.jitterBufferMs ?? '?'}ms | ${entry.kbps ?? '?'}kbps`,
+      ` | lost+${entry.lost ?? '?'} | jb ${entry.jitterBufferMs ?? '?'}ms | ${entry.kbps ?? '?'}kbps | level ${entry.levelDb ?? '?'}dB`,
     (entry.concealedPct ?? 0) >= 2,
   );
 }

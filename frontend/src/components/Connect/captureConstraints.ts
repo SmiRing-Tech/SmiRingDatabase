@@ -38,3 +38,11 @@ export const VIDEO_CAPTURE_CONSTRAINTS: MediaTrackConstraints = isMobileDevice()
       // actually sends just burns battery encoding frames simulcast will never transmit).
       frameRate: { ideal: 20 },
     };
+
+/** The mic's capture processing. Shared with the audio-gain lab (pages/Dev), which measures
+ *  levels under exactly these settings by default. */
+export const AUDIO_CAPTURE_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+};
