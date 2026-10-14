@@ -1,5 +1,6 @@
 import { createBrowserRouter, RouterProvider, Navigate, useLocation } from 'react-router-dom';
 import BackgroundBlurLabPage from './pages/Dev/BackgroundBlurLabPage';
+import TemporalLayerLabPage from './pages/Dev/TemporalLayerLabPage';
 import NoiseCancelLabPage from './pages/Dev/NoiseCancelLabPage';
 import AudioGainLabPage from './pages/Dev/AudioGainLabPage';
 import { useEffect } from 'react';
@@ -188,6 +189,8 @@ const router = createBrowserRouter([
   //    ノイズキャンセルの方は開発時のみ。
   { path: '/dev/blur-lab', element: <BackgroundBlurLabPage /> },
   { path: '/dev/audio-gain-lab', element: <AudioGainLabPage /> },
+  // 時間レイヤー実験：通常の Connect トークンを発行するのでログインが必要（未ログインならページ上でそう表示）。
+  { path: '/dev/temporal-lab', element: <TemporalLayerLabPage /> },
   ...(import.meta.env.DEV ? [{ path: '/dev/noise-cancel-lab', element: <NoiseCancelLabPage /> }] : []),
 
   // 1. 公開ルート
