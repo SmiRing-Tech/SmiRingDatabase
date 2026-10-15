@@ -92,6 +92,12 @@ export interface LoadSample {
    */
   recv?: ReceiveStats;
   recvControl?: ReceiveControl;
+  /** Network and what this device sends. Telemetry only — not judged. */
+  net?: NetStats;
+  cameraSend?: SendStats;
+  shareSend?: SendStats;
+  /** The voice leveler on the outgoing mic (lib/audio/voiceFinish). Telemetry only. */
+  leveler?: { gainAvgDb: number; gainMaxDb: number; speakingFraction: number; speechDb: number | null; floorDb: number };
   /** React re-rendering the call screen (lib/renderMeter). Telemetry only — not judged. */
   render?: RenderStats;
 }
@@ -117,6 +123,26 @@ export interface ReceiveStats {
   freezes: number;
   /** Tallest stream received, px. */
   maxHeight: number;
+}
+
+export interface NetStats {
+  /** Everything this device sends / receives, kbps. */
+  upKbps?: number;
+  downKbps?: number;
+  /** The browser's estimate of the usable uplink (what the encoders are given to share), kbps. */
+  bweKbps?: number;
+  rttMs?: number;
+}
+
+/** One outgoing video (all its simulcast layers together). */
+export interface SendStats {
+  kbps: number;
+  /** Tallest layer actually sent, px, and its frame rate. */
+  height: number;
+  fps: number;
+  /** Share of the window the encoder was held back by the uplink / by CPU, 0..1. */
+  bandwidthLimited?: number;
+  cpuLimited?: number;
 }
 
 /** What the receiving steps are doing (receiveFpsController.ts). Telemetry only. */
@@ -164,13 +190,17 @@ export const GOVERNOR_THRESHOLDS = {
   audioUnderrunOverload: 2,
   /**
    * Receiving side: remote video frames dropped per second, and decode time per frame (both
-   * stretch out when the CPU can't keep up — a Pixel 7 decoded at 22-50ms/frame while starved,
-   * 5-8ms when not). Not calibrated yet, so off (Infinity) until real calls' numbers are in.
+   * stretch out when the CPU can't keep up — a Pixel 7 decoded at 22-50ms/frame while starved).
+   * Calibrated 2026-10-15 on a 70-minute weekly meeting (3 coping machines: M4 Mac, two Intel Arc
+   * Windows laptops, up to 3 streams incl. 1080p share): decode p99 <=2.7ms, max 9ms; Android
+   * hardware decode of 720p runs 7-10ms when healthy (lab), hence the calm line at 15. Drops come
+   * as isolated bursts (up to 16/s in one window, at most 2 windows in a row) — never the 4+
+   * consecutive windows escalation needs — so 3/s only counts when it persists.
    */
-  recvDropOverloadPerSec: Infinity,
-  recvDropCalmPerSec: Infinity,
-  recvDecodeOverloadMs: Infinity,
-  recvDecodeCalmMs: Infinity,
+  recvDropOverloadPerSec: 3,
+  recvDropCalmPerSec: 0.5,
+  recvDecodeOverloadMs: 25,
+  recvDecodeCalmMs: 15,
   /** Overloaded this long, continuously, before stepping down. */
   escalateAfterMs: 8_000,
   /** ...or this long when the audio is the one in trouble (it comes first). */

@@ -106,6 +106,34 @@ function rectifierCurve(): Float32Array<ArrayBuffer> {
   return curve;
 }
 
+/** How much leveler history VoiceFinishChain keeps for levelerWindow(). */
+const LEVELER_HISTORY_MS = 10_000;
+
+/** The leveler over a recent window — telemetry (useLoadGovernor) and diagnostics. */
+export interface LevelerWindow {
+  /** Gain applied, dB: average and highest over the window. */
+  gainAvgDb: number;
+  gainMaxDb: number;
+  /** Share of the window the leveler heard speech, 0..1. */
+  speakingFraction: number;
+  /** Input speech level (before the gain), dBFS; null until speech has been heard. */
+  speechDb: number | null;
+  /** Input noise floor, dBFS: pauses come out at roughly floor + gain (before EQ/compression). */
+  floorDb: number;
+}
+
+let activeChain: VoiceFinishChain | null = null;
+
+/** The chain on the outgoing mic right now (one per call), if any. */
+export function activeVoiceFinish(): VoiceFinishChain | null {
+  return activeChain;
+}
+
+/** Called by the call's mic graph when it installs its chain (disconnect() clears it). */
+export function setActiveVoiceFinish(chain: VoiceFinishChain | null) {
+  activeChain = chain;
+}
+
 const COMPRESSION: Record<VoiceCompression, { threshold: number; ratio: number; knee: number }> = {
   // ratio 1 with a 0dB threshold is an identity (and its automatic makeup gain is 0dB).
   off: { threshold: 0, ratio: 1, knee: 0 },
@@ -125,6 +153,7 @@ export class VoiceFinishChain {
   private readonly airMix: GainNode;
   private readonly leveler: AudioWorkletNode;
   private lastLevelerState: VoiceLevelerState | null = null;
+  private readonly levelerHistory: Array<{ at: number; state: VoiceLevelerState }> = [];
 
   constructor(ctx: BaseAudioContext, params: VoiceFinishParams = DEFAULT_VOICE_FINISH) {
     this.leveler = new AudioWorkletNode(ctx, 'voice-leveler', {
@@ -134,6 +163,11 @@ export class VoiceFinishChain {
     });
     this.leveler.port.onmessage = (event: MessageEvent<VoiceLevelerState>) => {
       this.lastLevelerState = event.data;
+      const now = performance.now();
+      this.levelerHistory.push({ at: now, state: event.data });
+      while (this.levelerHistory.length > 0 && now - this.levelerHistory[0].at > LEVELER_HISTORY_MS) {
+        this.levelerHistory.shift();
+      }
     };
 
     this.lowCut = ctx.createBiquadFilter();
@@ -213,7 +247,23 @@ export class VoiceFinishChain {
     return this.lastLevelerState;
   }
 
+  /** The leveler over the last `ms` (states arrive every ~100ms); null if none arrived. */
+  levelerWindow(ms: number): LevelerWindow | null {
+    const since = performance.now() - ms;
+    const states = this.levelerHistory.filter((h) => h.at >= since).map((h) => h.state);
+    if (states.length === 0) return null;
+    const last = states[states.length - 1];
+    return {
+      gainAvgDb: states.reduce((sum, s) => sum + s.gainDb, 0) / states.length,
+      gainMaxDb: Math.max(...states.map((s) => s.gainDb)),
+      speakingFraction: states.filter((s) => s.speaking).length / states.length,
+      speechDb: last.speechDb,
+      floorDb: last.floorDb,
+    };
+  }
+
   disconnect() {
+    if (activeChain === this) activeChain = null;
     this.leveler.port.onmessage = null;
     this.leveler.disconnect();
     this.lowCut.disconnect();

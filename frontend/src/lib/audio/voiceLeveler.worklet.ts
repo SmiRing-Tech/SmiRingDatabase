@@ -49,6 +49,8 @@ export interface VoiceLevelerState {
   /** Current speech-level estimate before the gain, dBFS; null until speech has been heard. */
   speechDb: number | null;
   speaking: boolean;
+  /** Tracked noise floor of the input, dBFS — what pauses sound like before the gain. */
+  floorDb: number;
 }
 
 const BLOCK_MS = 10;
@@ -141,6 +143,7 @@ class VoiceLevelerProcessor extends AudioWorkletProcessor {
         gainDb: this.gainDb,
         speechDb: this.levelPower === null ? null : toDb(this.levelPower),
         speaking: this.speaking,
+        floorDb: this.floorDb,
       };
       this.port.postMessage(state);
     }

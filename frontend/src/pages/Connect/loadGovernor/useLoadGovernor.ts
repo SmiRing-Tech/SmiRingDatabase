@@ -3,6 +3,7 @@ import { useLocalParticipant, useRoomContext } from '@livekit/components-react';
 import { Track, TrackEvent, type LocalVideoTrack } from 'livekit-client';
 import { subscribeLoadSignals } from '../../../lib/loadSignals';
 import { takeRenderMeter } from '../../../lib/renderMeter';
+import { activeVoiceFinish } from '../../../lib/audio/voiceFinish';
 import { applyCaptureConstraints, cameraSourceTrack } from '../../../lib/video/backgroundProcessor';
 import { diagEvent, diagState } from '../../../lib/connectDiagnostics';
 import { recordTelemetry, startTelemetry, stopTelemetry } from '../../../lib/connectTelemetry';
@@ -16,7 +17,9 @@ import {
   type GovernorState,
   type GovernorStep,
   type LoadSample,
+  type NetStats,
   type ReceiveLevel,
+  type SendStats,
   type ReceiveStats,
   type VideoLevel,
   type VideoProfile,
@@ -277,40 +280,95 @@ export function useLoadGovernor({
       longTaskObserver.observe({ type: 'longtask', buffered: false });
     }
 
-    // Encoder CPU limitation: share of time each outbound video stream spent CPU-limited,
-    // from the cumulative qualityLimitationDurations (falls back to the current reason).
-    const lastDurations = new Map<string, { cpu: number; total: number }>();
-    const encoderCpuFraction = async (): Promise<number | undefined> => {
-      const senders = [Track.Source.Camera, Track.Source.ScreenShare]
-        .map((source) => localParticipant.getTrackPublication(source)?.track?.sender)
-        .filter((sender): sender is RTCRtpSender => !!sender);
-      let worst: number | undefined;
-      for (const sender of senders) {
+    // What this device sends: per video (camera, screen share) its bitrate, tallest layer sent and
+    // how much of the window its encoder was held back by CPU or by the uplink (from the
+    // cumulative qualityLimitationDurations); and the publisher connection's throughput and
+    // bandwidth estimate. Any local track's report carries the connection's candidate pair.
+    const lastOutbound = new Map<string, { bytes: number; cpu: number; bandwidth: number; total: number }>();
+    let lastPubPair: { bytes: number; at: number } | null = null;
+    const sendCodecs = new Map<string, string>();
+    const sendStats = async (seconds: number) => {
+      let encoderCpu: number | undefined;
+      let net: Pick<NetStats, 'upKbps' | 'bweKbps' | 'rttMs'> = {};
+      let pairRead = false; // the connection's pair, read once per sample from whichever sender has it
+      const perSource: Partial<Record<'camera' | 'share', SendStats>> = {};
+      for (const [key, source] of [
+        ['camera', Track.Source.Camera],
+        ['share', Track.Source.ScreenShare],
+        ['mic', Track.Source.Microphone],
+      ] as const) {
+        const sender = localParticipant.getTrackPublication(source)?.track?.sender;
+        if (!sender) continue;
         const report = await sender.getStats();
-        report.forEach((stat) => {
-          if (stat.type !== 'outbound-rtp' || stat.kind !== 'video' || stat.active === false) return;
-          const durations = stat.qualityLimitationDurations as Record<string, number> | undefined;
-          let fraction: number | undefined;
-          if (durations) {
-            const total = Object.values(durations).reduce((sum, v) => sum + v, 0);
-            const cpu = durations.cpu ?? 0;
-            const prev = lastDurations.get(stat.id);
-            lastDurations.set(stat.id, { cpu, total });
-            if (prev && total > prev.total) fraction = (cpu - prev.cpu) / (total - prev.total);
-          } else if (typeof stat.qualityLimitationReason === 'string') {
-            fraction = stat.qualityLimitationReason === 'cpu' ? 1 : 0;
+        const stats = [...report.values()];
+        if (!pairRead) {
+          const pair = stats.find((s) => s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded');
+          if (pair) {
+            pairRead = true;
+            const now = performance.now();
+            const bytes = pair.bytesSent ?? 0;
+            if (lastPubPair && bytes >= lastPubPair.bytes) {
+              net = {
+                upKbps: ((bytes - lastPubPair.bytes) * 8) / (now - lastPubPair.at),
+                bweKbps: typeof pair.availableOutgoingBitrate === 'number' ? pair.availableOutgoingBitrate / 1000 : undefined,
+                rttMs: typeof pair.currentRoundTripTime === 'number' ? pair.currentRoundTripTime * 1000 : undefined,
+              };
+            }
+            lastPubPair = { bytes, at: now };
           }
-          if (fraction !== undefined) worst = Math.max(worst ?? 0, fraction);
-        });
+        }
+        if (key === 'mic') continue;
+        const send: SendStats = { kbps: 0, height: 0, fps: 0 };
+        let worstCpu: number | undefined;
+        let worstBandwidth: number | undefined;
+        for (const stat of stats) {
+          if (stat.type !== 'outbound-rtp' || stat.kind !== 'video') continue;
+          const codec = stat.codecId ? report.get(stat.codecId)?.mimeType : undefined;
+          if (typeof codec === 'string' && sendCodecs.get(key) !== codec) {
+            sendCodecs.set(key, codec);
+            recordTelemetry('send-codec', { source: key, codec });
+          }
+          const durations = stat.qualityLimitationDurations as Record<string, number> | undefined;
+          const total = durations ? Object.values(durations).reduce((sum, v) => sum + v, 0) : 0;
+          const now = { bytes: stat.bytesSent ?? 0, cpu: durations?.cpu ?? 0, bandwidth: durations?.bandwidth ?? 0, total };
+          const prev = lastOutbound.get(stat.id);
+          lastOutbound.set(stat.id, now);
+          if (stat.active === false) continue;
+          if (prev && now.bytes >= prev.bytes) send.kbps += ((now.bytes - prev.bytes) * 8) / 1000 / seconds;
+          if ((stat.frameHeight ?? 0) > send.height) {
+            send.height = stat.frameHeight ?? 0;
+            send.fps = stat.framesPerSecond ?? 0;
+          }
+          let cpu: number | undefined;
+          let bandwidth: number | undefined;
+          if (durations && prev && total > prev.total) {
+            cpu = (now.cpu - prev.cpu) / (total - prev.total);
+            bandwidth = (now.bandwidth - prev.bandwidth) / (total - prev.total);
+          } else if (!durations && typeof stat.qualityLimitationReason === 'string') {
+            cpu = stat.qualityLimitationReason === 'cpu' ? 1 : 0;
+            bandwidth = stat.qualityLimitationReason === 'bandwidth' ? 1 : 0;
+          }
+          if (cpu !== undefined) worstCpu = Math.max(worstCpu ?? 0, cpu);
+          if (bandwidth !== undefined) worstBandwidth = Math.max(worstBandwidth ?? 0, bandwidth);
+        }
+        send.cpuLimited = worstCpu;
+        send.bandwidthLimited = worstBandwidth;
+        if (worstCpu !== undefined) encoderCpu = Math.max(encoderCpu ?? 0, worstCpu);
+        if (send.height > 0 || send.kbps > 0) perSource[key] = send;
       }
-      return worst;
+      return { encoderCpu, net, camera: perSource.camera, share: perSource.share };
     };
 
     // Receiving side: decode work for everyone else's video, from each remote track's receiver.
     const lastInbound = new Map<string, { decoded: number; decodeTime: number; dropped: number; freezes: number }>();
+    let lastSubPair: { bytes: number; at: number } | null = null;
+    let downKbps: number | undefined;
+    let subPairRead = false;
     const decoders = new Set<string>();
     const receiveStats = async (seconds: number, cameras: CameraFps[]): Promise<ReceiveStats> => {
       const result: ReceiveStats = { streams: 0, decodedFps: 0, droppedPerSec: 0, freezes: 0, maxHeight: 0 };
+      downKbps = undefined;
+      subPairRead = false;
       let decodedTotal = 0;
       let decodeTimeTotal = 0;
       const seen = new Set<string>();
@@ -320,6 +378,15 @@ export function useLoadGovernor({
           if (!receiver) continue;
           const report = await receiver.getStats();
           report.forEach((stat) => {
+            if (stat.type === 'candidate-pair' && stat.nominated && stat.state === 'succeeded' && !subPairRead) {
+              subPairRead = true;
+              const at = performance.now();
+              const bytes = stat.bytesReceived ?? 0;
+              if (lastSubPair && bytes >= lastSubPair.bytes && at > lastSubPair.at) {
+                downKbps = ((bytes - lastSubPair.bytes) * 8) / (at - lastSubPair.at);
+              }
+              lastSubPair = { bytes, at };
+            }
             if (stat.type !== 'inbound-rtp' || stat.kind !== 'video') return;
             seen.add(stat.id);
             result.streams += 1;
@@ -366,8 +433,8 @@ export function useLoadGovernor({
       try {
         const now = performance.now();
         const bg = backgroundRef.current;
-        const encoder = await encoderCpuFraction().catch(() => undefined);
         const seconds = Math.max(0.001, (now - lastSampleAt) / 1000);
+        const sent = await sendStats(seconds).catch(() => undefined);
         const cameras: CameraFps[] = [];
         const recv = await receiveStats(seconds, cameras).catch(() => undefined);
         recvController.update(cameras);
@@ -384,7 +451,7 @@ export function useLoadGovernor({
           visible: document.visibilityState === 'visible',
           cameraOn: localParticipant.isCameraEnabled,
           sharing: localParticipant.isScreenShareEnabled,
-          encoderCpuFraction: encoder,
+          encoderCpuFraction: sent?.encoderCpu,
           mainLagMaxMs: Math.max(0, lagMax),
           longTaskMsPerSec: longTaskMs / seconds,
           bgActive: t.bgReports > 0,
@@ -399,6 +466,10 @@ export function useLoadGovernor({
           audioOverloaded: t.audioOverloaded,
           recv,
           recvControl: recvController.stats(),
+          net: { ...sent?.net, downKbps },
+          cameraSend: sent?.camera,
+          shareSend: sent?.share,
+          leveler: activeVoiceFinish()?.levelerWindow(SAMPLE_MS) ?? undefined,
           render: {
             perSec: rendered.renders / seconds,
             msPerSec: rendered.renderMs / seconds,
@@ -459,6 +530,9 @@ export function useLoadGovernor({
 /** One telemetry line per sample: short keys, rounded numbers (it's every 2s for the whole call). */
 function compactSample(s: LoadSample, step: GovernorStep) {
   const r1 = (v: number | undefined) => (v === undefined ? undefined : Math.round(v * 10) / 10);
+  const r0 = (v: number | undefined) => (v === undefined || !Number.isFinite(v) ? undefined : Math.round(v));
+  // Fractions only when non-zero: most windows aren't limited at all.
+  const frac = (v: number | undefined) => (v ? Math.round(v * 100) / 100 : undefined);
   const st = step.state;
   return {
     p: step.verdict.pressure,
@@ -484,6 +558,26 @@ function compactSample(s: LoadSample, step: GovernorStep) {
     rdrop: s.recv?.droppedPerSec ? r1(s.recv.droppedPerSec) : undefined,
     rfrz: s.recv?.freezes || undefined,
     rh: s.recv?.streams ? s.recv.maxHeight : undefined,
+    // Network: up/down kbps, uplink estimate kbps, round trip ms.
+    up: r0(s.net?.upKbps),
+    down: r0(s.net?.downKbps),
+    bwe: r0(s.net?.bweKbps),
+    rtt: r0(s.net?.rttMs),
+    // Camera / screen share sent: kbps, tallest layer px, its fps, uplink- and CPU-limited share.
+    ck: r0(s.cameraSend?.kbps),
+    ch: s.cameraSend?.height || undefined,
+    cbw: frac(s.cameraSend?.bandwidthLimited),
+    sk: r0(s.shareSend?.kbps),
+    shh: s.shareSend?.height || undefined,
+    sfps: r1(s.shareSend?.fps),
+    sbw: frac(s.shareSend?.bandwidthLimited),
+    scpu: frac(s.shareSend?.cpuLimited),
+    // Voice leveler: gain avg/max dB, speaking share, input speech level and noise floor dBFS.
+    lg: r1(s.leveler?.gainAvgDb),
+    lgx: r1(s.leveler?.gainMaxDb),
+    lsp: s.leveler ? Math.round(s.leveler.speakingFraction * 100) / 100 : undefined,
+    lsd: r1(s.leveler?.speechDb ?? undefined),
+    lfl: r1(s.leveler?.floorDb),
     // Receiving steps: cameras asked for fewer frames, cameras found without temporal layers.
     rthr: s.recvControl?.throttled || undefined,
     rnl: s.recvControl?.noLayers || undefined,

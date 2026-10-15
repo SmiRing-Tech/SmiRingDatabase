@@ -61,7 +61,7 @@ async function republishCamera(localParticipant: LocalParticipant, codec: VideoC
 
 function useCodecSwitch() {
   const { localParticipant, isCameraEnabled, isScreenShareEnabled } = useLocalParticipant();
-  const [codec, setCodec] = useState<VideoCodecPreference | undefined>(() => readVideoCodecPreference('camera'));
+  const [codec, setCodec] = useState<VideoCodecPreference | undefined>(() => readVideoCodecPreference());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 

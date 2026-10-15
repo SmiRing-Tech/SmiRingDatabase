@@ -1,39 +1,33 @@
 /**
- * Which video codec this browser publishes camera and screen share with — a per-browser
- * diagnostics switch, set from the "通話の診断" dialog. Unset means LiveKit's own default
- * (VP8), which nearly every PC encodes in software; H.264 is the codec most PCs have a
- * hardware encoder for, and comparing the two on a struggling machine is the point of the
- * switch.
+ * Which video codec this browser publishes camera and screen share with — a diagnostics switch,
+ * set from the "通話の診断" dialog. Unset means LiveKit's own default (VP8), which nearly every PC
+ * encodes in software; H.264 is the codec most PCs have a hardware encoder for, and comparing the
+ * two on a struggling machine is the point of the switch.
  *
- * Supersedes the DevTools-only `smiring.debug.shareCodec` flag (screen share only); that key is
- * still honored as a fallback so existing instructions keep working.
+ * Kept in memory only, so it lasts until the page is closed or reloaded. It used to live in
+ * localStorage, and a switch flipped for one test silently kept the next day's whole meeting on
+ * H.264 (2026-10-15) — a diagnostics setting shouldn't outlive the session it was flipped in. Any
+ * value left in storage by that version (or the old DevTools-only `smiring.debug.shareCodec`
+ * flag) is removed on load.
  */
 export type VideoCodecPreference = 'vp8' | 'h264';
 
-const STORAGE_KEY = 'smiring.debug.videoCodec';
-const LEGACY_SHARE_KEY = 'smiring.debug.shareCodec';
+let current: VideoCodecPreference | undefined;
 
-function parse(value: string | null): VideoCodecPreference | undefined {
-  return value === 'h264' || value === 'vp8' ? value : undefined;
+try {
+  localStorage.removeItem('smiring.debug.videoCodec');
+  localStorage.removeItem('smiring.debug.shareCodec');
+} catch {
+  // Blocked storage: nothing could have been left there either.
 }
 
-export function readVideoCodecPreference(source: 'camera' | 'screen' = 'camera'): VideoCodecPreference | undefined {
-  try {
-    const value = parse(localStorage.getItem(STORAGE_KEY));
-    if (value || source === 'camera') return value;
-    return parse(localStorage.getItem(LEGACY_SHARE_KEY));
-  } catch {
-    return undefined;
-  }
+/** One switch for both camera and screen share. */
+export function readVideoCodecPreference(): VideoCodecPreference | undefined {
+  return current;
 }
 
 export function writeVideoCodecPreference(codec: VideoCodecPreference | undefined) {
-  try {
-    if (codec) localStorage.setItem(STORAGE_KEY, codec);
-    else localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // Private mode / blocked storage: the switch just doesn't persist past this call.
-  }
+  current = codec;
 }
 
 /** publishTrack() options for the preferred codec, or undefined for LiveKit's default. No backup

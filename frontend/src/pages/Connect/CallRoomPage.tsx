@@ -36,7 +36,7 @@ import {
 import { MicVAD } from '@ricky0123/vad-web';
 import { GtcrnNoiseCancelTrack, GTCRN_PIPELINE_LATENCY_MS } from '../../lib/audio/gtcrn/GtcrnNoiseCancelTrack';
 import { keepAudioContextResumed } from '../../lib/audio/keepAudioContextResumed';
-import { DEFAULT_VOICE_FINISH, loadVoiceFinish, VoiceFinishChain } from '../../lib/audio/voiceFinish';
+import { DEFAULT_VOICE_FINISH, loadVoiceFinish, setActiveVoiceFinish, VoiceFinishChain } from '../../lib/audio/voiceFinish';
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import '@livekit/components-styles';
@@ -621,12 +621,19 @@ function useVadAutoGate(
         voiceFinish = new VoiceFinishChain(gateCtx, noiseCancelTrack ? DEFAULT_VOICE_FINISH : { ...DEFAULT_VOICE_FINISH, air: 0 });
         delayNode.connect(voiceFinish.input);
         voiceFinish.output.connect(gainNode);
+        setActiveVoiceFinish(voiceFinish);
         const finish = voiceFinish;
         unregisterVoiceFinishProbe = registerDiagProbe('voiceFinish', () => {
           const state = finish.levelerState;
+          // Over the diagnostics' 2s sampling interval, so a brief push up isn't missed.
+          const window = finish.levelerWindow(2000);
+          const r1 = (v: number | null | undefined) => (v == null ? undefined : Math.round(v * 10) / 10);
           return {
-            levelerGainDb: state ? Math.round(state.gainDb * 10) / 10 : undefined,
-            speechDb: state?.speechDb != null ? Math.round(state.speechDb * 10) / 10 : undefined,
+            levelerGainDb: r1(state?.gainDb),
+            levelerGainMaxDb: r1(window?.gainMaxDb),
+            speakingPct: window ? Math.round(window.speakingFraction * 100) : undefined,
+            speechDb: r1(state?.speechDb),
+            floorDb: r1(state?.floorDb),
           };
         });
       } else {
@@ -1663,7 +1670,7 @@ function useScreenShareToggle() {
   const toggleShare = useCallback(async () => {
     try {
       // Codec switch from the "通話の診断" dialog (see lib/videoCodecPreference).
-      const codec = isScreenShareEnabled ? undefined : readVideoCodecPreference('screen');
+      const codec = isScreenShareEnabled ? undefined : readVideoCodecPreference();
       if (codec) console.info(`[share] codec override: ${codec}`);
       await localParticipant.setScreenShareEnabled(
         !isScreenShareEnabled,
@@ -1682,7 +1689,15 @@ function useScreenShareToggle() {
           // slides and code, and the reason a static share stays readable at 15fps.
           contentHint: 'detail',
         },
-        codecPublishOptions(codec),
+        {
+          // Explicit, because publishDefaults' 'maintain-framerate' (meant for cameras, see
+          // roomOptions) otherwise applies here too — LiveKit's own screen-share default is
+          // 'maintain-resolution'. With it, a squeezed uplink made the sharer's encoder shrink the
+          // share to 180p (2026-10-15 meeting) instead of dropping frames: text needs pixels, a
+          // slide doesn't need 15fps.
+          degradationPreference: 'maintain-resolution',
+          ...codecPublishOptions(codec),
+        },
       );
     } catch (e) {
       console.error('Failed to toggle screen share:', e);
@@ -3124,7 +3139,7 @@ function CallRoomInner({
               // undefined (the default) leaves LiveKit's own publishDefaults in charge.
               await localParticipant.publishTrack(
                 pendingVideoTrack,
-                codecPublishOptions(readVideoCodecPreference('camera')),
+                codecPublishOptions(readVideoCodecPreference()),
               );
               if (mediaChoicesRef.current?.videoEnabled === false) {
                 await localParticipant.setCameraEnabled(false);

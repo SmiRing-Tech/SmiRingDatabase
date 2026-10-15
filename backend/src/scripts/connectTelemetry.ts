@@ -58,6 +58,7 @@ async function loadSession(dir: string) {
   const first = parts[0];
   const withEnv = parts.find((p) => p.env);
   return {
+    dir: dir.split('/').filter(Boolean).pop(),
     uploader,
     session: first?.session,
     roomId: first?.roomId,
@@ -96,6 +97,9 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
   let audioChunks = 0;
   let audioPass = 0;
   let audioUnderruns = 0;
+  const net = { n: 0, up: 0, upMax: 0, down: 0, downMax: 0, bweN: 0, bwe: 0, bweMin: Infinity, rttMax: 0 };
+  const share = { n: 0, heights: {} as Record<string, number>, bwLimited: 0, cpuLimited: 0, kbps: 0 };
+  const lev = { n: 0, gain: 0, atMax: 0, speaking: 0, floor: 0, floorN: 0, speech: 0, speechN: 0 };
   const react = { samples: 0, perSec: 0, msPerSec: 0, maxMsPerSec: 0, maxPass: 0 };
   const recv = { samples: 0, maxStreams: 0, fps: 0, decodeMax: 0, decodeSum: 0, decodeN: 0, dropped: 0, freezes: 0, maxHeight: 0 };
   for (const e of samples) {
@@ -113,6 +117,42 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
     audioStressed += e.as ?? 0;
     audioPass += e.ap ?? 0;
     audioUnderruns += e.au ?? 0;
+    if (e.up !== undefined || e.down !== undefined) {
+      net.n += 1;
+      net.up += e.up ?? 0;
+      net.upMax = Math.max(net.upMax, e.up ?? 0);
+      net.down += e.down ?? 0;
+      net.downMax = Math.max(net.downMax, e.down ?? 0);
+      if (e.bwe !== undefined) {
+        net.bweN += 1;
+        net.bwe += e.bwe;
+        net.bweMin = Math.min(net.bweMin, e.bwe);
+      }
+      net.rttMax = Math.max(net.rttMax, e.rtt ?? 0);
+    }
+    if (e.sh && e.shh) {
+      share.n += 1;
+      const bucket = e.shh >= 1000 ? '1080p級' : e.shh >= 700 ? '720p級' : e.shh >= 500 ? '540p級' : e.shh >= 300 ? '360p級' : '〜240p';
+      share.heights[bucket] = (share.heights[bucket] ?? 0) + 1;
+      share.bwLimited += e.sbw ?? 0;
+      share.cpuLimited += e.scpu ?? 0;
+      share.kbps += e.sk ?? 0;
+    }
+    if (e.lg !== undefined && e.lsp) {
+      // Only windows with some speech: muted / silent stretches say nothing about the gain needed.
+      lev.n += 1;
+      lev.gain += e.lg;
+      if (e.lgx >= 11.5) lev.atMax += 1;
+      lev.speaking += e.lsp;
+      if (e.lfl !== undefined) {
+        lev.floor += e.lfl;
+        lev.floorN += 1;
+      }
+      if (e.lsd !== undefined) {
+        lev.speech += e.lsd;
+        lev.speechN += 1;
+      }
+    }
     if (e.rr) {
       react.samples += 1;
       react.perSec += e.rr;
@@ -139,6 +179,7 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
   const start = s.startedAt ? new Date(s.startedAt).toISOString().slice(11, 16) : '?';
   console.log(`\n■ ${s.uploader}  ${start}UTC  ${minutes.toFixed(1)}分  mode=${mode}  room=${s.roomId}${s.missingParts ? `  (欠けたパート ${s.missingParts})` : ''}`);
   console.log(`  端末: ${describeEnv(s.env)}`);
+  console.log(`  保存するには: get ${s.dir}`);
   console.log(
     `  重い判定: ${pct(overloaded, visible)} (表示中のサンプル ${visible}) 理由: ${
       Object.entries(reasonCount).map(([k, v]) => `${k}×${v}`).join(' ') || 'なし'
@@ -156,6 +197,27 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
           recv.decodeN ? (recv.decodeSum / recv.decodeN).toFixed(1) : '-'
         }ms 最大${recv.decodeMax}ms/コマ | 取りこぼし ${Math.round(recv.dropped)}コマ | 固まり ${recv.freezes}回 | 最大${recv.maxHeight}p | デコーダ ${decoders.join(', ') || '?'}`
       : '  受信: (映像の受信なし)',
+  );
+  console.log(
+    net.n
+      ? `  回線: 上り 平均${Math.round(net.up / net.n)} 最大${net.upMax}kbps | 下り 平均${Math.round(net.down / net.n)} 最大${net.downMax}kbps | 上りの推定帯域 平均${
+          net.bweN ? Math.round(net.bwe / net.bweN) : '-'
+        } 最低${net.bweMin === Infinity ? '-' : net.bweMin}kbps | 往復 最大${net.rttMax}ms`
+      : '  回線: (記録なし)',
+  );
+  if (share.n) {
+    console.log(
+      `  画面共有の送信: ${Object.entries(share.heights).map(([k, v]) => `${k} ${((v * 2) / 60).toFixed(1)}分`).join(' / ')} | 平均${Math.round(
+        share.kbps / share.n,
+      )}kbps | 回線で制限 ${Math.round((share.bwLimited / share.n) * 100)}% CPUで制限 ${Math.round((share.cpuLimited / share.n) * 100)}%`,
+    );
+  }
+  console.log(
+    lev.n
+      ? `  レベラー(話している区間): 平均+${(lev.gain / lev.n).toFixed(1)}dB | 上限(+12dB)に達した区間 ${Math.round((lev.atMax / lev.n) * 100)}% | 声の大きさ 平均${
+          lev.speechN ? (lev.speech / lev.speechN).toFixed(1) : '-'
+        }dBFS | 無音時のノイズ 平均${lev.floorN ? (lev.floor / lev.floorN).toFixed(1) : '-'}dBFS`
+      : '  レベラー: (記録なし)',
   );
   console.log(
     react.samples
