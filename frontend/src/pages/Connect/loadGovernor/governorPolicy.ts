@@ -5,21 +5,30 @@
  * the actions.
  *
  * Priorities (product call): audio must never break up, then screen share keeps its quality,
- * then the camera. So the governor only ever lightens the *camera* side, and lightens it faster
- * when the audio is the one struggling. Screen share is never touched; its encoder running out
- * of CPU counts as pressure like anything else.
+ * then the camera. So the governor only ever lightens *camera* video — the person's own, and the
+ * other people's they receive — and lightens it faster when the audio is the one struggling.
+ * Screen share is never touched, sent or received; its encoder running out of CPU counts as
+ * pressure like anything else.
  *
  * Ladder, one step at a time:
  *   1. background effect 'high' -> 'balanced' (not restored automatically)
- *   2. camera 540p / 15fps, segmentation 10/s
- *   3. camera 360p / 10fps, segmentation 5/s (the floor: segmentation never under half the
+ *   2. receive 1: other people's cameras shown small arrive at 10fps (receiveFpsController.ts)
+ *   3. camera 540p / 15fps, segmentation 10/s
+ *   4. receive 2: small ones at 5fps, ones shown large at 10fps
+ *   5. camera 360p / 10fps, segmentation 5/s (the floor: segmentation never under half the
  *      camera's frame rate)
- *   4. camera off, with a dialog saying why (the person can turn it back on; it then resumes at 3)
- * Steps 2-3 come back automatically after a calm stretch, with backoff if they relapse.
- * (Moving noise cancellation to the server slots in before 4 once it exists.)
+ *   6. camera off, with a dialog saying why (the person can turn it back on; it then resumes at 5)
+ * Receiving steps come first because they only change what this person sees; the camera steps
+ * change what everyone sees of them. A step that would change nothing is skipped: the camera
+ * steps while the camera is off, the receiving steps when nothing received could be slowed down
+ * (no cameras, or only senders without temporal layers — iPhones, Safari, H.264).
+ * Steps 2-5 come back automatically after a calm stretch, most recent first, with backoff if
+ * they relapse. No notice for the receiving steps: they only affect this person's own view.
+ * (Moving noise cancellation to the server slots in before 6 once it exists.)
  */
 
 export type VideoLevel = 0 | 1 | 2;
+export type ReceiveLevel = 0 | 1 | 2;
 
 export interface VideoProfile {
   width: number;
@@ -82,6 +91,7 @@ export interface LoadSample {
    * not judged yet (lightening what's received is a later step).
    */
   recv?: ReceiveStats;
+  recvControl?: ReceiveControl;
   /** React re-rendering the call screen (lib/renderMeter). Telemetry only — not judged. */
   render?: RenderStats;
 }
@@ -107,6 +117,14 @@ export interface ReceiveStats {
   freezes: number;
   /** Tallest stream received, px. */
   maxHeight: number;
+}
+
+/** What the receiving steps are doing (receiveFpsController.ts). Telemetry only. */
+export interface ReceiveControl {
+  /** Remote cameras currently asked for fewer frames. */
+  throttled: number;
+  /** Remote cameras found to have no temporal layers (nothing to slow down). */
+  noLayers: number;
 }
 
 /**
@@ -144,6 +162,15 @@ export const GOVERNOR_THRESHOLDS = {
   /** Playback underruns in one window that mean the audio is breaking up (a lone one happens on
    *  a healthy machine now and then). Any passthrough chunk counts regardless. */
   audioUnderrunOverload: 2,
+  /**
+   * Receiving side: remote video frames dropped per second, and decode time per frame (both
+   * stretch out when the CPU can't keep up — a Pixel 7 decoded at 22-50ms/frame while starved,
+   * 5-8ms when not). Not calibrated yet, so off (Infinity) until real calls' numbers are in.
+   */
+  recvDropOverloadPerSec: Infinity,
+  recvDropCalmPerSec: Infinity,
+  recvDecodeOverloadMs: Infinity,
+  recvDecodeCalmMs: Infinity,
   /** Overloaded this long, continuously, before stepping down. */
   escalateAfterMs: 8_000,
   /** ...or this long when the audio is the one in trouble (it comes first). */
@@ -151,7 +178,7 @@ export const GOVERNOR_THRESHOLDS = {
   /** After any change, give it this long to take effect before judging again. */
   settleMs: 15_000,
   settleAudioMs: 6_000,
-  /** Calm this long before stepping a video level back up (times the backoff). */
+  /** Calm this long before undoing a step (times the backoff). */
   recoverAfterMs: 60_000,
   /** Overloaded again within this long of a recovery = the recovery didn't hold. */
   relapseWindowMs: 30_000,
@@ -200,6 +227,16 @@ export function classify(sample: LoadSample, T: GovernorThresholds = GOVERNOR_TH
     if (sample.bgCostMs >= T.bgCostCalmMs) calm = false;
   }
 
+  if (sample.recv?.streams) {
+    if (sample.recv.droppedPerSec >= T.recvDropOverloadPerSec) reasons.push('recv-drop');
+    if (sample.recv.droppedPerSec >= T.recvDropCalmPerSec) calm = false;
+    const decodeMs = sample.recv.decodeMsPerFrame;
+    if (decodeMs !== undefined) {
+      if (decodeMs >= T.recvDecodeOverloadMs) reasons.push('recv-decode');
+      if (decodeMs >= T.recvDecodeCalmMs) calm = false;
+    }
+  }
+
   let audioUrgent = false;
   if (sample.audioActive && sample.audioChunks > 0) {
     const stress = sample.audioStressedChunks / sample.audioChunks;
@@ -221,6 +258,7 @@ export function classify(sample: LoadSample, T: GovernorThresholds = GOVERNOR_TH
 export interface GovernorState {
   bgDowngraded: boolean;
   video: VideoLevel;
+  recv: ReceiveLevel;
   cameraOffByGovernor: boolean;
   overloadedSince: number | null;
   calmSince: number | null;
@@ -235,6 +273,7 @@ export function initialGovernorState(now: number): GovernorState {
   return {
     bgDowngraded: false,
     video: 0,
+    recv: 0,
     cameraOffByGovernor: false,
     overloadedSince: null,
     calmSince: null,
@@ -248,6 +287,7 @@ export function initialGovernorState(now: number): GovernorState {
 export type GovernorAction =
   | { kind: 'bg-balanced' }
   | { kind: 'video'; level: VideoLevel; direction: 'down' | 'up' }
+  | { kind: 'recv'; level: ReceiveLevel; direction: 'down' | 'up' }
   | { kind: 'camera-off'; withBackground: boolean };
 
 /** What the governor needs to know about the call, beyond the sample. */
@@ -255,6 +295,11 @@ export interface GovernorContext {
   /** The background effect's model, or null when the effect is off. */
   bgQuality: 'high' | 'balanced' | null;
   cameraOn: boolean;
+  /**
+   * Whether going to each receive level from here would actually slow something down (some
+   * remote camera that would get a lower target and has temporal layers). Unset = no.
+   */
+  recvRelief?: { 1: boolean; 2: boolean };
 }
 
 export interface GovernorStep {
@@ -320,14 +365,14 @@ export function stepGovernor(
     }
   }
 
+  const undo = state.calmSince !== null ? nextStepUp(state) : null;
   if (
+    undo &&
     state.calmSince !== null &&
-    state.video > 0 &&
-    !state.cameraOffByGovernor &&
     sinceChange >= T.settleMs &&
     now - state.calmSince >= T.recoverAfterMs * state.recoverBackoff
   ) {
-    const action: GovernorAction = { kind: 'video', level: (state.video - 1) as VideoLevel, direction: 'up' };
+    const action = undo;
     applyToState(state, action);
     state.lastChangeAt = now;
     state.lastRecoveryAt = now;
@@ -338,16 +383,32 @@ export function stepGovernor(
   return { state, verdict };
 }
 
+/** The first step of the ladder not taken yet that would change something. */
 function nextStepDown(state: GovernorState, ctx: GovernorContext, cameraOffAllowed: boolean): GovernorAction | null {
   if (ctx.bgQuality === 'high' && !state.bgDowngraded) return { kind: 'bg-balanced' };
-  if (!ctx.cameraOn) return null;
-  if (state.video < 2) return { kind: 'video', level: (state.video + 1) as VideoLevel, direction: 'down' };
-  if (!cameraOffAllowed) return null;
+  const relief = ctx.recvRelief ?? { 1: false, 2: false };
+  if (state.recv < 1 && relief[1]) return { kind: 'recv', level: 1, direction: 'down' };
+  if (ctx.cameraOn && state.video < 1) return { kind: 'video', level: 1, direction: 'down' };
+  // Straight from 0 when level 1 had nothing to slow down (say, only cameras shown large).
+  if (state.recv < 2 && relief[2]) return { kind: 'recv', level: 2, direction: 'down' };
+  if (ctx.cameraOn && state.video < 2) return { kind: 'video', level: 2, direction: 'down' };
+  if (!ctx.cameraOn || !cameraOffAllowed) return null;
   return { kind: 'camera-off', withBackground: ctx.bgQuality !== null };
+}
+
+/** Undo the most recent step still in effect: the ladder in reverse (camera 2, receive 2, camera 1, receive 1). */
+function nextStepUp(state: GovernorState): GovernorAction | null {
+  const cameraSteps = !state.cameraOffByGovernor;
+  if (cameraSteps && state.video === 2) return { kind: 'video', level: 1, direction: 'up' };
+  if (state.recv === 2) return { kind: 'recv', level: 1, direction: 'up' };
+  if (cameraSteps && state.video === 1) return { kind: 'video', level: 0, direction: 'up' };
+  if (state.recv === 1) return { kind: 'recv', level: 0, direction: 'up' };
+  return null;
 }
 
 function applyToState(state: GovernorState, action: GovernorAction) {
   if (action.kind === 'bg-balanced') state.bgDowngraded = true;
   else if (action.kind === 'video') state.video = action.level;
+  else if (action.kind === 'recv') state.recv = action.level;
   else state.cameraOffByGovernor = true;
 }

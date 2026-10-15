@@ -18,8 +18,9 @@ const SAMPLE_MS = 2000;
 type Load = 'calm' | 'busy' | 'encoder' | 'audio';
 
 function sampleFor(t: number, load: Load, state: GovernorState): LoadSample {
-  // Each step down relieves some pressure: by video level 2 an "encoder" overload is gone.
-  const relief = state.video;
+  // Each step down relieves some pressure: two camera or receiving steps clear an "encoder"
+  // overload (a "busy" one never clears).
+  const relief = state.video + state.recv;
   const base: LoadSample = {
     t,
     intervalMs: SAMPLE_MS,
@@ -49,22 +50,39 @@ function sampleFor(t: number, load: Load, state: GovernorState): LoadSample {
   return base;
 }
 
-function run(name: string, schedule: (t: number) => Load, durationMs: number, ctx0: GovernorContext) {
+/** Receiving others' cameras: 'none' = nothing to slow down, 'small' = only tiles shown small, 'mixed' = small and large. */
+type Receiving = 'none' | 'small' | 'mixed';
+
+function recvReliefFor(receiving: Receiving, state: GovernorState) {
+  if (receiving === 'none') return { 1: false, 2: false };
+  return { 1: state.recv < 1, 2: state.recv < 2 && (receiving === 'mixed' || state.recv < 1) };
+}
+
+function run(
+  name: string,
+  schedule: (t: number) => Load,
+  durationMs: number,
+  ctx0: GovernorContext,
+  receiving: Receiving = 'mixed',
+  cameraOn = true,
+) {
   let state = initialGovernorState(0);
   const ctx = { ...ctx0 };
   const log: string[] = [];
   for (let t = SAMPLE_MS; t <= durationMs; t += SAMPLE_MS) {
-    ctx.cameraOn = !state.cameraOffByGovernor;
+    ctx.cameraOn = cameraOn && !state.cameraOffByGovernor;
+    ctx.recvRelief = recvReliefFor(receiving, state);
     const step = stepGovernor(state, sampleFor(t, schedule(t), state), ctx);
     state = step.state;
     if (step.action) {
       const a = step.action;
-      const what = a.kind === 'video' ? `video->${a.level}` : a.kind === 'camera-off' ? 'camera-off' : 'bg-balanced';
+      const what =
+        a.kind === 'video' ? `video->${a.level}` : a.kind === 'recv' ? `recv->${a.level}` : a.kind === 'camera-off' ? 'camera-off' : 'bg-balanced';
       if (a.kind === 'bg-balanced') ctx.bgQuality = 'balanced';
       log.push(`${(t / 1000).toFixed(0)}s:${what}(${step.verdict.reasons.join('+') || 'calm'})`);
     }
   }
-  console.log(`${name}\n  ${log.join('  ') || '(no actions)'}\n  end: video=${state.video} cameraOff=${state.cameraOffByGovernor} backoff=${state.recoverBackoff}`);
+  console.log(`${name}\n  ${log.join('  ') || '(no actions)'}\n  end: video=${state.video} recv=${state.recv} cameraOff=${state.cameraOffByGovernor} backoff=${state.recoverBackoff}`);
 }
 
 const highBg: GovernorContext = { bgQuality: 'high', cameraOn: true };
@@ -81,3 +99,5 @@ run(
   noBg,
 );
 run('short 6s spike every minute (must do nothing)', (t) => (t % 60_000 < 6_000 ? 'busy' : 'calm'), 600_000, highBg);
+run('busy, receiving only phones/iPhones (no receive steps possible)', () => 'busy', 300_000, noBg, 'none');
+run('busy, camera off, watching others (receive steps only)', () => 'busy', 300_000, noBg, 'mixed', false);

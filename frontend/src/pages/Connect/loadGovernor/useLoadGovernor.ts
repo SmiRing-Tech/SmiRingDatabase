@@ -16,10 +16,13 @@ import {
   type GovernorState,
   type GovernorStep,
   type LoadSample,
+  type ReceiveLevel,
   type ReceiveStats,
   type VideoLevel,
   type VideoProfile,
 } from './governorPolicy';
+import { ReceiveFpsController, type CameraFps } from './receiveFpsController';
+import { keepTemporalLayers } from './temporalLayers';
 
 /**
  * Watches how the machine is coping during a call and lightens the camera side when it isn't
@@ -30,6 +33,8 @@ import {
  *   localStorage.setItem('smiring.debug.loadGovernor', 'observe')  // judge and record, never act
  *   localStorage.setItem('smiring.debug.loadGovernor', 'off')      // nothing at all
  *   localStorage.setItem('smiring.debug.loadPanel', '1')           // live readout on screen
+ *   localStorage.setItem('smiring.debug.recvLevel', '1')           // force receive level 1 or 2
+ *                                                                  // (to see/test it; load ignored)
  */
 
 const SAMPLE_MS = 2000;
@@ -52,6 +57,12 @@ function readFlag(key: string): string | null {
 function governorMode(): GovernorMode {
   const value = readFlag('smiring.debug.loadGovernor');
   return value === 'observe' || value === 'off' ? value : 'active';
+}
+
+/** Receive level forced by the debug flag, or null. */
+function forcedReceiveLevel(): ReceiveLevel | null {
+  const value = readFlag('smiring.debug.recvLevel');
+  return value === '1' ? 1 : value === '2' ? 2 : null;
 }
 
 function idealNumber(value: ConstrainULong | ConstrainDouble | undefined, fallback: number): number {
@@ -131,6 +142,9 @@ export function useLoadGovernor({
   /** Which capture level was last applied to which camera track (LiveKit replaces the track on restart). */
   const appliedRef = useRef(new WeakMap<MediaStreamTrack, VideoLevel>());
   const lastApplyAtRef = useRef(0);
+  /** The receiving steps' controller, while the sampling loop runs. */
+  const recvControllerRef = useRef<ReceiveFpsController | null>(null);
+  const [forcedRecv] = useState(forcedReceiveLevel);
 
   const cameraTrack = useCallback(
     () => localParticipant.getTrackPublication(Track.Source.Camera)?.track as LocalVideoTrack | undefined,
@@ -172,6 +186,11 @@ export function useLoadGovernor({
         if (ok) onNoticeRef.current('パソコンの負荷が高いため、背景エフェクトを標準画質に切り替えました。');
         return;
       }
+      if (action.kind === 'recv') {
+        // No notice: it only changes what this person sees, and only the small tiles first.
+        if (forcedRecv === null) recvControllerRef.current?.setLevel(action.level);
+        return;
+      }
       if (action.kind === 'video') {
         const profile = videoProfileFor(action.level, BASE_PROFILE);
         bg.setPerformanceProfile(
@@ -189,7 +208,7 @@ export function useLoadGovernor({
       onCameraTurnedOffRef.current?.();
       setCameraOffNotice({ withBackground: action.withBackground });
     },
-    [localParticipant, syncCameraProfile],
+    [localParticipant, syncCameraProfile, forcedRecv],
   );
 
   // Camera track replaced or its processor changed: forget what was applied, so the next sample
@@ -212,7 +231,10 @@ export function useLoadGovernor({
   useEffect(() => {
     if (mode === 'off') return;
     startTelemetry(roomId, { mode, base: BASE_PROFILE });
-    recordTelemetry('governor-start', { mode });
+    recordTelemetry('governor-start', { mode, ...(forcedRecv !== null ? { forcedRecv } : {}) });
+    const recvController = new ReceiveFpsController();
+    recvControllerRef.current = recvController;
+    if (forcedRecv !== null) recvController.setLevel(forcedRecv);
     diagState('loadGovernor', mode);
 
     let totals = createSignalTotals();
@@ -287,7 +309,7 @@ export function useLoadGovernor({
     // Receiving side: decode work for everyone else's video, from each remote track's receiver.
     const lastInbound = new Map<string, { decoded: number; decodeTime: number; dropped: number; freezes: number }>();
     const decoders = new Set<string>();
-    const receiveStats = async (seconds: number): Promise<ReceiveStats> => {
+    const receiveStats = async (seconds: number, cameras: CameraFps[]): Promise<ReceiveStats> => {
       const result: ReceiveStats = { streams: 0, decodedFps: 0, droppedPerSec: 0, freezes: 0, maxHeight: 0 };
       let decodedTotal = 0;
       let decodeTimeTotal = 0;
@@ -317,7 +339,11 @@ export function useLoadGovernor({
             };
             const prev = lastInbound.get(stat.id);
             lastInbound.set(stat.id, now);
-            if (!prev || now.decoded < prev.decoded) return;
+            const fresh = !prev || now.decoded < prev.decoded;
+            if (publication.source === Track.Source.Camera) {
+              cameras.push({ publication, decodedFps: fresh ? 0 : (now.decoded - prev.decoded) / seconds });
+            }
+            if (fresh) return;
             decodedTotal += now.decoded - prev.decoded;
             decodeTimeTotal += now.decodeTime - prev.decodeTime;
             result.droppedPerSec += Math.max(0, now.dropped - prev.dropped) / seconds;
@@ -342,7 +368,10 @@ export function useLoadGovernor({
         const bg = backgroundRef.current;
         const encoder = await encoderCpuFraction().catch(() => undefined);
         const seconds = Math.max(0.001, (now - lastSampleAt) / 1000);
-        const recv = await receiveStats(seconds).catch(() => undefined);
+        const cameras: CameraFps[] = [];
+        const recv = await receiveStats(seconds, cameras).catch(() => undefined);
+        recvController.update(cameras);
+        await keepTemporalLayers(cameraTrack()).catch(() => {});
         const t = totals;
         totals = createSignalTotals();
         const rendered = takeRenderMeter();
@@ -369,6 +398,7 @@ export function useLoadGovernor({
           audioUnderruns: audioFlowing ? t.audioUnderruns : 0,
           audioOverloaded: t.audioOverloaded,
           recv,
+          recvControl: recvController.stats(),
           render: {
             perSec: rendered.renders / seconds,
             msPerSec: rendered.renderMs / seconds,
@@ -383,12 +413,14 @@ export function useLoadGovernor({
         const actualQuality = bg.supported && bg.mode !== 'off' ? bg.quality : null;
         // In observe mode nothing is applied, so judge as if it had been — otherwise the governor
         // would keep "deciding" the same first step forever.
+        const recvRelief = { 1: recvController.wouldRelieve(1), 2: recvController.wouldRelieve(2) };
         const ctx =
           mode === 'active'
-            ? { bgQuality: actualQuality, cameraOn: sample.cameraOn }
+            ? { bgQuality: actualQuality, cameraOn: sample.cameraOn, recvRelief }
             : {
                 bgQuality: actualQuality === 'high' && state.bgDowngraded ? ('balanced' as const) : actualQuality,
                 cameraOn: sample.cameraOn && !state.cameraOffByGovernor,
+                recvRelief,
               };
         const step = stepGovernor(state, sample, ctx);
         stateRef.current = step.state;
@@ -409,17 +441,19 @@ export function useLoadGovernor({
 
     return () => {
       clearInterval(sampleTimer);
+      recvController.dispose();
+      recvControllerRef.current = null;
       clearInterval(lagTimer);
       longTaskObserver?.disconnect();
       unsubscribe();
       recordTelemetry('governor-stop', {});
       stopTelemetry();
     };
-  }, [mode, roomId, room, localParticipant, applyAction, syncCameraProfile, showPanel]);
+  }, [mode, roomId, room, localParticipant, applyAction, syncCameraProfile, showPanel, forcedRecv, cameraTrack]);
 
   const dismissCameraOffNotice = useCallback(() => setCameraOffNotice(null), []);
 
-  return { mode, showPanel, lastStep, cameraOffNotice, dismissCameraOffNotice };
+  return { mode, showPanel, lastStep, cameraOffNotice, dismissCameraOffNotice, forcedRecv };
 }
 
 /** One telemetry line per sample: short keys, rounded numbers (it's every 2s for the whole call). */
@@ -429,7 +463,7 @@ function compactSample(s: LoadSample, step: GovernorStep) {
   return {
     p: step.verdict.pressure,
     r: step.verdict.reasons.length ? step.verdict.reasons : undefined,
-    lv: `${st.bgDowngraded ? 'b' : ''}${st.video}${st.cameraOffByGovernor ? 'x' : ''}`,
+    lv: `${st.bgDowngraded ? 'b' : ''}${st.video}${st.recv ? `r${st.recv}` : ''}${st.cameraOffByGovernor ? 'x' : ''}`,
     vis: s.visible ? undefined : 0,
     cam: s.cameraOn ? 1 : 0,
     sh: s.sharing ? 1 : undefined,
@@ -450,6 +484,9 @@ function compactSample(s: LoadSample, step: GovernorStep) {
     rdrop: s.recv?.droppedPerSec ? r1(s.recv.droppedPerSec) : undefined,
     rfrz: s.recv?.freezes || undefined,
     rh: s.recv?.streams ? s.recv.maxHeight : undefined,
+    // Receiving steps: cameras asked for fewer frames, cameras found without temporal layers.
+    rthr: s.recvControl?.throttled || undefined,
+    rnl: s.recvControl?.noLayers || undefined,
     // React re-rendering the call screen: passes/s, ms/s, slowest pass ms.
     rr: s.render?.perSec ? r1(s.render.perSec) : undefined,
     rms: s.render?.perSec ? r1(s.render.msPerSec) : undefined,

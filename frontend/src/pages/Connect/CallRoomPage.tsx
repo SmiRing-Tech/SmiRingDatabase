@@ -2744,7 +2744,7 @@ function CustomVideoConference({
           onTurnOffBackground={() => void mediaEnhancements.background.commit({ mode: 'off' })}
         />
       )}
-      {governor.showPanel && <LoadGovernorPanel mode={governor.mode} step={governor.lastStep} />}
+      {governor.showPanel && <LoadGovernorPanel mode={governor.mode} step={governor.lastStep} forcedRecv={governor.forcedRecv} />}
 
       {recording.error && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50">

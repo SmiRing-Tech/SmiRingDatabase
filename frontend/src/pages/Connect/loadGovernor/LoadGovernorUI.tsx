@@ -56,9 +56,12 @@ export function CameraOffDialog({
 export function LoadGovernorPanel({
   mode,
   step,
+  forcedRecv,
 }: {
   mode: GovernorMode;
   step: (GovernorStep & { sample: LoadSample }) | null;
+  /** Receive level forced by smiring.debug.recvLevel, if any. */
+  forcedRecv?: number | null;
 }) {
   const s = step?.sample;
   const st = step?.state;
@@ -73,7 +76,7 @@ export function LoadGovernorPanel({
     <div className="fixed bottom-24 left-3 z-[60] rounded-xl bg-black/80 border border-gray-700 px-3 py-2 text-[11px] leading-5 text-gray-200 font-mono pointer-events-none">
       <div>
         governor: {mode} | level{' '}
-        {st ? `${st.bgDowngraded ? 'bg↓ ' : ''}video${st.video}${st.cameraOffByGovernor ? ' camOFF' : ''}` : '-'}
+        {st ? `${st.bgDowngraded ? 'bg↓ ' : ''}video${st.video} recv${forcedRecv ?? st.recv}${forcedRecv != null ? '(強制)' : ''}${st.cameraOffByGovernor ? ' camOFF' : ''}` : '-'}
       </div>
       <div className={pressureColor}>
         {step?.verdict.pressure ?? '...'} {step?.verdict.reasons.join(' ')}
@@ -91,7 +94,7 @@ export function LoadGovernorPanel({
           <div>
             recv{' '}
             {s.recv?.streams
-              ? `${s.recv.streams}本 ${fmt(s.recv.decodedFps, 1)}fps decode ${fmt(s.recv.decodeMsPerFrame, 1)}ms drop ${fmt(s.recv.droppedPerSec, 1)}/s freeze ${s.recv.freezes} ${s.recv.maxHeight}p`
+              ? `${s.recv.streams}本 ${fmt(s.recv.decodedFps, 1)}fps decode ${fmt(s.recv.decodeMsPerFrame, 1)}ms drop ${fmt(s.recv.droppedPerSec, 1)}/s freeze ${s.recv.freezes} ${s.recv.maxHeight}p | 間引き${s.recvControl?.throttled ?? 0}本 層なし${s.recvControl?.noLayers ?? 0}本`
               : 'none'}
           </div>
           <div>
