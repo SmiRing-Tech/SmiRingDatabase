@@ -105,6 +105,7 @@ import { useLoadGovernor } from './loadGovernor/useLoadGovernor';
 import { CameraOffDialog, LoadGovernorPanel } from './loadGovernor/LoadGovernorUI';
 import { playSpeakerTestTone, useMicLevel } from '../../components/Connect/audioTest';
 import { codecPublishOptions, readVideoCodecPreference } from '../../lib/videoCodecPreference';
+import { isShareSwitching, rememberedShareCodec, shareCaptureOptions, sharePublishOptions } from '../../lib/video/screenShare';
 import { renderMeterBegin, renderMeterEnd } from '../../lib/renderMeter';
 import ResizableAside from '../../components/Connect/callLayout/ResizableAside';
 import { useMiniRooms, type UseMiniRoomsResult, type ReconnectTarget } from '../../hooks/useMiniRooms';
@@ -1669,36 +1670,15 @@ function useScreenShareToggle() {
 
   const toggleShare = useCallback(async () => {
     try {
-      // Codec switch from the "通話の診断" dialog (see lib/videoCodecPreference).
-      const codec = isScreenShareEnabled ? undefined : readVideoCodecPreference();
-      if (codec) console.info(`[share] codec override: ${codec}`);
-      await localParticipant.setScreenShareEnabled(
-        !isScreenShareEnabled,
-        {
-          // Capped at 1080p rather than captured at the display's native size
-          // (`ScreenSharePresets.original`, which is literally "don't resize"). Capping makes
-          // small text *sharper*, not softer: a Retina panel hands over something like
-          // 3174x2410, and spreading `screenShareEncoding.maxBitrate` across 7.6 megapixels
-          // leaves about 0.05 bits per pixel — nowhere near enough for legible glyphs. The
-          // same stream at 1920x1080 gets roughly 2.5x that, and no viewer displays the share
-          // wider than this anyway (the recording composites it into 960px — see
-          // recording-compositor/src/layout.ts). It also drops the sharer's own encoder from
-          // 7.6 to 2.1 megapixels per frame, which is what makes laptops audible mid-share.
-          resolution: ScreenSharePresets.h1080fps15.resolution,
-          // Tells the encoder to spend bits on sharpness over motion — the right trade for
-          // slides and code, and the reason a static share stays readable at 15fps.
-          contentHint: 'detail',
-        },
-        {
-          // Explicit, because publishDefaults' 'maintain-framerate' (meant for cameras, see
-          // roomOptions) otherwise applies here too — LiveKit's own screen-share default is
-          // 'maintain-resolution'. With it, a squeezed uplink made the sharer's encoder shrink the
-          // share to 180p (2026-10-15 meeting) instead of dropping frames: text needs pixels, a
-          // slide doesn't need 15fps.
-          degradationPreference: 'maintain-resolution',
-          ...codecPublishOptions(codec),
-        },
-      );
+      if (isScreenShareEnabled) {
+        await localParticipant.setScreenShareEnabled(false);
+        return;
+      }
+      // AV1 at the screen's own size (up to 2560x1600, 15fps), falling back to VP8 — see
+      // lib/video/screenShare.ts. The "通話の診断" codec switch (lib/videoCodecPreference) wins.
+      const codec = readVideoCodecPreference() ?? rememberedShareCodec();
+      console.info(`[share] codec: ${codec}`);
+      await localParticipant.setScreenShareEnabled(true, shareCaptureOptions(codec), sharePublishOptions(codec));
     } catch (e) {
       console.error('Failed to toggle screen share:', e);
     }
@@ -2721,6 +2701,9 @@ function CustomVideoConference({
   // Automatically open Document PiP only when the local user starts screen sharing, and close on stop
   const prevLocalScreenShareRef = useRef(false);
   useEffect(() => {
+    // The load governor republishing the share as VP8 (lib/video/screenShare.ts) isn't the share
+    // stopping and starting: leave the PiP window alone.
+    if (isShareSwitching()) return;
     if (isLocalScreenSharing && !prevLocalScreenShareRef.current && isPipSupported && !isPipActive) {
       onOpenPip();
     } else if (!isLocalScreenSharing && prevLocalScreenShareRef.current && isPipActive) {

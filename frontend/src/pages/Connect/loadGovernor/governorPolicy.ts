@@ -17,18 +17,25 @@
  *   4. receive 2: small ones at 5fps, ones shown large at 10fps
  *   5. camera 360p / 10fps, segmentation 5/s (the floor: segmentation never under half the
  *      camera's frame rate)
- *   6. camera off, with a dialog saying why (the person can turn it back on; it then resumes at 5)
+ *   6. receive 3: a screen share being received arrives at half its frame rate (its resolution —
+ *      the legibility of its text — is never touched)
+ *   7. own screen share AV1 -> VP8 1080p (lib/video/screenShare.ts; a republish, one-way for the
+ *      rest of that share, and remembered so the next share starts on VP8)
+ *   8. camera off, with a dialog saying why (the person can turn it back on; it then resumes at 5)
+ *   9. own screen share VP8 at 720p, the floor for a share (decided 2026-10-15)
+ * Steps 7 and 9 only apply while sharing; screen share outranks the camera, so the camera goes
+ * first except for that 720p floor, which is worse than losing one's camera.
  * Receiving steps come first because they only change what this person sees; the camera steps
  * change what everyone sees of them. A step that would change nothing is skipped: the camera
  * steps while the camera is off, the receiving steps when nothing received could be slowed down
  * (no cameras, or only senders without temporal layers — iPhones, Safari, H.264).
- * Steps 2-5 come back automatically after a calm stretch, most recent first, with backoff if
+ * Steps 2-6 and 9 come back automatically after a calm stretch, most recent first, with backoff if
  * they relapse. No notice for the receiving steps: they only affect this person's own view.
- * (Moving noise cancellation to the server slots in before 6 once it exists.)
+ * (Moving noise cancellation to the server slots in before 8 once it exists.)
  */
 
 export type VideoLevel = 0 | 1 | 2;
-export type ReceiveLevel = 0 | 1 | 2;
+export type ReceiveLevel = 0 | 1 | 2 | 3;
 
 export interface VideoProfile {
   width: number;
@@ -289,6 +296,10 @@ export interface GovernorState {
   bgDowngraded: boolean;
   video: VideoLevel;
   recv: ReceiveLevel;
+  /** This share was republished as VP8 (step 7). Cleared when the share ends. */
+  shareVp8: boolean;
+  /** This share is capped at 720p (step 9). Cleared when the share ends. */
+  share720: boolean;
   cameraOffByGovernor: boolean;
   overloadedSince: number | null;
   calmSince: number | null;
@@ -304,6 +315,8 @@ export function initialGovernorState(now: number): GovernorState {
     bgDowngraded: false,
     video: 0,
     recv: 0,
+    shareVp8: false,
+    share720: false,
     cameraOffByGovernor: false,
     overloadedSince: null,
     calmSince: null,
@@ -318,6 +331,8 @@ export type GovernorAction =
   | { kind: 'bg-balanced' }
   | { kind: 'video'; level: VideoLevel; direction: 'down' | 'up' }
   | { kind: 'recv'; level: ReceiveLevel; direction: 'down' | 'up' }
+  | { kind: 'share-vp8' }
+  | { kind: 'share-720'; direction: 'down' | 'up' }
   | { kind: 'camera-off'; withBackground: boolean };
 
 /** What the governor needs to know about the call, beyond the sample. */
@@ -329,7 +344,9 @@ export interface GovernorContext {
    * Whether going to each receive level from here would actually slow something down (some
    * remote camera that would get a lower target and has temporal layers). Unset = no.
    */
-  recvRelief?: { 1: boolean; 2: boolean };
+  recvRelief?: { 1: boolean; 2: boolean; 3?: boolean };
+  /** The codec of this person's own screen share, or null/undefined when not sharing. */
+  shareCodec?: 'av1' | 'vp8' | 'h264' | null;
 }
 
 export interface GovernorStep {
@@ -348,6 +365,12 @@ export function stepGovernor(
   const now = sample.t;
   const state = { ...prev };
   const verdict = classify(sample, T);
+
+  // A share's steps belong to that share: the next one starts fresh.
+  if (!ctx.shareCodec) {
+    state.shareVp8 = false;
+    state.share720 = false;
+  }
 
   // The person turned the camera back on after the governor switched it off: resume at the
   // lightest video level rather than from the top.
@@ -422,13 +445,22 @@ function nextStepDown(state: GovernorState, ctx: GovernorContext, cameraOffAllow
   // Straight from 0 when level 1 had nothing to slow down (say, only cameras shown large).
   if (state.recv < 2 && relief[2]) return { kind: 'recv', level: 2, direction: 'down' };
   if (ctx.cameraOn && state.video < 2) return { kind: 'video', level: 2, direction: 'down' };
-  if (!ctx.cameraOn || !cameraOffAllowed) return null;
-  return { kind: 'camera-off', withBackground: ctx.bgQuality !== null };
+  if (state.recv < 3 && relief[3]) return { kind: 'recv', level: 3, direction: 'down' };
+  if (ctx.shareCodec === 'av1' && !state.shareVp8) return { kind: 'share-vp8' };
+  if (ctx.cameraOn && cameraOffAllowed) return { kind: 'camera-off', withBackground: ctx.bgQuality !== null };
+  if (ctx.shareCodec && ctx.shareCodec !== 'av1' && !state.share720) return { kind: 'share-720', direction: 'down' };
+  return null;
 }
 
-/** Undo the most recent step still in effect: the ladder in reverse (camera 2, receive 2, camera 1, receive 1). */
+/**
+ * Undo the most recent step still in effect: the ladder in reverse (share 720p, receive 3, camera
+ * 2, receive 2, camera 1, receive 1). The share's switch to VP8 isn't undone mid-share — each
+ * undo would be another republish the viewers see.
+ */
 function nextStepUp(state: GovernorState): GovernorAction | null {
   const cameraSteps = !state.cameraOffByGovernor;
+  if (state.share720) return { kind: 'share-720', direction: 'up' };
+  if (state.recv === 3) return { kind: 'recv', level: 2, direction: 'up' };
   if (cameraSteps && state.video === 2) return { kind: 'video', level: 1, direction: 'up' };
   if (state.recv === 2) return { kind: 'recv', level: 1, direction: 'up' };
   if (cameraSteps && state.video === 1) return { kind: 'video', level: 0, direction: 'up' };
@@ -440,5 +472,7 @@ function applyToState(state: GovernorState, action: GovernorAction) {
   if (action.kind === 'bg-balanced') state.bgDowngraded = true;
   else if (action.kind === 'video') state.video = action.level;
   else if (action.kind === 'recv') state.recv = action.level;
+  else if (action.kind === 'share-vp8') state.shareVp8 = true;
+  else if (action.kind === 'share-720') state.share720 = action.direction === 'down';
   else state.cameraOffByGovernor = true;
 }

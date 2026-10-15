@@ -26,6 +26,7 @@ import {
 } from './governorPolicy';
 import { ReceiveFpsController, type CameraFps } from './receiveFpsController';
 import { keepTemporalLayers } from './temporalLayers';
+import { currentShareCodec, setShareFloor, switchShareToVp8 } from '../../../lib/video/screenShare';
 
 /**
  * Watches how the machine is coping during a call and lightens the camera side when it isn't
@@ -36,8 +37,10 @@ import { keepTemporalLayers } from './temporalLayers';
  *   localStorage.setItem('smiring.debug.loadGovernor', 'observe')  // judge and record, never act
  *   localStorage.setItem('smiring.debug.loadGovernor', 'off')      // nothing at all
  *   localStorage.setItem('smiring.debug.loadPanel', '1')           // live readout on screen
- *   localStorage.setItem('smiring.debug.recvLevel', '1')           // force receive level 1 or 2
+ *   localStorage.setItem('smiring.debug.recvLevel', '1')           // force receive level 1, 2 or 3
  *                                                                  // (to see/test it; load ignored)
+ *   localStorage.setItem('smiring.debug.forceShareStep', '1')      // 10s into a share: AV1 -> VP8
+ *                                                                  // ('2': then 720p too), load ignored
  */
 
 const SAMPLE_MS = 2000;
@@ -62,10 +65,17 @@ function governorMode(): GovernorMode {
   return value === 'observe' || value === 'off' ? value : 'active';
 }
 
+/** Share fallback steps forced by the debug flag (1: AV1 -> VP8, 2: and then 720p), or 0. */
+function forcedShareStep(): 0 | 1 | 2 {
+  const value = readFlag('smiring.debug.forceShareStep');
+  return value === '1' ? 1 : value === '2' ? 2 : 0;
+}
+const FORCED_SHARE_STEP_AFTER_MS = 10_000;
+
 /** Receive level forced by the debug flag, or null. */
 function forcedReceiveLevel(): ReceiveLevel | null {
   const value = readFlag('smiring.debug.recvLevel');
-  return value === '1' ? 1 : value === '2' ? 2 : null;
+  return value === '1' ? 1 : value === '2' ? 2 : value === '3' ? 3 : null;
 }
 
 function idealNumber(value: ConstrainULong | ConstrainDouble | undefined, fallback: number): number {
@@ -204,6 +214,23 @@ export function useLoadGovernor({
         syncCameraProfile(action.level, true);
         if (action.direction === 'down') {
           onNoticeRef.current('パソコンの負荷が高いため、カメラの画質を下げています（負荷が下がると自動で戻ります）。');
+        }
+        return;
+      }
+      if (action.kind === 'share-vp8') {
+        const ok = await switchShareToVp8(localParticipant).catch((err) => {
+          console.warn('[governor] could not switch the screen share to VP8:', err);
+          return false;
+        });
+        if (ok) onNoticeRef.current('パソコンの負荷が高いため、画面共有を軽い方式に切り替えました。');
+        return;
+      }
+      if (action.kind === 'share-720') {
+        await setShareFloor(localParticipant, action.direction === 'down').catch((err) =>
+          console.warn('[governor] could not change the screen share size:', err),
+        );
+        if (action.direction === 'down') {
+          onNoticeRef.current('パソコンの負荷が高いため、画面共有の画質を下げています（負荷が下がると自動で戻ります）。');
         }
         return;
       }
@@ -407,7 +434,7 @@ export function useLoadGovernor({
             const prev = lastInbound.get(stat.id);
             lastInbound.set(stat.id, now);
             const fresh = !prev || now.decoded < prev.decoded;
-            if (publication.source === Track.Source.Camera) {
+            if (publication.source === Track.Source.Camera || publication.source === Track.Source.ScreenShare) {
               cameras.push({ publication, decodedFps: fresh ? 0 : (now.decoded - prev.decoded) / seconds });
             }
             if (fresh) return;
@@ -426,6 +453,8 @@ export function useLoadGovernor({
 
     let lastSampleAt = performance.now();
     let running = false;
+    const forceShare = forcedShareStep();
+    let sharingSince: number | null = null;
     takeRenderMeter(); // drop whatever was counted before this call's first window
     const sampleTimer = setInterval(async () => {
       if (running) return;
@@ -484,14 +513,20 @@ export function useLoadGovernor({
         const actualQuality = bg.supported && bg.mode !== 'off' ? bg.quality : null;
         // In observe mode nothing is applied, so judge as if it had been — otherwise the governor
         // would keep "deciding" the same first step forever.
-        const recvRelief = { 1: recvController.wouldRelieve(1), 2: recvController.wouldRelieve(2) };
+        const recvRelief = {
+          1: recvController.wouldRelieve(1),
+          2: recvController.wouldRelieve(2),
+          3: recvController.wouldRelieve(3),
+        };
+        const shareCodec = currentShareCodec(localParticipant);
         const ctx =
           mode === 'active'
-            ? { bgQuality: actualQuality, cameraOn: sample.cameraOn, recvRelief }
+            ? { bgQuality: actualQuality, cameraOn: sample.cameraOn, recvRelief, shareCodec }
             : {
                 bgQuality: actualQuality === 'high' && state.bgDowngraded ? ('balanced' as const) : actualQuality,
                 cameraOn: sample.cameraOn && !state.cameraOffByGovernor,
                 recvRelief,
+                shareCodec: shareCodec === 'av1' && state.shareVp8 ? ('vp8' as const) : shareCodec,
               };
         const step = stepGovernor(state, sample, ctx);
         stateRef.current = step.state;
@@ -503,6 +538,27 @@ export function useLoadGovernor({
           recordTelemetry('action', { action: step.action, applied, reasons: step.verdict.reasons });
           diagEvent('load-governor', { action: step.action, applied, reasons: step.verdict.reasons });
           if (applied) await applyAction(step.action);
+        }
+        // Debug: walk the share's fallback steps on a timer, whatever the load (see the header).
+        if (forceShare && shareCodec) {
+          sharingSince ??= now;
+          if (now - sharingSince >= FORCED_SHARE_STEP_AFTER_MS) {
+            const st = stateRef.current;
+            const forced: GovernorAction | null =
+              shareCodec === 'av1' && !st.shareVp8
+                ? { kind: 'share-vp8' }
+                : forceShare === 2 && shareCodec !== 'av1' && !st.share720
+                  ? { kind: 'share-720', direction: 'down' }
+                  : null;
+            if (forced) {
+              stateRef.current = { ...st, shareVp8: st.shareVp8 || forced.kind === 'share-vp8', share720: st.share720 || forced.kind === 'share-720' };
+              recordTelemetry('action', { action: forced, applied: true, reasons: ['forced'] });
+              await applyAction(forced);
+              sharingSince = now;
+            }
+          }
+        } else {
+          sharingSince = null;
         }
         if (showPanel) setLastStep({ ...step, sample });
       } finally {
@@ -537,7 +593,9 @@ function compactSample(s: LoadSample, step: GovernorStep) {
   return {
     p: step.verdict.pressure,
     r: step.verdict.reasons.length ? step.verdict.reasons : undefined,
-    lv: `${st.bgDowngraded ? 'b' : ''}${st.video}${st.recv ? `r${st.recv}` : ''}${st.cameraOffByGovernor ? 'x' : ''}`,
+    lv: `${st.bgDowngraded ? 'b' : ''}${st.video}${st.recv ? `r${st.recv}` : ''}${st.shareVp8 ? 'v' : ''}${st.share720 ? 's' : ''}${
+      st.cameraOffByGovernor ? 'x' : ''
+    }`,
     vis: s.visible ? undefined : 0,
     cam: s.cameraOn ? 1 : 0,
     sh: s.sharing ? 1 : undefined,

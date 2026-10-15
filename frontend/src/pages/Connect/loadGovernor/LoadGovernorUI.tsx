@@ -76,7 +76,11 @@ export function LoadGovernorPanel({
     <div className="fixed bottom-24 left-3 z-[60] rounded-xl bg-black/80 border border-gray-700 px-3 py-2 text-[11px] leading-5 text-gray-200 font-mono pointer-events-none">
       <div>
         governor: {mode} | level{' '}
-        {st ? `${st.bgDowngraded ? 'bg↓ ' : ''}video${st.video} recv${forcedRecv ?? st.recv}${forcedRecv != null ? '(強制)' : ''}${st.cameraOffByGovernor ? ' camOFF' : ''}` : '-'}
+        {st
+          ? `${st.bgDowngraded ? 'bg↓ ' : ''}video${st.video} recv${forcedRecv ?? st.recv}${forcedRecv != null ? '(強制)' : ''}${
+              st.shareVp8 ? ' share→VP8' : ''
+            }${st.share720 ? ' share720p' : ''}${st.cameraOffByGovernor ? ' camOFF' : ''}`
+          : '-'}
       </div>
       <div className={pressureColor}>
         {step?.verdict.pressure ?? '...'} {step?.verdict.reasons.join(' ')}

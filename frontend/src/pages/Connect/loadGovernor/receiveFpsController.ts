@@ -1,4 +1,4 @@
-import { RemoteVideoTrack, type RemoteTrackPublication } from 'livekit-client';
+import { RemoteVideoTrack, Track, type RemoteTrackPublication } from 'livekit-client';
 import type { ReceiveControl, ReceiveLevel } from './governorPolicy';
 
 /**
@@ -18,10 +18,12 @@ import type { ReceiveControl, ReceiveLevel } from './governorPolicy';
  * full rate with the request at 1 has no temporal layers (iPhone/Safari senders, H.264) and is left
  * alone.
  *
- * Targets per level, cameras only (screen shares are never touched):
+ * Targets per level:
  *   0: everything full
- *   1: shown small -> 10fps, shown large -> full
- *   2: shown small -> 5fps,  shown large -> 10fps
+ *   1: cameras shown small -> 10fps, shown large -> full
+ *   2: cameras shown small -> 5fps,  shown large -> 10fps
+ *   3: as 2, plus screen shares at half rate (SHARE_TARGET). Only ever their frame rate: a share's
+ *      resolution is what keeps its text legible, and AV1 shares have no smaller layer anyway.
  * "Large" is what's on screen right now: any attached <video> (the PiP window's included) at
  * least LARGE_TILE_PX tall.
  */
@@ -37,7 +39,15 @@ const TARGETS: Record<ReceiveLevel, { small: number | null; large: number | null
   0: { small: null, large: null },
   1: { small: 10, large: null },
   2: { small: 5, large: 10 },
+  3: { small: 5, large: 10 },
 };
+/** Half of a share's 15fps (lib/video/screenShare.ts). */
+const SHARE_TARGET = 7.5;
+/**
+ * A share only sends frames while something moves (~2/s when still), so its rate says nothing
+ * about the layer it's getting until it's at least this busy.
+ */
+const SHARE_MOVING_FPS = 5;
 
 interface StreamState {
   publication: RemoteTrackPublication;
@@ -52,8 +62,10 @@ interface StreamState {
   /** Last measured decoded fps, and whether it's shown large. */
   fps: number;
   large: boolean;
+  share: boolean;
 }
 
+/** A remote camera or screen share and how many of its frames were decoded per second. */
 export interface CameraFps {
   publication: RemoteTrackPublication;
   decodedFps: number;
@@ -88,7 +100,16 @@ export class ReceiveFpsController {
       seen.add(publication.trackSid);
       let stream = this.streams.get(publication.trackSid);
       if (!stream || stream.publication !== publication) {
-        stream = { publication, request: null, active: false, settle: 0, noLayers: false, fps: 0, large: false };
+        stream = {
+          publication,
+          request: null,
+          active: false,
+          settle: 0,
+          noLayers: false,
+          fps: 0,
+          large: false,
+          share: publication.source === Track.Source.ScreenShare,
+        };
         this.streams.set(publication.trackSid, stream);
       }
       stream.fps = decodedFps;
@@ -101,7 +122,14 @@ export class ReceiveFpsController {
   /** Would going to `level` slow anything down right now? (For the governor's ladder.) */
   wouldRelieve(level: ReceiveLevel): boolean {
     for (const stream of this.streams.values()) {
-      if (stream.noLayers || stream.fps < 1) continue;
+      if (stream.noLayers) continue;
+      // A share relieves whenever one is being received: its busy moments are what cost, and a
+      // still share would read as already slow.
+      if (stream.share) {
+        if (level >= 3 && targetFor(this.level, true, true) === null) return true;
+        continue;
+      }
+      if (stream.fps < 1) continue;
       const target = targetFor(level, stream.large);
       if (target !== null && stream.fps > target * TOO_HIGH) return true;
     }
@@ -127,7 +155,7 @@ export class ReceiveFpsController {
   }
 
   private control(stream: StreamState) {
-    const target = targetFor(this.level, stream.large);
+    const target = targetFor(this.level, stream.large, stream.share);
     if (target === null) {
       stream.active = false;
       if (stream.request !== null && stream.request !== FULL_REQUEST) this.request(stream, FULL_REQUEST);
@@ -144,8 +172,8 @@ export class ReceiveFpsController {
       stream.settle -= 1;
       return;
     }
-    // Nothing arriving (camera off, paused off screen): nothing to judge.
-    if (stream.fps < 1) return;
+    // Nothing arriving (camera off, paused off screen), or a share sitting still: nothing to judge.
+    if (stream.fps < (stream.share ? SHARE_MOVING_FPS : 1)) return;
     if (stream.fps > target * TOO_HIGH) {
       if (stream.request <= 1) stream.noLayers = true;
       else this.request(stream, Math.max(1, Math.floor(stream.request * 0.6)));
@@ -162,7 +190,8 @@ export class ReceiveFpsController {
   }
 }
 
-function targetFor(level: ReceiveLevel, large: boolean) {
+function targetFor(level: ReceiveLevel, large: boolean, share = false) {
+  if (share) return level >= 3 ? SHARE_TARGET : null;
   const targets = TARGETS[level];
   return large ? targets.large : targets.small;
 }

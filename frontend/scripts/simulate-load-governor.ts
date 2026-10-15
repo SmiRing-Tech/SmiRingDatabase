@@ -53,9 +53,13 @@ function sampleFor(t: number, load: Load, state: GovernorState): LoadSample {
 /** Receiving others' cameras: 'none' = nothing to slow down, 'small' = only tiles shown small, 'mixed' = small and large. */
 type Receiving = 'none' | 'small' | 'mixed';
 
-function recvReliefFor(receiving: Receiving, state: GovernorState) {
-  if (receiving === 'none') return { 1: false, 2: false };
-  return { 1: state.recv < 1, 2: state.recv < 2 && (receiving === 'mixed' || state.recv < 1) };
+function recvReliefFor(receiving: Receiving, state: GovernorState, receivingShare: boolean) {
+  if (receiving === 'none') return { 1: false, 2: false, 3: receivingShare && state.recv < 3 };
+  return {
+    1: state.recv < 1,
+    2: state.recv < 2 && (receiving === 'mixed' || state.recv < 1),
+    3: receivingShare && state.recv < 3,
+  };
 }
 
 function run(
@@ -65,24 +69,37 @@ function run(
   ctx0: GovernorContext,
   receiving: Receiving = 'mixed',
   cameraOn = true,
+  /** This person shares their screen in AV1 (or 'vp8'), or receives someone else's share. */
+  share: 'av1' | 'vp8' | 'receiving' | null = null,
 ) {
   let state = initialGovernorState(0);
   const ctx = { ...ctx0 };
   const log: string[] = [];
   for (let t = SAMPLE_MS; t <= durationMs; t += SAMPLE_MS) {
     ctx.cameraOn = cameraOn && !state.cameraOffByGovernor;
-    ctx.recvRelief = recvReliefFor(receiving, state);
+    ctx.recvRelief = recvReliefFor(receiving, state, share === 'receiving');
+    ctx.shareCodec = share === 'av1' ? (state.shareVp8 ? 'vp8' : 'av1') : share === 'vp8' ? 'vp8' : null;
     const step = stepGovernor(state, sampleFor(t, schedule(t), state), ctx);
     state = step.state;
     if (step.action) {
       const a = step.action;
       const what =
-        a.kind === 'video' ? `video->${a.level}` : a.kind === 'recv' ? `recv->${a.level}` : a.kind === 'camera-off' ? 'camera-off' : 'bg-balanced';
+        a.kind === 'video'
+          ? `video->${a.level}`
+          : a.kind === 'recv'
+            ? `recv->${a.level}`
+            : a.kind === 'share-vp8'
+              ? 'share->VP8'
+              : a.kind === 'share-720'
+                ? `share-720-${a.direction}`
+                : a.kind === 'camera-off'
+                  ? 'camera-off'
+                  : 'bg-balanced';
       if (a.kind === 'bg-balanced') ctx.bgQuality = 'balanced';
       log.push(`${(t / 1000).toFixed(0)}s:${what}(${step.verdict.reasons.join('+') || 'calm'})`);
     }
   }
-  console.log(`${name}\n  ${log.join('  ') || '(no actions)'}\n  end: video=${state.video} recv=${state.recv} cameraOff=${state.cameraOffByGovernor} backoff=${state.recoverBackoff}`);
+  console.log(`${name}\n  ${log.join('  ') || '(no actions)'}\n  end: video=${state.video} recv=${state.recv} shareVp8=${state.shareVp8} share720=${state.share720} cameraOff=${state.cameraOffByGovernor} backoff=${state.recoverBackoff}`);
 }
 
 const highBg: GovernorContext = { bgQuality: 'high', cameraOn: true };
@@ -101,3 +118,6 @@ run(
 run('short 6s spike every minute (must do nothing)', (t) => (t % 60_000 < 6_000 ? 'busy' : 'calm'), 600_000, highBg);
 run('busy, receiving only phones/iPhones (no receive steps possible)', () => 'busy', 300_000, noBg, 'none');
 run('busy, camera off, watching others (receive steps only)', () => 'busy', 300_000, noBg, 'mixed', false);
+run('busy while sharing in AV1 (camera first, then share->VP8, camera off, 720p)', () => 'busy', 300_000, noBg, 'none', true, 'av1');
+run('busy while receiving a share, camera off', () => 'busy', 300_000, noBg, 'mixed', false, 'receiving');
+run('encoder overloaded 2 min while sharing in AV1, then calm', (t) => (t < 120_000 ? 'busy' : 'calm'), 600_000, noBg, 'none', true, 'av1');
