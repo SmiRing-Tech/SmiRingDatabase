@@ -10,7 +10,8 @@
  * value left in storage by that version (or the old DevTools-only `smiring.debug.shareCodec`
  * flag) is removed on load.
  */
-export type VideoCodecPreference = 'vp8' | 'h264';
+/** 'av1' applies to screen share only (lib/video/screenShare.ts); the camera stays on the default. */
+export type VideoCodecPreference = 'vp8' | 'h264' | 'av1';
 
 let current: VideoCodecPreference | undefined;
 
@@ -34,5 +35,5 @@ export function writeVideoCodecPreference(codec: VideoCodecPreference | undefine
  *  codec: every browser decodes both, and a backup would mean encoding the video twice —
  *  polluting exactly the encoder-cost comparison this switch exists for. */
 export function codecPublishOptions(codec: VideoCodecPreference | undefined) {
-  return codec ? { videoCodec: codec, backupCodec: false as const } : undefined;
+  return codec && codec !== 'av1' ? { videoCodec: codec, backupCodec: false as const } : undefined;
 }

@@ -9,27 +9,25 @@ import {
 } from 'livekit-client';
 
 /**
- * How Connect shares a screen (decided 2026-10-15 from /dev/share-lab and Google Meet's own
- * webrtc-internals dump):
+ * How Connect shares a screen.
  *
- *  - AV1 at the screen's own size, capped at 2560x1600, at most 15fps. Meet shares in AV1 at the
- *    tab's own size; on an M4 the lab measured AV1 at full size keeping text near-identical to the
- *    original (~52-55dB on still frames vs ~36dB for VP8 scaled to 1080p) while using fewer bits
- *    and decoding in ~2ms/frame vs VP8's 5-8. LiveKit publishes AV1 screen shares as L1T3 with
- *    contentHint 'motion' (its workaround for Chrome's screen-share SVC path); measured the same
- *    still-frame quality as 'detail', so its default is kept.
- *  - Text over motion: degradationPreference 'maintain-resolution', so a squeezed uplink or CPU
- *    drops frames, never pixels (the 2026-10-15 meeting's share shrank to 180p before this).
- *  - Viewers that can't decode AV1 (Safari, older iPhones/iPads): VP8 is sent alongside, only while
- *    such a viewer is in the room (BackupCodecPolicy.SIMULCAST). LiveKit's default policy would
- *    instead switch the whole share to VP8 for everyone the moment one such viewer joins.
- *  - Browsers that can't encode AV1 (Safari, Firefox): LiveKit itself falls back to VP8.
+ * Default: VP8, capture capped at 1080p, at most 15fps, degradationPreference 'maintain-resolution'
+ * (a squeezed uplink or CPU drops frames, never pixels — the 2026-10-15 meeting's share shrank to
+ * 180p before that), with the usual 720p/5fps simulcast layer for small tiles.
  *
- * Fallback when the sharer's machine can't keep up — steps of the load governor
- * (pages/Connect/loadGovernor/governorPolicy.ts), after the camera has been lightened:
- *  S1: AV1 -> VP8 at 1080p (a republish: viewers see the share pause for about a second). One-way
- *      for this share; remembered for VP8_MEMORY_DAYS so the next share starts on VP8.
- *  S2: VP8 at 720p — the floor; below that only the frame rate drops.
+ * AV1 at the screen's own size (up to 2560x1600) is available from the "通話の診断" codec switch
+ * only. It was the default for a day: /dev/share-lab (mostly-still screenshots) and Google Meet
+ * measured it light on an M4, but in a real call (2026-10-16) the same M4 sharing a browser being
+ * scrolled and clicked through took 12-40ms/frame with spikes to 95-400ms, starved the noise
+ * cancel (5ms -> 30-230ms per chunk) and broke the audio — while reporting no CPU limitation.
+ * Until the lab shows a setting that holds up on moving content, it stays opt-in. When used:
+ *  - LiveKit publishes it as L1T3 with contentHint 'motion' (its workaround for Chrome's
+ *    screen-share SVC path).
+ *  - Viewers that can't decode AV1 get VP8 alongside, only while one is in the room
+ *    (BackupCodecPolicy.SIMULCAST); LiveKit's default would switch everyone to VP8.
+ *  - Fallback, as load governor steps (pages/Connect/loadGovernor/governorPolicy.ts):
+ *    S1 AV1 -> VP8 1080p (a republish; first when the share's own encoder is the overload),
+ *    remembered for VP8_MEMORY_DAYS; S2 VP8 at 720p, the floor.
  */
 
 /** Capture cap: fit within this, never upscale. */
@@ -54,9 +52,13 @@ function canEncodeAv1() {
   return RTCRtpSender.getCapabilities?.('video')?.codecs.some((c) => c.mimeType.toLowerCase() === 'video/av1') ?? false;
 }
 
-/** AV1 unless the browser can't encode it or this device recently had to fall back to VP8. */
-export function rememberedShareCodec(): ShareCodec {
-  if (!canEncodeAv1()) return 'vp8';
+/**
+ * The codec a new share starts with: VP8 unless the diagnostics switch asks for AV1 or H.264.
+ * AV1 also needs a browser that can encode it and no recent fallback on this device.
+ */
+export function shareCodecFor(preference: 'vp8' | 'h264' | 'av1' | undefined): ShareCodec {
+  if (preference === 'h264') return 'h264';
+  if (preference !== 'av1' || !canEncodeAv1()) return 'vp8';
   try {
     const until = Number(localStorage.getItem(VP8_MEMORY_KEY));
     return Number.isFinite(until) && until > Date.now() ? 'vp8' : 'av1';
@@ -69,7 +71,7 @@ function rememberShareFallback() {
   try {
     localStorage.setItem(VP8_MEMORY_KEY, String(Date.now() + VP8_MEMORY_DAYS * 24 * 3600_000));
   } catch {
-    // Blocked storage: the next share just tries AV1 again.
+    // Blocked storage: the next AV1 share just tries again.
   }
 }
 
@@ -86,6 +88,8 @@ export function shareCaptureOptions(codec: ShareCodec): ScreenShareCaptureOption
     video: captureConstraints(codec === 'av1' ? SHARE_MAX : VP8_MAX) as ScreenShareCaptureOptions['video'],
     // Spend bits on sharpness over motion (LiveKit overrides it to 'motion' for AV1 — see above).
     contentHint: 'detail',
+    // Don't offer this very tab in the picker: sharing the call into itself is a hall of mirrors.
+    selfBrowserSurface: 'exclude',
   };
 }
 

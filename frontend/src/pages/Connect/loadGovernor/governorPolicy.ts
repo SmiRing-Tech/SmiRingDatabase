@@ -24,7 +24,8 @@
  *   8. camera off, with a dialog saying why (the person can turn it back on; it then resumes at 5)
  *   9. own screen share VP8 at 720p, the floor for a share (decided 2026-10-15)
  * Steps 7 and 9 only apply while sharing; screen share outranks the camera, so the camera goes
- * first except for that 720p floor, which is worse than losing one's camera.
+ * first except for that 720p floor, which is worse than losing one's camera — unless the AV1
+ * share's own encoder is the overload ('share-encode'): then step 7 comes first.
  * Receiving steps come first because they only change what this person sees; the camera steps
  * change what everyone sees of them. A step that would change nothing is skipped: the camera
  * steps while the camera is off, the receiving steps when nothing received could be slowed down
@@ -147,6 +148,8 @@ export interface SendStats {
   /** Tallest layer actually sent, px, and its frame rate. */
   height: number;
   fps: number;
+  /** Encode time per frame of that layer, ms. */
+  encodeMs?: number;
   /** Share of the window the encoder was held back by the uplink / by CPU, 0..1. */
   bandwidthLimited?: number;
   cpuLimited?: number;
@@ -208,6 +211,16 @@ export const GOVERNOR_THRESHOLDS = {
   recvDropCalmPerSec: 0.5,
   recvDecodeOverloadMs: 25,
   recvDecodeCalmMs: 15,
+  /**
+   * The screen share's own encoder: busy share of one core (ms/frame x fps / 1000), or one frame's
+   * encode time. Needed because an AV1 encoder that's drowning still reports no CPU limitation:
+   * on 2026-10-16 an M4 sharing a scrolled/clicked browser in AV1 took 12-40ms/frame with spikes to
+   * 95-400ms while qualityLimitationReason stayed 'none'. VP8 at 1080p runs ~11ms x 15fps = 0.17.
+   */
+  shareEncodeOverloadLoad: 0.4,
+  shareEncodeOverloadMs: 60,
+  shareEncodeCalmLoad: 0.15,
+  shareEncodeCalmMs: 25,
   /** Overloaded this long, continuously, before stepping down. */
   escalateAfterMs: 8_000,
   /** ...or this long when the audio is the one in trouble (it comes first). */
@@ -239,8 +252,13 @@ export interface Verdict {
 }
 
 export function classify(sample: LoadSample, T: GovernorThresholds = GOVERNOR_THRESHOLDS): Verdict {
-  if (!sample.visible) return { pressure: 'neutral', reasons: ['hidden'], audioUrgent: false };
-
+  // A hidden tab is judged too, on what stays meaningful there: the audio, the encoders and the
+  // share's encode load. What Chrome throttles in background tabs — main-thread timers, the
+  // background effect, rendering received video — is left out. (It used to judge nothing at all
+  // while hidden, which is every screen share: the presenter is looking at what they share. On
+  // 2026-10-16 the noise cancel sat at its lightest setting for a whole share and the governor
+  // never moved.)
+  const visible = sample.visible;
   const reasons: string[] = [];
   let calm = true;
 
@@ -250,21 +268,28 @@ export function classify(sample: LoadSample, T: GovernorThresholds = GOVERNOR_TH
     if (cpu >= T.encoderCpuCalm) calm = false;
   }
 
-  if (sample.mainLagMaxMs >= T.mainLagOverloadMs) reasons.push('main-lag');
-  if (sample.longTaskMsPerSec >= T.longTaskOverloadMsPerSec) reasons.push('long-tasks');
-  if (sample.mainLagMaxMs >= T.mainLagCalmMs || sample.longTaskMsPerSec >= T.longTaskCalmMsPerSec) calm = false;
+  const share = sample.shareSend;
+  if (share?.encodeMs !== undefined && share.fps > 0) {
+    const load = (share.encodeMs * share.fps) / 1000;
+    if (load >= T.shareEncodeOverloadLoad || share.encodeMs >= T.shareEncodeOverloadMs) reasons.push('share-encode');
+    if (load >= T.shareEncodeCalmLoad || share.encodeMs >= T.shareEncodeCalmMs) calm = false;
+  }
 
-  if (sample.bgActive && sample.bgFps !== undefined && sample.bgExpectedFps) {
+  if (visible && sample.mainLagMaxMs >= T.mainLagOverloadMs) reasons.push('main-lag');
+  if (visible && sample.longTaskMsPerSec >= T.longTaskOverloadMsPerSec) reasons.push('long-tasks');
+  if (visible && (sample.mainLagMaxMs >= T.mainLagCalmMs || sample.longTaskMsPerSec >= T.longTaskCalmMsPerSec)) calm = false;
+
+  if (visible && sample.bgActive && sample.bgFps !== undefined && sample.bgExpectedFps) {
     const ratio = sample.bgFps / sample.bgExpectedFps;
     if (ratio < T.bgFpsRatioOverload) reasons.push('bg-fps');
     if (ratio < T.bgFpsRatioCalm) calm = false;
   }
-  if (sample.bgActive && sample.bgCostMs !== undefined) {
+  if (visible && sample.bgActive && sample.bgCostMs !== undefined) {
     if (sample.bgCostMs >= T.bgCostOverloadMs) reasons.push('bg-cost');
     if (sample.bgCostMs >= T.bgCostCalmMs) calm = false;
   }
 
-  if (sample.recv?.streams) {
+  if (visible && sample.recv?.streams) {
     if (sample.recv.droppedPerSec >= T.recvDropOverloadPerSec) reasons.push('recv-drop');
     if (sample.recv.droppedPerSec >= T.recvDropCalmPerSec) calm = false;
     const decodeMs = sample.recv.decodeMsPerFrame;
@@ -300,6 +325,8 @@ export interface GovernorState {
   shareVp8: boolean;
   /** This share is capped at 720p (step 9). Cleared when the share ends. */
   share720: boolean;
+  /** The last step down was step 7 (see the settle rule in stepGovernor). */
+  lastWasShareSwitch?: boolean;
   cameraOffByGovernor: boolean;
   overloadedSince: number | null;
   calmSince: number | null;
@@ -402,16 +429,19 @@ export function stepGovernor(
 
   if (state.overloadedSince !== null) {
     const escalateAfter = verdict.audioUrgent ? T.escalateAfterAudioMs : T.escalateAfterMs;
-    const settle = verdict.audioUrgent ? T.settleAudioMs : T.settleMs;
+    // A share republish (step 7) takes a while to show its effect — the new encoder starts on a
+    // keyframe and ramps up — so it always gets the full settle, even when the audio is urgent.
+    const settle = verdict.audioUrgent && !state.lastWasShareSwitch ? T.settleAudioMs : T.settleMs;
     if (now - state.overloadedSince >= escalateAfter && sinceChange >= settle) {
       const cameraOffAllowed = state.cameraResumedAt === null || now - state.cameraResumedAt >= T.cameraResumeGraceMs;
-      const action = nextStepDown(state, ctx, cameraOffAllowed);
+      const action = nextStepDown(state, ctx, cameraOffAllowed, verdict.reasons);
       if (action) {
         if (state.lastRecoveryAt !== null && now - state.lastRecoveryAt < T.relapseWindowMs) {
           state.recoverBackoff = Math.min(T.maxRecoverBackoff, state.recoverBackoff * 2);
         }
         applyToState(state, action);
         state.lastChangeAt = now;
+        state.lastWasShareSwitch = action.kind === 'share-vp8';
         state.overloadedSince = null;
         return { state, verdict, action };
       }
@@ -437,7 +467,14 @@ export function stepGovernor(
 }
 
 /** The first step of the ladder not taken yet that would change something. */
-function nextStepDown(state: GovernorState, ctx: GovernorContext, cameraOffAllowed: boolean): GovernorAction | null {
+function nextStepDown(
+  state: GovernorState,
+  ctx: GovernorContext,
+  cameraOffAllowed: boolean,
+  reasons: string[] = [],
+): GovernorAction | null {
+  // The AV1 share itself is what's heavy: switch it first — the camera steps wouldn't touch the cause.
+  if (reasons.includes('share-encode') && ctx.shareCodec === 'av1' && !state.shareVp8) return { kind: 'share-vp8' };
   if (ctx.bgQuality === 'high' && !state.bgDowngraded) return { kind: 'bg-balanced' };
   const relief = ctx.recvRelief ?? { 1: false, 2: false };
   if (state.recv < 1 && relief[1]) return { kind: 'recv', level: 1, direction: 'down' };

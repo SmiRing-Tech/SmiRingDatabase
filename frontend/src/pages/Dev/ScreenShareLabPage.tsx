@@ -61,6 +61,11 @@ const SUITE: ShareConfig[] = [
   // vs the same with the 'detail' hint put back.
   { label: 'AV1 原寸15（LiveKit標準）', codec: 'AV1', height: 0, fps: 15, kbps: 3000, mode: 'text', scalabilityMode: 'L1T3', hint: 'motion' },
   { label: 'AV1 原寸15（画面指定）', codec: 'AV1', height: 0, fps: 15, kbps: 3000, mode: 'text', scalabilityMode: 'L1T3', hint: 'detail' },
+  // Meet's own settings (screen hint, L1T2) at production's 15fps; and LiveKit's default at 1080p.
+  // On a real, moving screen (2026-10-16) LiveKit's default AV1 ran 12-40ms/frame with spikes to
+  // 400ms while Meet's ran 2-3.5ms: these rows are for finding out which setting makes the gap.
+  { label: 'AV1 原寸15（Meet式）', codec: 'AV1', height: 0, fps: 15, kbps: 3000, mode: 'text', scalabilityMode: 'L1T2', hint: 'detail' },
+  { label: 'AV1 1080p15（LiveKit標準）', codec: 'AV1', height: 1080, fps: 15, kbps: 3000, mode: 'text', scalabilityMode: 'L1T3', hint: 'motion' },
   { label: 'AV1 原寸（Meet式）', codec: 'AV1', height: 0, fps: 30, kbps: 3000, mode: 'text', scalabilityMode: 'L1T2' },
   { label: 'AV1 1080p（Meet式）', codec: 'AV1', height: 1080, fps: 30, kbps: 3000, mode: 'text', scalabilityMode: 'L1T2' },
   { label: 'VP9 原寸（Meet式）', codec: 'VP9', height: 0, fps: 30, kbps: 3000, mode: 'text', scalabilityMode: 'L1T2' },
@@ -73,6 +78,15 @@ const SUITE: ShareConfig[] = [
 // Dropped after the first M4 run (2026-10-15): VP9 at 2Mbps and AV1 at 2Mbps (15fps, L1T3) both
 // dropped frames while scrolling on the dense test screen. Back as the "Meet式" rows above once
 // Meet turned out to share in AV1; H.264 stays for the slow-PC comparison.
+
+/** The rows that matter for choosing production's share settings (the "本番の候補" filter). */
+const CANDIDATES = new Set([
+  '現在の設定',
+  'AV1 原寸15（LiveKit標準）',
+  'AV1 原寸15（画面指定）',
+  'AV1 原寸15（Meet式）',
+  'AV1 1080p15（LiveKit標準）',
+]);
 
 const WARMUP_MS = 4000;
 /** One full cycle of the test screen: still, scroll, flip, still. */
@@ -614,7 +628,7 @@ interface Source {
 
 export default function ScreenShareLabPage() {
   const [sourceKind, setSourceKind] = useState<'test' | 'images' | 'screen'>('test');
-  const [vp8Only, setVp8Only] = useState(false);
+  const [suiteFilter, setSuiteFilter] = useState<'all' | 'vp8' | 'candidates'>('all');
   const imagesRef = useRef<ImageBitmap[]>([]);
   const [imageInfo, setImageInfo] = useState('');
   const [sourceInfo, setSourceInfo] = useState('');
@@ -697,7 +711,12 @@ export default function ScreenShareLabPage() {
     stopRef.current = false;
     setRows([]);
     try {
-      const suite = vp8Only ? SUITE.filter((c) => c.codec === 'VP8') : SUITE;
+      const suite =
+        suiteFilter === 'vp8'
+          ? SUITE.filter((c) => c.codec === 'VP8')
+          : suiteFilter === 'candidates'
+            ? SUITE.filter((c) => CANDIDATES.has(c.label))
+            : SUITE;
       for (const [i, cfg] of suite.entries()) {
         if (stopRef.current) break;
         const source = await ensureSource(cfg);
@@ -813,8 +832,17 @@ export default function ScreenShareLabPage() {
           </label>
         )}
         <label className="flex items-center gap-1 text-xs text-gray-300">
-          <input type="checkbox" checked={vp8Only} disabled={running} onChange={(e) => setVp8Only(e.target.checked)} />
-          VP8だけ測る
+          測る設定:
+          <select
+            disabled={running}
+            className="bg-gray-800 rounded px-2 py-1"
+            value={suiteFilter}
+            onChange={(e) => setSuiteFilter(e.target.value as 'all' | 'vp8' | 'candidates')}
+          >
+            <option value="all">全部</option>
+            <option value="vp8">VP8だけ</option>
+            <option value="candidates">本番の候補だけ（約1.5分）</option>
+          </select>
         </label>
         <button disabled={running} onClick={runSuite} className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 font-bold disabled:opacity-50">
           全部の設定を自動で測る

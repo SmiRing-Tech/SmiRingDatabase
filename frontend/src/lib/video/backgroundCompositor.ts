@@ -87,7 +87,9 @@ export class BackgroundCompositor {
   private matteResult?: RenderTarget;
   /** Style of the last matte composed; the composite pass needs to know how to read it. */
   private style?: MatteStyle;
+  /** Sizing of the current matte targets; before the first matte, the old fixed half resolution. */
   private matteScale = 0.5;
+  private minMatteHeight = 64;
   /** Half-resolution step on the way down to the background buffers. */
   private halfFrame?: RenderTarget;
   /** Ping-pong pair for the downsampled, blurred background. */
@@ -195,12 +197,15 @@ export class BackgroundCompositor {
     this.allocateMatteTargets();
   }
 
-  /** The matte's own targets, sized by the current style's matteScale. Drops the matte history. */
+  /** The matte's own targets, sized by the current style (scale with a floor). Drops the matte history. */
   private allocateMatteTargets() {
     const gl = this.gl;
     this.deleteMatteTargets();
-    const matteWidth = Math.max(16, Math.round(this.width * this.matteScale));
-    const matteHeight = Math.max(16, Math.round(this.height * this.matteScale));
+    const matteHeight = Math.min(
+      this.height,
+      Math.max(this.minMatteHeight, Math.round(this.height * this.matteScale)),
+    );
+    const matteWidth = Math.max(16, Math.round((matteHeight * this.width) / Math.max(1, this.height)));
     this.matte = [createRenderTarget(gl, matteWidth, matteHeight), createRenderTarget(gl, matteWidth, matteHeight)];
     this.featherScratch = createRenderTarget(gl, matteWidth, matteHeight);
     this.feathered = createRenderTarget(gl, matteWidth, matteHeight);
@@ -263,8 +268,9 @@ export class BackgroundCompositor {
 
     // A different model can mean a different matte resolution and a different meaning of what the
     // matte holds (alpha vs field) — either way the history is not comparable, so start it over.
-    if (style.matteScale !== this.matteScale) {
+    if (style.matteScale !== this.matteScale || style.minMatteHeight !== this.minMatteHeight) {
       this.matteScale = style.matteScale;
+      this.minMatteHeight = style.minMatteHeight;
       this.allocateMatteTargets();
     } else if (this.style && this.style.edge !== style.edge) {
       this.matteHistory = false;

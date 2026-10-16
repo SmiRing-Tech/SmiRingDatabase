@@ -5,6 +5,8 @@ import {
   type TrackReferenceOrPlaceholder,
 } from '@livekit/components-react';
 import { Track } from 'livekit-client';
+import { MonitorUp } from 'lucide-react';
+import { setOwnSharePreview, useOwnSharePreview } from '../../../lib/video/ownSharePreview';
 
 /** Zoom/pan transform applied on top of the fitted video box. Purely local. */
 export interface ZoomTransform {
@@ -67,6 +69,8 @@ export default function ClampedVideoTrack({
 
   const isRef = isTrackReference(trackRef);
   const isScreenShare = trackRef.source === Track.Source.ScreenShare;
+  const isOwnShare = isScreenShare && trackRef.participant.isLocal;
+  const ownSharePreview = useOwnSharePreview();
 
   // 画面共有の文字の鮮明さについて:
   //
@@ -241,16 +245,50 @@ export default function ClampedVideoTrack({
         className="relative shrink-0 flex items-center justify-center [container-type:size]"
       >
         <div className="w-full h-full overflow-hidden rounded-xl sm:rounded-2xl flex items-center justify-center">
-          <VideoTrack
-            ref={setVideoEl}
-            trackRef={trackRef}
-            onLoadedMetadata={onVideoLoadedMetadata}
-            className="w-full h-full object-cover"
-            style={{ transform: isLocalMirror ? 'scaleX(-1)' : 'none' }}
-          />
+          {isOwnShare && !ownSharePreview ? (
+            <OwnShareCard />
+          ) : (
+            <VideoTrack
+              ref={setVideoEl}
+              trackRef={trackRef}
+              onLoadedMetadata={onVideoLoadedMetadata}
+              className="w-full h-full object-cover"
+              style={{ transform: isLocalMirror ? 'scaleX(-1)' : 'none' }}
+            />
+          )}
         </div>
+        {isOwnShare && ownSharePreview && (
+          <button
+            type="button"
+            onClick={() => setOwnSharePreview(false)}
+            className="absolute bottom-2 left-2 z-20 rounded-lg bg-gray-950/85 px-2 py-1 text-[11px] font-semibold text-gray-200 hover:bg-gray-800"
+          >
+            プレビューを隠す
+          </button>
+        )}
         {children}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Stands in for the presenter's own screen share (see lib/video/ownSharePreview.ts): the live
+ * preview would be the hall of mirrors whenever the call window is on the shared screen.
+ */
+function OwnShareCard() {
+  return (
+    <div className="w-full h-full bg-[var(--lk-bg2)] flex flex-col items-center justify-center gap-2 p-3 text-center">
+      <MonitorUp className="w-8 h-8 text-sky-400" />
+      <p className="text-sm font-bold text-gray-100">画面を共有しています</p>
+      <p className="text-[11px] text-gray-400 leading-relaxed">ほかの参加者には、選んだ画面がそのまま見えています。</p>
+      <button
+        type="button"
+        onClick={() => setOwnSharePreview(true)}
+        className="mt-1 rounded-lg bg-gray-800 px-3 py-1.5 text-[11px] font-semibold text-gray-200 hover:bg-gray-700"
+      >
+        プレビューを表示（画面全体の共有では合わせ鏡になります）
+      </button>
     </div>
   );
 }

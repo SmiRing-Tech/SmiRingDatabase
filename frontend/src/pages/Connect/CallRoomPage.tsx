@@ -105,7 +105,7 @@ import { useLoadGovernor } from './loadGovernor/useLoadGovernor';
 import { CameraOffDialog, LoadGovernorPanel } from './loadGovernor/LoadGovernorUI';
 import { playSpeakerTestTone, useMicLevel } from '../../components/Connect/audioTest';
 import { codecPublishOptions, readVideoCodecPreference } from '../../lib/videoCodecPreference';
-import { isShareSwitching, rememberedShareCodec, shareCaptureOptions, sharePublishOptions } from '../../lib/video/screenShare';
+import { isShareSwitching, shareCaptureOptions, shareCodecFor, sharePublishOptions } from '../../lib/video/screenShare';
 import { renderMeterBegin, renderMeterEnd } from '../../lib/renderMeter';
 import ResizableAside from '../../components/Connect/callLayout/ResizableAside';
 import { useMiniRooms, type UseMiniRoomsResult, type ReconnectTarget } from '../../hooks/useMiniRooms';
@@ -1674,9 +1674,9 @@ function useScreenShareToggle() {
         await localParticipant.setScreenShareEnabled(false);
         return;
       }
-      // AV1 at the screen's own size (up to 2560x1600, 15fps), falling back to VP8 — see
-      // lib/video/screenShare.ts. The "通話の診断" codec switch (lib/videoCodecPreference) wins.
-      const codec = readVideoCodecPreference() ?? rememberedShareCodec();
+      // VP8 at up to 1080p/15fps, or what the "通話の診断" codec switch asks for (AV1, H.264) —
+      // see lib/video/screenShare.ts.
+      const codec = shareCodecFor(readVideoCodecPreference());
       console.info(`[share] codec: ${codec}`);
       await localParticipant.setScreenShareEnabled(true, shareCaptureOptions(codec), sharePublishOptions(codec));
     } catch (e) {

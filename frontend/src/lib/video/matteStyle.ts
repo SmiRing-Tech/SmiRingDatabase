@@ -22,6 +22,14 @@ export interface MatteStyle {
   edge: 'ramp' | 'contour';
   /** Matte resolution as a fraction of the frame. */
   matteScale: 0.5 | 0.25;
+  /**
+   * Floor on the matte's height in pixels, whatever the frame size. A contour is cut from the
+   * field as the composite reads it back bilinearly, so the field has to be stored finer than the
+   * model's mask grid — on a coarser one its pixels show up as notches along the edge. Matters
+   * when the load governor drops the camera to 360p, where a quarter would be 90 rows against the
+   * 144-row balanced mask. 180 is what the lab validated (a quarter of 720p).
+   */
+  minMatteHeight: number;
   /** contour: gaussian-equivalent spread folded into the mask read, in mask pixels (see fusedKernel). */
   maskBlur: number;
   /** contour: where the edge sits on the confidence field. */
@@ -31,8 +39,8 @@ export interface MatteStyle {
 }
 
 export const MATTE_STYLE: Record<SegmentationQuality, MatteStyle> = {
-  balanced: { edge: 'contour', matteScale: 0.25, maskBlur: 0.5, threshold: 0.5, softness: 2 },
-  high: { edge: 'contour', matteScale: 0.25, maskBlur: 0.5, threshold: 0.5, softness: 2 },
+  balanced: { edge: 'contour', matteScale: 0.25, minMatteHeight: 180, maskBlur: 0.5, threshold: 0.5, softness: 2 },
+  high: { edge: 'contour', matteScale: 0.25, minMatteHeight: 180, maskBlur: 0.5, threshold: 0.5, softness: 2 },
 };
 
 /** Height of each model's own mask, in pixels; the width follows the camera's aspect. */

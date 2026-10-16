@@ -77,7 +77,10 @@ function useCodecSwitch() {
       writeVideoCodecPreference(next);
       setCodec(next);
       try {
-        await republishCamera(localParticipant, next);
+        // AV1 is a screen-share-only choice; the camera only needs republishing if its codec changes.
+        const cameraBefore = codec === 'av1' ? undefined : codec;
+        const cameraAfter = next === 'av1' ? undefined : next;
+        if (isCameraEnabled && cameraBefore !== cameraAfter) await republishCamera(localParticipant, cameraAfter);
       } catch (e) {
         console.error('[Connect] camera codec switch failed:', e);
         setError('この方式に切り替えられなかったため、標準の方式に戻しました。');
@@ -87,7 +90,7 @@ function useCodecSwitch() {
         setBusy(false);
       }
     },
-    [busy, codec, localParticipant],
+    [busy, codec, localParticipant, isCameraEnabled],
   );
 
   return { codec, select, busy, error, isCameraEnabled, isScreenShareEnabled };
@@ -209,17 +212,18 @@ export function DiagnosticsDialog({
                   {codecSwitch.isScreenShareEnabled && '画面共有には、次に共有を始めたときから反映されます。'}
                 </p>
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 {([
                   { value: undefined, label: '標準（VP8）' },
                   { value: 'h264', label: 'H.264' },
+                  { value: 'av1', label: 'AV1（画面共有のみ）' },
                 ] as const).map((option) => {
                   const selected = codecSwitch.codec === option.value;
                   return (
                     <button
                       key={option.label}
                       onClick={() => void codecSwitch.select(option.value)}
-                      disabled={codecSwitch.busy || !codecSwitch.isCameraEnabled}
+                      disabled={codecSwitch.busy || (!codecSwitch.isCameraEnabled && option.value !== 'av1')}
                       className={`py-2 rounded-xl text-xs font-bold border transition-colors disabled:opacity-50 ${
                         selected
                           ? 'bg-sky-600/30 text-sky-300 border-sky-500/50'

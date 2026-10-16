@@ -29,6 +29,7 @@ import { toggleMicrophone } from '../../lib/toggleMicrophone';
 import type { useAdvancedChat } from '../../hooks/useAdvancedChat';
 import AdvancedChat from '../../components/Connect/AdvancedChat';
 import ClampedVideoTrack from '../../components/Connect/callLayout/ClampedVideoTrack';
+import { useOwnSharePreview } from '../../lib/video/ownSharePreview';
 import { tileId } from '../../components/Connect/callLayout/tileIdentity';
 import { useRecordingSync } from './useRecordingSync';
 import { useParticipantReactions, useReactionActions } from '../../contexts/ReactionContext';
@@ -242,6 +243,7 @@ export default function DocumentPipContent({
 
   // Check if local user is currently sharing screen
   const isLocalScreenSharing = localParticipant?.isScreenShareEnabled ?? false;
+  const ownSharePreview = useOwnSharePreview();
 
   // This PiP window is (re)created fresh each time it opens, which for the
   // screen-share auto-open case happens right as sharing starts — default to the
@@ -290,9 +292,10 @@ export default function DocumentPipContent({
 
   // Determine active/speaker track for Speaker mode (or when compacted)
   const activeSpeakerTrack = useMemo(() => {
-    // 1. While sharing our own screen, that's the whole reason this PiP is open —
-    // always keep it in focus over anyone else speaking.
-    if (isLocalScreenSharing) {
+    // 1. While sharing our own screen with its live preview turned on, keep it in focus over
+    // anyone else speaking. With the preview off (the default — see lib/video/ownSharePreview)
+    // it's only a "sharing" card, so the PiP shows the other people instead.
+    if (isLocalScreenSharing && ownSharePreview) {
       const ownScreenShare = filteredTracks.find(
         (t) =>
           t.source === Track.Source.ScreenShare &&
@@ -324,7 +327,7 @@ export default function DocumentPipContent({
 
     // 5. Fallback to first available track (e.g. self if alone in room)
     return filteredTracks[0] || null;
-  }, [isLocalScreenSharing, focusedRemoteSpeakerId, filteredTracks, localParticipant?.identity]);
+  }, [isLocalScreenSharing, ownSharePreview, focusedRemoteSpeakerId, filteredTracks, localParticipant?.identity]);
 
   // Whichever of the pinned tracks are actually present in this window's own
   // (differently filtered) track list — a pin made in the main window before PiP

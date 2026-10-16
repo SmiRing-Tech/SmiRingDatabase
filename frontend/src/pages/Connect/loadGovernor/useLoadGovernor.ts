@@ -311,7 +311,10 @@ export function useLoadGovernor({
     // how much of the window its encoder was held back by CPU or by the uplink (from the
     // cumulative qualityLimitationDurations); and the publisher connection's throughput and
     // bandwidth estimate. Any local track's report carries the connection's candidate pair.
-    const lastOutbound = new Map<string, { bytes: number; cpu: number; bandwidth: number; total: number }>();
+    const lastOutbound = new Map<
+      string,
+      { bytes: number; cpu: number; bandwidth: number; total: number; frames: number; encodeTime: number }
+    >();
     let lastPubPair: { bytes: number; at: number } | null = null;
     const sendCodecs = new Map<string, string>();
     const sendStats = async (seconds: number) => {
@@ -357,7 +360,14 @@ export function useLoadGovernor({
           }
           const durations = stat.qualityLimitationDurations as Record<string, number> | undefined;
           const total = durations ? Object.values(durations).reduce((sum, v) => sum + v, 0) : 0;
-          const now = { bytes: stat.bytesSent ?? 0, cpu: durations?.cpu ?? 0, bandwidth: durations?.bandwidth ?? 0, total };
+          const now = {
+            bytes: stat.bytesSent ?? 0,
+            cpu: durations?.cpu ?? 0,
+            bandwidth: durations?.bandwidth ?? 0,
+            total,
+            frames: stat.framesEncoded ?? 0,
+            encodeTime: stat.totalEncodeTime ?? 0,
+          };
           const prev = lastOutbound.get(stat.id);
           lastOutbound.set(stat.id, now);
           if (stat.active === false) continue;
@@ -365,6 +375,8 @@ export function useLoadGovernor({
           if ((stat.frameHeight ?? 0) > send.height) {
             send.height = stat.frameHeight ?? 0;
             send.fps = stat.framesPerSecond ?? 0;
+            const frames = prev ? now.frames - prev.frames : 0;
+            send.encodeMs = prev && frames > 0 ? ((now.encodeTime - prev.encodeTime) / frames) * 1000 : undefined;
           }
           let cpu: number | undefined;
           let bandwidth: number | undefined;
@@ -629,6 +641,7 @@ function compactSample(s: LoadSample, step: GovernorStep) {
     shh: s.shareSend?.height || undefined,
     sfps: r1(s.shareSend?.fps),
     sbw: frac(s.shareSend?.bandwidthLimited),
+    sem: r1(s.shareSend?.encodeMs),
     scpu: frac(s.shareSend?.cpuLimited),
     // Voice leveler: gain avg/max dB, speaking share, input speech level and noise floor dBFS.
     lg: r1(s.leveler?.gainAvgDb),
