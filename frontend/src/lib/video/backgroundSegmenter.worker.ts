@@ -14,6 +14,7 @@
  */
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 import { createProgram, createQuadBuffer, drawQuad, type GLProgram } from './mediapipeGL';
+import type { SegmentationQuality } from './MediapipeBackgroundProcessor';
 
 export type SegmenterRequest =
   | {
@@ -22,6 +23,8 @@ export type SegmenterRequest =
       wasmBase: string;
       model: { buffer: ArrayBuffer } | { url: string };
       delegate: 'GPU' | 'CPU';
+      /** Echoed in every reply, so the compositor can pick this model's matte style (matteStyle.ts). */
+      quality: SegmentationQuality;
       /** 1 when this model's mask scores background (see MODEL_INVERT). */
       invert: number;
       /** Size of the mask handed to the compositor; the width follows the camera's aspect. */
@@ -45,6 +48,7 @@ export type SegmentReply =
   | {
       ok: true;
       mask: ImageBitmap;
+      quality: SegmentationQuality;
       invert: number;
       /** This worker's whole time for the request: inference + drawing the mask + handing it over. */
       workMs: number;
@@ -80,6 +84,7 @@ let vao: WebGLVertexArrayObject;
 let maskIndex = 0;
 let lastMaskCount = 0;
 let invert = 0;
+let quality: SegmentationQuality = 'balanced';
 let lastTimestampMs = 0;
 let consecutiveFailures = 0;
 let stopped = false;
@@ -134,7 +139,7 @@ function onFrame({ frame, sentAt }: SegmentRequest) {
     const segmentMs = segmentToCanvas(frame);
     if (segmentMs !== null) {
       const mask = canvas.transferToImageBitmap();
-      reply = { ok: true, mask, invert, workMs: performance.now() - t0, segmentMs, sentAt };
+      reply = { ok: true, mask, quality, invert, workMs: performance.now() - t0, segmentMs, sentAt };
     }
   } catch (err) {
     console.error('[bg-segmenter] frame failed:', err);
@@ -156,6 +161,7 @@ function onFrame({ frame, sentAt }: SegmentRequest) {
 
 async function init(request: Extract<SegmenterRequest, { type: 'init' }>) {
   invert = request.invert;
+  quality = request.quality;
   const maskWidth = Math.round(request.maskHeight * request.aspect);
   canvas = new OffscreenCanvas(maskWidth, request.maskHeight);
   canvas.addEventListener('webglcontextlost', (event) => {

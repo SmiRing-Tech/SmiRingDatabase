@@ -9,6 +9,7 @@ import {
   type MediapipeBackgroundOptions,
   type SegmentationQuality,
 } from './MediapipeBackgroundProcessor';
+import { MODEL_MASK_HEIGHT } from './matteStyle';
 import type { CompositorRequest, CompositorResponse, CompositorSettings, CompositorStats } from './backgroundCompositor.worker';
 import type { SegmenterLoadTimings, SegmenterRequest, SegmenterResponse } from './backgroundSegmenter.worker';
 import { diagEvent, registerDiagProbe } from '../connectDiagnostics';
@@ -53,9 +54,6 @@ export type WorkerBackgroundOptions = MediapipeBackgroundOptions & {
    */
   onPipelineFailure?: (reason: string) => void;
 };
-
-/** Height of the mask the segmenter hands over, per model — about each model's own resolution. */
-const SEGMENTER_MASK_HEIGHT: Record<SegmentationQuality, number> = { balanced: 144, high: 256 };
 
 /** Generous: on a slow machine a model load plus first inference took 4-7s on the main thread. */
 const INIT_TIMEOUT_MS = 20_000;
@@ -379,8 +377,9 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       wasmBase: this.options.assetPaths?.wasmFileSet ?? MEDIAPIPE_WASM_BASE,
       model,
       delegate: this.options.delegate,
+      quality,
       invert: MODEL_INVERT[quality],
-      maskHeight: SEGMENTER_MASK_HEIGHT[quality],
+      maskHeight: MODEL_MASK_HEIGHT[quality],
       aspect: this.aspect,
     };
     const transfer: Transferable[] = [channel.port2];

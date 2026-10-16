@@ -19,6 +19,8 @@ import {
   type EffectTarget,
 } from './backgroundCompositor';
 import type { SegmentReply, SegmentRequest } from './backgroundSegmenter.worker';
+import { MATTE_STYLE } from './matteStyle';
+import type { SegmentationQuality } from './MediapipeBackgroundProcessor';
 
 export interface CompositorSettings {
   mode: BackgroundMode;
@@ -147,9 +149,11 @@ function fatal(message: string) {
   post({ type: 'fatal', message });
 }
 
-function matteOptions(invert: number) {
+function matteOptions(invert: number, quality: SegmentationQuality) {
   return {
     invert: settings.invertOverride ?? invert,
+    // The segmenter's mask is already drawn at the model's own size, so no maskGridHeight here.
+    style: MATTE_STYLE[quality],
     matteLo: settings.matteLo,
     matteHi: settings.matteHi,
     temporalSmoothing: settings.temporalSmoothing,
@@ -192,7 +196,7 @@ function onSegmentReply(reply: SegmentReply) {
   }
   const t0 = performance.now();
   try {
-    compositor.composeMatteFromImage(reply.mask, matteOptions(reply.invert));
+    compositor.composeMatteFromImage(reply.mask, matteOptions(reply.invert, reply.quality));
   } finally {
     reply.mask.close();
   }

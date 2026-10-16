@@ -15,6 +15,7 @@ import {
   copyFragmentShader,
   gaussianFragmentShader,
 } from './mediapipeShaders';
+import { fusedKernel, type MatteStyle } from './matteStyle';
 
 /**
  * The GPU half of the background effect: takes a camera frame and a segmentation mask, and
@@ -35,10 +36,19 @@ export type EffectTarget = 'background' | 'subject';
 export interface MatteOptions {
   /** 1 when the mask scores background (the shader inverts it to get subject alpha). */
   invert: number;
+  /** How the mask becomes an edge, per model (see matteStyle.ts). */
+  style: MatteStyle;
+  /** 'ramp' only: the lo/hi remap and the matte-resolution feather. */
   matteLo: number;
   matteHi: number;
-  temporalSmoothing: number;
   edgeFeather: number;
+  temporalSmoothing: number;
+  /**
+   * The model's own mask height. Needed only when the mask texture is NOT already that size — the
+   * main-thread path hands over MediaPipe's texture, which is the camera frame's size; the worker
+   * path's mask is drawn at the model's size, so it leaves this out.
+   */
+  maskGridHeight?: number;
 }
 
 export interface CompositeOptions {
@@ -49,11 +59,13 @@ export interface CompositeOptions {
 }
 
 type Programs = {
-  alpha: GLProgram<'u_mask' | 'u_history' | 'u_invert' | 'u_lo' | 'u_hi' | 'u_history_weight'>;
+  alpha: GLProgram<
+    'u_mask' | 'u_history' | 'u_invert' | 'u_lo' | 'u_hi' | 'u_history_weight' | 'u_contour' | 'u_fused' | 'u_mask_grid'
+  >;
   gaussian: GLProgram<'u_texture' | 'u_step'>;
   copy: GLProgram<'u_texture'>;
   composite: GLProgram<
-    'u_frame' | 'u_background' | 'u_alpha' | 'u_background_scale' | 'u_background_offset' | 'u_swap_sides'
+    'u_frame' | 'u_background' | 'u_alpha' | 'u_background_scale' | 'u_background_offset' | 'u_swap_sides' | 'u_edge'
   >;
 };
 
@@ -71,6 +83,11 @@ export class BackgroundCompositor {
   private matteIndex = 0;
   private featherScratch?: RenderTarget;
   private feathered?: RenderTarget;
+  /** What the composite reads: the feathered matte ('ramp') or the raw smooth field ('contour'). */
+  private matteResult?: RenderTarget;
+  /** Style of the last matte composed; the composite pass needs to know how to read it. */
+  private style?: MatteStyle;
+  private matteScale = 0.5;
   /** Half-resolution step on the way down to the background buffers. */
   private halfFrame?: RenderTarget;
   /** Ping-pong pair for the downsampled, blurred background. */
@@ -113,6 +130,9 @@ export class BackgroundCompositor {
         'u_lo',
         'u_hi',
         'u_history_weight',
+        'u_contour',
+        'u_fused',
+        'u_mask_grid',
       ] as const),
       gaussian: createProgram(gl, gaussianFragmentShader, ['u_texture', 'u_step'] as const),
       copy: createProgram(gl, copyFragmentShader, ['u_texture'] as const),
@@ -120,7 +140,15 @@ export class BackgroundCompositor {
       composite: createProgram(
         gl,
         compositeFragmentShader,
-        ['u_frame', 'u_background', 'u_alpha', 'u_background_scale', 'u_background_offset', 'u_swap_sides'] as const,
+        [
+          'u_frame',
+          'u_background',
+          'u_alpha',
+          'u_background_scale',
+          'u_background_offset',
+          'u_swap_sides',
+          'u_edge',
+        ] as const,
         true,
       ),
     };
@@ -155,33 +183,49 @@ export class BackgroundCompositor {
     this.deleteTargets();
 
     // Half resolution is plenty for a matte and keeps the feather passes cheap.
-    const matteWidth = Math.max(64, Math.round(this.width / 2));
-    const matteHeight = Math.max(64, Math.round(this.height / 2));
+    const halfWidth = Math.max(64, Math.round(this.width / 2));
+    const halfHeight = Math.max(64, Math.round(this.height / 2));
     // Quarter resolution for the background: it is about to be blurred anyway,
     // and this is where most of the blur cost would otherwise go.
     const bgWidth = Math.max(16, Math.round(this.width / 4));
     const bgHeight = Math.max(16, Math.round(this.height / 4));
 
+    this.halfFrame = createRenderTarget(gl, halfWidth, halfHeight);
+    this.background = [createRenderTarget(gl, bgWidth, bgHeight), createRenderTarget(gl, bgWidth, bgHeight)];
+    this.allocateMatteTargets();
+  }
+
+  /** The matte's own targets, sized by the current style's matteScale. Drops the matte history. */
+  private allocateMatteTargets() {
+    const gl = this.gl;
+    this.deleteMatteTargets();
+    const matteWidth = Math.max(16, Math.round(this.width * this.matteScale));
+    const matteHeight = Math.max(16, Math.round(this.height * this.matteScale));
     this.matte = [createRenderTarget(gl, matteWidth, matteHeight), createRenderTarget(gl, matteWidth, matteHeight)];
     this.featherScratch = createRenderTarget(gl, matteWidth, matteHeight);
     this.feathered = createRenderTarget(gl, matteWidth, matteHeight);
-    this.halfFrame = createRenderTarget(gl, matteWidth, matteHeight);
-    this.background = [createRenderTarget(gl, bgWidth, bgHeight), createRenderTarget(gl, bgWidth, bgHeight)];
-
+    this.matteResult = undefined;
     this.matteIndex = 0;
     this.matteHistory = false;
   }
 
-  private deleteTargets() {
+  private deleteMatteTargets() {
     const gl = this.gl;
-    for (const target of [...this.matte, ...this.background]) deleteRenderTarget(gl, target);
+    for (const target of this.matte) deleteRenderTarget(gl, target);
     if (this.featherScratch) deleteRenderTarget(gl, this.featherScratch);
     if (this.feathered) deleteRenderTarget(gl, this.feathered);
-    if (this.halfFrame) deleteRenderTarget(gl, this.halfFrame);
     this.matte = [];
-    this.background = [];
     this.featherScratch = undefined;
     this.feathered = undefined;
+    this.matteResult = undefined;
+  }
+
+  private deleteTargets() {
+    const gl = this.gl;
+    this.deleteMatteTargets();
+    for (const target of this.background) deleteRenderTarget(gl, target);
+    if (this.halfFrame) deleteRenderTarget(gl, this.halfFrame);
+    this.background = [];
     this.halfFrame = undefined;
   }
 
@@ -213,15 +257,27 @@ export class BackgroundCompositor {
   composeMatte(maskTexture: WebGLTexture, options: MatteOptions) {
     const gl = this.gl;
     const { alpha, gaussian } = this.programs;
-    const scratch = this.featherScratch!;
-    const feathered = this.feathered!;
+    const style = options.style;
     // On the main thread this runs inside MediaPipe's segmentation callback, so its GL state is live.
     this.resetGLState();
+
+    // A different model can mean a different matte resolution and a different meaning of what the
+    // matte holds (alpha vs field) — either way the history is not comparable, so start it over.
+    if (style.matteScale !== this.matteScale) {
+      this.matteScale = style.matteScale;
+      this.allocateMatteTargets();
+    } else if (this.style && this.style.edge !== style.edge) {
+      this.matteHistory = false;
+    }
+    this.style = style;
+    const scratch = this.featherScratch!;
+    const feathered = this.feathered!;
+    const contour = style.edge === 'contour';
 
     const write = this.matte[this.matteIndex];
     const history = this.matte[1 - this.matteIndex];
 
-    // Pass 1 — confidence mask to alpha matte, blended with the previous frame.
+    // Pass 1 — confidence mask to alpha matte (or, for contour, the smooth field), blended with the previous frame.
     gl.useProgram(alpha.program);
     bindTextureUnit(gl, 0, maskTexture, alpha.uniforms.u_mask);
     bindTextureUnit(gl, 1, history.texture, alpha.uniforms.u_history);
@@ -230,23 +286,45 @@ export class BackgroundCompositor {
     // what is almost certainly body, and let everything between stay translucent.
     gl.uniform1f(alpha.uniforms.u_lo, options.matteLo);
     gl.uniform1f(alpha.uniforms.u_hi, options.matteHi);
+    gl.uniform1f(alpha.uniforms.u_contour, contour ? 1 : 0);
+    if (contour) {
+      const kernel = fusedKernel(style.maskBlur);
+      gl.uniform2f(alpha.uniforms.u_fused, kernel.spacing, kernel.outer);
+    } else {
+      gl.uniform2f(alpha.uniforms.u_fused, 0, 0);
+    }
+    if (options.maskGridHeight) {
+      gl.uniform2f(
+        alpha.uniforms.u_mask_grid,
+        Math.round((options.maskGridHeight * this.width) / Math.max(1, this.height)),
+        options.maskGridHeight,
+      );
+    } else {
+      gl.uniform2f(alpha.uniforms.u_mask_grid, 0, 0);
+    }
     gl.uniform1f(
       alpha.uniforms.u_history_weight,
       this.matteHistory ? Math.min(0.95, Math.max(0, options.temporalSmoothing)) : 0,
     );
     drawQuad(gl, this.quad, alpha.position, write, write.width, write.height);
 
-    // Pass 2/3 — separable feather, so the silhouette hands over gradually.
-    const featherTexels = Math.max(0.5, (options.edgeFeather / 2) * 0.5);
-    gl.useProgram(gaussian.program);
+    if (contour) {
+      // The field is already smooth and the composite cuts it crisply: nothing left to feather.
+      this.matteResult = write;
+    } else {
+      // Pass 2/3 — separable feather, so the silhouette hands over gradually.
+      const featherTexels = Math.max(0.5, (options.edgeFeather / 2) * 0.5);
+      gl.useProgram(gaussian.program);
 
-    bindTextureUnit(gl, 0, write.texture, gaussian.uniforms.u_texture);
-    gl.uniform2f(gaussian.uniforms.u_step, featherTexels / write.width, 0);
-    drawQuad(gl, this.quad, gaussian.position, scratch, scratch.width, scratch.height);
+      bindTextureUnit(gl, 0, write.texture, gaussian.uniforms.u_texture);
+      gl.uniform2f(gaussian.uniforms.u_step, featherTexels / write.width, 0);
+      drawQuad(gl, this.quad, gaussian.position, scratch, scratch.width, scratch.height);
 
-    bindTextureUnit(gl, 0, scratch.texture, gaussian.uniforms.u_texture);
-    gl.uniform2f(gaussian.uniforms.u_step, 0, featherTexels / scratch.height);
-    drawQuad(gl, this.quad, gaussian.position, feathered, feathered.width, feathered.height);
+      bindTextureUnit(gl, 0, scratch.texture, gaussian.uniforms.u_texture);
+      gl.uniform2f(gaussian.uniforms.u_step, 0, featherTexels / scratch.height);
+      drawQuad(gl, this.quad, gaussian.position, feathered, feathered.width, feathered.height);
+      this.matteResult = feathered;
+    }
 
     this.matteIndex = 1 - this.matteIndex;
     this.matteHistory = true;
@@ -355,7 +433,14 @@ export class BackgroundCompositor {
     gl.useProgram(composite.program);
     bindTextureUnit(gl, 0, this.frameTexture, composite.uniforms.u_frame);
     bindTextureUnit(gl, 1, useImage ? this.imageTexture! : this.background[0].texture, composite.uniforms.u_background);
-    bindTextureUnit(gl, 2, this.feathered!.texture, composite.uniforms.u_alpha);
+    bindTextureUnit(gl, 2, (this.matteResult ?? this.feathered!).texture, composite.uniforms.u_alpha);
+    const style = this.style;
+    gl.uniform3f(
+      composite.uniforms.u_edge,
+      style?.edge === 'contour' ? 1 : 0,
+      style?.threshold ?? 0.5,
+      style?.softness ?? 2,
+    );
     gl.uniform2f(composite.uniforms.u_background_scale, scaleX, scaleY);
     gl.uniform2f(composite.uniforms.u_background_offset, (1 - scaleX) / 2, (1 - scaleY) / 2);
     gl.uniform1f(composite.uniforms.u_swap_sides, target === 'subject' ? 1 : 0);

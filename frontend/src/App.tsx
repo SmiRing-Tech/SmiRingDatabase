@@ -1,5 +1,6 @@
 import { createBrowserRouter, RouterProvider, Navigate, useLocation } from 'react-router-dom';
 import BackgroundBlurLabPage from './pages/Dev/BackgroundBlurLabPage';
+import MatteEdgeLabPage from './pages/Dev/MatteEdgeLabPage';
 import TemporalLayerLabPage from './pages/Dev/TemporalLayerLabPage';
 import ScreenShareLabPage from './pages/Dev/ScreenShareLabPage';
 import NoiseCancelLabPage from './pages/Dev/NoiseCancelLabPage';
@@ -189,6 +190,8 @@ const router = createBrowserRouter([
   //    もらえるように。音量計測も同じ理由で公開（自分のマイクと自サイトのモデルファイルしか使わない）。
   //    ノイズキャンセルの方は開発時のみ。
   { path: '/dev/blur-lab', element: <BackgroundBlurLabPage /> },
+  // マスク境界（切り抜きのガタつき）の調整ラボ：同じくカメラだけを使うので公開。
+  { path: '/dev/matte-lab', element: <MatteEdgeLabPage /> },
   { path: '/dev/audio-gain-lab', element: <AudioGainLabPage /> },
   // 時間レイヤー実験：通常の Connect トークンを発行するのでログインが必要（未ログインならページ上でそう表示）。
   { path: '/dev/temporal-lab', element: <TemporalLayerLabPage /> },

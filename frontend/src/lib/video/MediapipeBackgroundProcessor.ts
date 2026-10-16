@@ -6,6 +6,7 @@ import {
   type EffectTarget,
   type MatteOptions,
 } from './backgroundCompositor';
+import { MATTE_STYLE, MODEL_MASK_HEIGHT } from './matteStyle';
 import { registerDiagProbe } from '../connectDiagnostics';
 import { emitLoadSignal } from '../loadSignals';
 
@@ -184,7 +185,11 @@ export type MediapipeBackgroundOptions = {
   quality?: SegmentationQuality;
   /** How much of the previous frame's matte to keep, 0..0.95. Higher = steadier edge, more lag. */
   temporalSmoothing?: number;
-  /** Width of the soft alpha ramp at the silhouette, in output pixels. */
+  /**
+   * Width of the soft alpha ramp at the silhouette, in output pixels. Only the 'ramp' matte style
+   * uses it (and matteLo/matteHi); both models currently cut a smooth contour instead — see
+   * matteStyle.ts.
+   */
   edgeFeather?: number;
   /** Cap on segmentation inferences per second; frames in between reuse the last matte. */
   segmentationFps?: number;
@@ -1310,6 +1315,9 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   private matteOptions(): MatteOptions {
     return {
       invert: this.resolvedInvert,
+      style: MATTE_STYLE[this.options.quality],
+      // MediaPipe's texture is the camera frame's size, not the model's own mask grid.
+      maskGridHeight: MODEL_MASK_HEIGHT[this.options.quality],
       matteLo: this.options.matteLo ?? 0.3,
       matteHi: this.options.matteHi ?? 0.75,
       temporalSmoothing: this.options.temporalSmoothing,
