@@ -15,7 +15,15 @@ export type LoadSignal =
   /** Noise cancellation gave up for this call (it falls back to the raw mic by itself). */
   | { kind: 'audio-overload' }
   /** Background effect totals over the last `seconds` (roughly 1s). */
-  | { kind: 'background'; frames: number; seconds: number; costMsTotal: number; expectedFps: number };
+  | {
+      kind: 'background';
+      frames: number;
+      seconds: number;
+      costMsTotal: number;
+      expectedFps: number;
+      /** Longest gap between output frames, ms (worker pipeline only). */
+      maxGapMs?: number;
+    };
 
 type Listener = (signal: LoadSignal) => void;
 

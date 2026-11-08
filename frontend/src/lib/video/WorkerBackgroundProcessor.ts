@@ -641,6 +641,7 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       seconds: stats.intervalMs / 1000,
       costMsTotal: stats.compositeMsTotal + stats.segmenterWorkMsTotal,
       expectedFps: this.expectedFps(),
+      maxGapMs: stats.maxGapMs,
     });
     this.history.push(stats);
     if (this.history.length > PERF_FAST_WINDOW_S) this.history.shift();
@@ -781,6 +782,7 @@ function emptyTotals(): Omit<CompositorStats, 'intervalMs'> {
     segmenterWorkMsTotal: 0,
     maskLatencyMsTotal: 0,
     droppedFrames: 0,
+    maxGapMs: 0,
   };
 }
 
@@ -794,4 +796,5 @@ function addTotals(into: Omit<CompositorStats, 'intervalMs'>, stats: CompositorS
   into.segmenterWorkMsTotal += stats.segmenterWorkMsTotal;
   into.maskLatencyMsTotal += stats.maskLatencyMsTotal;
   into.droppedFrames += stats.droppedFrames;
+  into.maxGapMs = Math.max(into.maxGapMs, stats.maxGapMs);
 }

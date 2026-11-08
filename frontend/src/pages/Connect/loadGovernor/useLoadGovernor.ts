@@ -4,6 +4,7 @@ import { Track, TrackEvent, type LocalVideoTrack } from 'livekit-client';
 import { subscribeLoadSignals } from '../../../lib/loadSignals';
 import { takeRenderMeter } from '../../../lib/renderMeter';
 import { activeVoiceFinish } from '../../../lib/audio/voiceFinish';
+import { readAudioPipelineHealth } from '../../../lib/audio/audioPipelineHealth';
 import { applyCaptureConstraints, cameraSourceTrack } from '../../../lib/video/backgroundProcessor';
 import { diagEvent, diagState } from '../../../lib/connectDiagnostics';
 import { recordTelemetry, startTelemetry, stopTelemetry } from '../../../lib/connectTelemetry';
@@ -122,6 +123,7 @@ function createSignalTotals() {
     bgCostMs: 0,
     bgExpectedFps: 0,
     bgReports: 0,
+    bgMaxGapMs: undefined as number | undefined,
   };
 }
 
@@ -269,6 +271,18 @@ export function useLoadGovernor({
     if (mode === 'off') return;
     startTelemetry(roomId, { mode, base: BASE_PROFILE });
     recordTelemetry('governor-start', { mode, ...(forcedRecv !== null ? { forcedRecv } : {}) });
+    // Remote participants get a small number in the per-stream telemetry; who that is is recorded
+    // once, the first time they're seen (identities are long, and this is every 2s per stream).
+    const peers = new Map<string, number>();
+    const peerIndex = (identity: string) => {
+      let index = peers.get(identity);
+      if (index === undefined) {
+        index = peers.size;
+        peers.set(identity, index);
+        recordTelemetry('peer', { i: index, identity, name: room.remoteParticipants.get(identity)?.name });
+      }
+      return index;
+    };
     const recvController = new ReceiveFpsController();
     recvControllerRef.current = recvController;
     if (forcedRecv !== null) recvController.setLevel(forcedRecv);
@@ -294,6 +308,7 @@ export function useLoadGovernor({
         totals.bgCostMs += signal.costMsTotal;
         totals.bgExpectedFps = signal.expectedFps;
         totals.bgReports += 1;
+        if (signal.maxGapMs !== undefined) totals.bgMaxGapMs = Math.max(totals.bgMaxGapMs ?? 0, signal.maxGapMs);
       }
     });
 
@@ -336,6 +351,42 @@ export function useLoadGovernor({
         pressureObserver = undefined; // permissions policy or an older implementation
       }
     }
+
+    // Finer-grained than the pressure states above (which stayed at "fair" even on a 2-core
+    // MacBook Air whose audio fell 14s behind): a fixed piece of work timed once a second in a
+    // worker. See lib/cpuProbe.worker.ts.
+    let probe = { n: 0, workSum: 0, workMax: 0, lateMax: 0 };
+    let probeWorker: Worker | undefined;
+    try {
+      probeWorker = new Worker(new URL('../../../lib/cpuProbe.worker.ts', import.meta.url), { type: 'module' });
+      probeWorker.onmessage = (event: MessageEvent<{ workMs: number; lateMs: number }>) => {
+        probe.n += 1;
+        probe.workSum += event.data.workMs;
+        probe.workMax = Math.max(probe.workMax, event.data.workMs);
+        probe.lateMax = Math.max(probe.lateMax, event.data.lateMs);
+      };
+    } catch {
+      probeWorker = undefined;
+    }
+
+    // Frame pacing of the page itself while it's on screen: when the machine (CPU or GPU) is
+    // saturated, frames stop arriving every vsync. rAF doesn't run in hidden tabs, so this only
+    // ever describes visible windows.
+    let rafFrames = 0;
+    let rafMaxGap = 0;
+    let rafLast: number | null = null;
+    let rafId = 0;
+    const onFrame = (at: number) => {
+      if (rafLast !== null) rafMaxGap = Math.max(rafMaxGap, at - rafLast);
+      rafLast = at;
+      rafFrames += 1;
+      rafId = requestAnimationFrame(onFrame);
+    };
+    rafId = requestAnimationFrame(onFrame);
+    const onVisibility = () => {
+      rafLast = null; // the gap across a hidden stretch isn't a dropped frame
+    };
+    document.addEventListener('visibilitychange', onVisibility);
 
     // What this device sends: per video (camera, screen share) its bitrate, tallest layer sent and
     // how much of the window its encoder was held back by CPU or by the uplink (from the
@@ -429,13 +480,16 @@ export function useLoadGovernor({
     };
 
     // Receiving side: decode work for everyone else's video, from each remote track's receiver.
-    const lastInbound = new Map<string, { decoded: number; decodeTime: number; dropped: number; freezes: number }>();
+    const lastInbound = new Map<
+      string,
+      { decoded: number; decodeTime: number; dropped: number; freezes: number; freezeSec: number }
+    >();
     let lastSubPair: { bytes: number; at: number } | null = null;
     let downKbps: number | undefined;
     let subPairRead = false;
     const decoders = new Set<string>();
     const receiveStats = async (seconds: number, cameras: CameraFps[]): Promise<ReceiveStats> => {
-      const result: ReceiveStats = { streams: 0, decodedFps: 0, droppedPerSec: 0, freezes: 0, maxHeight: 0 };
+      const result: ReceiveStats = { streams: 0, decodedFps: 0, droppedPerSec: 0, freezes: 0, maxHeight: 0, perStream: [] };
       downKbps = undefined;
       subPairRead = false;
       let decodedTotal = 0;
@@ -472,12 +526,21 @@ export function useLoadGovernor({
               decodeTime: stat.totalDecodeTime ?? 0,
               dropped: stat.framesDropped ?? 0,
               freezes: stat.freezeCount ?? 0,
+              freezeSec: stat.totalFreezesDuration ?? 0,
             };
             const prev = lastInbound.get(stat.id);
             lastInbound.set(stat.id, now);
             const fresh = !prev || now.decoded < prev.decoded;
             if (publication.source === Track.Source.Camera || publication.source === Track.Source.ScreenShare) {
               cameras.push({ publication, decodedFps: fresh ? 0 : (now.decoded - prev.decoded) / seconds });
+              result.perStream!.push({
+                identity: participant.identity,
+                source: publication.source === Track.Source.Camera ? 'camera' : 'share',
+                fps: fresh ? 0 : (now.decoded - prev.decoded) / seconds,
+                freezes: fresh ? 0 : Math.max(0, now.freezes - prev.freezes),
+                freezeMs: fresh ? 0 : Math.max(0, now.freezeSec - prev.freezeSec) * 1000,
+                height: stat.frameHeight ?? 0,
+              });
             }
             if (fresh) return;
             decodedTotal += now.decoded - prev.decoded;
@@ -529,6 +592,11 @@ export function useLoadGovernor({
           // that as "background can't keep up" pinned the receive step at r3 for whole calls.
           bgActive: t.bgReports > 0 && localParticipant.isCameraEnabled,
           cpuPressure: cpuPressureWorst,
+          cpuProbe: probe.n
+            ? { workMsAvg: probe.workSum / probe.n, workMsMax: probe.workMax, lateMsMax: probe.lateMax }
+            : undefined,
+          frames: rafFrames > 1 ? { fps: rafFrames / seconds, maxGapMs: rafMaxGap } : undefined,
+          bgMaxGapMs: localParticipant.isCameraEnabled ? t.bgMaxGapMs : undefined,
           bgFps: t.bgSeconds > 0 ? t.bgFrames / t.bgSeconds : undefined,
           bgExpectedFps: t.bgExpectedFps || undefined,
           bgCostMs: t.bgFrames > 0 ? t.bgCostMs / t.bgFrames : undefined,
@@ -554,6 +622,9 @@ export function useLoadGovernor({
         lagMax = 0;
         longTaskMs = 0;
         cpuPressureWorst = cpuPressureNow; // the observer only reports changes
+        probe = { n: 0, workSum: 0, workMax: 0, lateMax: 0 };
+        rafFrames = 0;
+        rafMaxGap = 0;
 
         const state = stateRef.current;
         const actualQuality = bg.supported && bg.mode !== 'off' ? bg.quality : null;
@@ -578,7 +649,9 @@ export function useLoadGovernor({
         stateRef.current = step.state;
         if (mode === 'active') syncCameraProfile(step.state.video);
 
-        recordTelemetry('sample', compactSample(sample, step));
+        // `ah`: outgoing mic pipeline health (lib/audio/audioPipelineHealth) — stage, AudioContext
+        // states and signal level at each tap, to locate "mic is ON but nobody hears me".
+        recordTelemetry('sample', { ...compactSample(sample, step, peerIndex), ah: readAudioPipelineHealth() });
         if (step.action) {
           const applied = mode === 'active';
           recordTelemetry('action', { action: step.action, applied, reasons: step.verdict.reasons });
@@ -619,6 +692,9 @@ export function useLoadGovernor({
       clearInterval(lagTimer);
       longTaskObserver?.disconnect();
       pressureObserver?.disconnect();
+      probeWorker?.terminate();
+      cancelAnimationFrame(rafId);
+      document.removeEventListener('visibilitychange', onVisibility);
       unsubscribe();
       recordTelemetry('governor-stop', {});
       stopTelemetry();
@@ -631,7 +707,7 @@ export function useLoadGovernor({
 }
 
 /** One telemetry line per sample: short keys, rounded numbers (it's every 2s for the whole call). */
-function compactSample(s: LoadSample, step: GovernorStep) {
+function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: string) => number) {
   const r1 = (v: number | undefined) => (v === undefined ? undefined : Math.round(v * 10) / 10);
   const r0 = (v: number | undefined) => (v === undefined || !Number.isFinite(v) ? undefined : Math.round(v));
   // Fractions only when non-zero: most windows aren't limited at all.
@@ -651,6 +727,19 @@ function compactSample(s: LoadSample, step: GovernorStep) {
     lt: Math.round(s.longTaskMsPerSec),
     // Whole-machine CPU pressure, worst in the window: 0 nominal, 1 fair, 2 serious, 3 critical.
     cpu: s.cpuPressure,
+    // CPU probe (lib/cpuProbe.worker): fixed work ms avg / max, probe timer lateness max.
+    cpa: r1(s.cpuProbe?.workMsAvg),
+    cpx: r1(s.cpuProbe?.workMsMax),
+    cpl: r0(s.cpuProbe?.lateMsMax),
+    // Page frame pacing while visible: frames/s, longest gap ms.
+    raf: r0(s.frames?.fps),
+    rafx: r0(s.frames?.maxGapMs),
+    // Longest gap between camera frames leaving the background effect, ms.
+    bgg: r0(s.bgMaxGapMs),
+    // Per received video: [peer#, 'c'amera|'s'hare, fps, freezes, frozen ms, height]. Peer# -> who: 'peer' entries.
+    rs: s.recv?.perStream?.length
+      ? s.recv.perStream.map((p) => [peerIndex(p.identity), p.source === 'camera' ? 'c' : 's', r0(p.fps), p.freezes, r0(p.freezeMs), p.height])
+      : undefined,
     bgf: r1(s.bgFps),
     bge: s.bgExpectedFps === undefined ? undefined : Math.round(s.bgExpectedFps),
     bgc: r1(s.bgCostMs),

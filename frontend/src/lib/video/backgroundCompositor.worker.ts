@@ -85,6 +85,8 @@ export interface CompositorStats {
   /** From asking for a matte to having it, summed. */
   maskLatencyMsTotal: number;
   droppedFrames: number;
+  /** Longest gap between two frames handed to the sender in this interval, ms (receivers see it as a stall). */
+  maxGapMs: number;
 }
 
 export type CompositorResponse =
@@ -138,8 +140,11 @@ const emptyStats = (): CompositorStats => ({
   segmenterWorkMsTotal: 0,
   maskLatencyMsTotal: 0,
   droppedFrames: 0,
+  maxGapMs: 0,
 });
 let stats = emptyStats();
+/** When the last output frame was written; reset with each new source so a camera switch isn't a "gap". */
+let lastOutputAt: number | null = null;
 let statsSince = 0;
 let statsTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -275,6 +280,9 @@ async function pump(source: ReadableStreamDefaultReader<VideoFrame>) {
     if (!out) continue;
     try {
       await writer!.write(out);
+      const at = performance.now();
+      if (lastOutputAt !== null) stats.maxGapMs = Math.max(stats.maxGapMs, at - lastOutputAt);
+      lastOutputAt = at;
     } catch (err) {
       out.close();
       if (!stopped) fatal(`output closed: ${String(err)}`);
@@ -295,6 +303,7 @@ function switchSource(source: CompositorSource) {
   }
   previous?.cancel().catch(() => {});
   previousTrack?.stop();
+  lastOutputAt = null;
   void pump(reader);
 }
 

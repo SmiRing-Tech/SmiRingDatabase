@@ -95,6 +95,12 @@ import { useCallStatsLogger } from './useCallStatsLogger';
 import { diagEvent, diagState, registerDiagProbe } from '../../lib/connectDiagnostics';
 import { toggleMicrophone } from '../../lib/toggleMicrophone';
 import {
+  createLevelTap,
+  setAudioPipelineHealthProvider,
+  trackStateTag,
+  type AudioPipelineHealth,
+} from '../../lib/audio/audioPipelineHealth';
+import {
   DiagnosticsDialog,
   DiagnosticsMenuItem,
   DiagnosticsRecordingPill,
@@ -453,6 +459,52 @@ function useVadAutoGate(
     let noiseCancelTrack: GtcrnNoiseCancelTrack | null = null;
     let selfHealInterval: ReturnType<typeof setInterval> | null = null;
     let detachGateResumeRetry: (() => void) | null = null;
+    // Health readout (lib/audio/audioPipelineHealth) — telemetry only, no effect on audio.
+    const startedAt = performance.now();
+    let stage = 'waiting-track';
+    let gateInTap: ReturnType<typeof createLevelTap> | null = null;
+    let gateOutTap: ReturnType<typeof createLevelTap> | null = null;
+    const setStage = (next: string, data?: Record<string, unknown>) => {
+      stage = next;
+      diagEvent('mic-pipeline', {
+        stage: next,
+        ms: Math.round(performance.now() - startedAt),
+        gen: myGeneration,
+        vad: enabled,
+        nc: noiseCancelEnabled,
+        ...data,
+      });
+    };
+    const readHealth = (): AudioPipelineHealth => {
+      const sender = micTrack?.sender;
+      const senderTrack = sender?.track ?? null;
+      return {
+        st: stage,
+        gen: myGeneration,
+        mic: isMicrophoneEnabledRef.current ? 1 : 0,
+        raw: trackStateTag(micTrack?.mediaStreamTrack),
+        g: gateCtx?.state,
+        gin: gateInTap?.read(),
+        gout: gateOutTap?.read(),
+        open: gateOpen ? 1 : 0,
+        gain: gainNode ? Math.round(gainNode.gain.value * 100) / 100 : undefined,
+        gsrc: currentSourceTrack ? trackStateTag(currentSourceTrack) : undefined,
+        // Which track the sender is actually sending: our gate output, the raw mic, or something else.
+        snd: !sender
+          ? 'none'
+          : !senderTrack
+            ? 'null'
+            : senderTrack.id === gatedOutputTrack?.id
+              ? 'gate'
+              : senderTrack.id === micTrack?.mediaStreamTrack.id
+                ? 'raw'
+                : 'other',
+        sst: senderTrack ? trackStateTag(senderTrack) : undefined,
+        nc: noiseCancelTrack ? noiseCancelTrack.health() : undefined,
+      };
+    };
+    const unregisterHealth = setAudioPipelineHealthProvider(readHealth);
+    const unregisterHealthProbe = registerDiagProbe('micPipeline', readHealth);
 
     // Gates by ramping a GainNode the mic is routed through (downstream of the delay line
     // below), not by toggling MediaStreamTrack.enabled — this file went through a whole saga
@@ -641,9 +693,22 @@ function useVadAutoGate(
         delayNode.connect(gainNode);
       }
       gainNode.connect(destination);
+      gateInTap = createLevelTap(gateCtx);
+      delayNode.connect(gateInTap.node);
+      gateOutTap = createLevelTap(gateCtx);
+      gainNode.connect(gateOutTap.node);
       gatedOutputTrack = destination.stream.getAudioTracks()[0];
       reattachUpstream(track);
       await track.sender?.replaceTrack(gatedOutputTrack);
+      setStage('gate-installed', {
+        gateCtx: gateCtx.state,
+        gateOpen,
+        hasSender: !!track.sender,
+        voiceFinish: !!voiceFinish,
+        upstream: noiseCancelTrack ? 'gtcrn' : 'raw',
+        nc: noiseCancelTrack ? noiseCancelTrack.health() : undefined,
+        raw: trackStateTag(track.mediaStreamTrack),
+      });
       vadLog('gate graph installed', {
         delayMs: activeDelayMs,
         noiseCancelEnabled,
@@ -658,8 +723,12 @@ function useVadAutoGate(
     const start = async () => {
       const pub = localParticipant.getTrackPublication(Track.Source.Microphone);
       const track = pub?.track as LocalAudioTrack | undefined;
-      if (!track) return;
+      if (!track) {
+        setStage('no-track');
+        return;
+      }
       micTrack = track;
+      setStage('start', { raw: trackStateTag(track.mediaStreamTrack), hasSender: !!track.sender });
 
       // Only a genuine device switch (a new LocalAudioTrack object, via LocalTrackPublished —
       // handled by the effect above) needs a full restart. Krisp attaching/detaching and a
@@ -689,6 +758,7 @@ function useVadAutoGate(
       selfHealInterval = setInterval(() => reassertSenderTrack(track), 500);
 
       if (noiseCancelEnabled) {
+        setStage('nc-starting');
         try {
           noiseCancelTrack = await GtcrnNoiseCancelTrack.create(
             track.mediaStreamTrack,
@@ -704,8 +774,10 @@ function useVadAutoGate(
           noiseCancelTrack?.stop();
           return;
         }
+        setStage('nc-ready', { ok: !!noiseCancelTrack });
       }
 
+      setStage('gate-building');
       await buildGateGraph(track);
       if (cancelled) return;
 
@@ -824,6 +896,7 @@ function useVadAutoGate(
         }
         vadRef.current = vad;
         setGate(false, 'vad ready, initial close');
+        setStage('vad-ready');
         // Diagnostics: VAD inference runs on the main thread (vad-web), one frame per 32ms
         // (v5) — fewer than ~31 frames/s processed means it isn't keeping up. That only ever
         // makes the gate decide late (clipped word onsets), never delays the audio itself:
@@ -850,6 +923,8 @@ function useVadAutoGate(
 
     return () => {
       cancelled = true;
+      unregisterHealth();
+      unregisterHealthProbe();
       setLoading(false);
       clearMisfireHoldTimer();
       if (selfHealInterval !== null) clearInterval(selfHealInterval);

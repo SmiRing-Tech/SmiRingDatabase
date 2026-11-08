@@ -107,9 +107,40 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
   const recv = { samples: 0, maxStreams: 0, fps: 0, decodeMax: 0, decodeSum: 0, decodeN: 0, dropped: 0, freezes: 0, maxHeight: 0 };
   // Whole-machine CPU pressure (Chromium only), counted for hidden windows too: it's the machine, not the tab.
   const cpu = [0, 0, 0, 0];
+  // CPU probe (same fixed work every second in a worker), page frame pacing, frame gaps after the background effect.
+  const probe: number[] = [];
+  let probeLateMax = 0;
+  const raf = { n: 0, fps: 0, stalls100: 0, maxGap: 0 };
+  const bgg = { n: 0, over200: 0, max: 0 };
+  // Per received video, by sender: [peer#, c|s, fps, freezes, frozen ms, height].
+  const peerNames = new Map<number, string>();
+  for (const e of s.entries) if (e.type === 'peer') peerNames.set(e.i, e.name || String(e.identity).slice(0, 8));
+  const streams = new Map<string, { n: number; fps: number; freezes: number; frozenMs: number }>();
   for (const e of samples) {
     levelTime[e.lv] = (levelTime[e.lv] ?? 0) + 1;
     if (typeof e.cpu === 'number' && cpu[e.cpu] !== undefined) cpu[e.cpu] += 1;
+    if (typeof e.cpa === 'number') probe.push(e.cpa);
+    probeLateMax = Math.max(probeLateMax, e.cpl ?? 0);
+    if (typeof e.bgg === 'number') {
+      bgg.n += 1;
+      if (e.bgg >= 200) bgg.over200 += 1;
+      bgg.max = Math.max(bgg.max, e.bgg);
+    }
+    for (const [peer, src, fps, freezes, frozenMs] of e.rs ?? []) {
+      const key = `${peerNames.get(peer) ?? `#${peer}`}${src === 's' ? '(画面共有)' : ''}`;
+      const st = streams.get(key) ?? { n: 0, fps: 0, freezes: 0, frozenMs: 0 };
+      st.n += 1;
+      st.fps += fps ?? 0;
+      st.freezes += freezes ?? 0;
+      st.frozenMs += frozenMs ?? 0;
+      streams.set(key, st);
+    }
+    if (e.vis !== 0 && typeof e.raf === 'number') {
+      raf.n += 1;
+      raf.fps += e.raf;
+      if ((e.rafx ?? 0) >= 100) raf.stalls100 += 1;
+      raf.maxGap = Math.max(raf.maxGap, e.rafx ?? 0);
+    }
     if (e.vis === 0) continue;
     visible += 1;
     if (e.p === 'overloaded') overloaded += 1;
@@ -202,6 +233,28 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
       ? `  PC全体のCPU: 余裕 ${pct(cpu[0], cpuN)} / やや混雑 ${pct(cpu[1], cpuN)} / 混雑 ${pct(cpu[2], cpuN)} / 限界 ${pct(cpu[3], cpuN)}`
       : '  PC全体のCPU: (記録なし。Chrome以外か、この記録より前の版)',
   );
+  if (probe.length >= 10) {
+    // The session's own floor: the work never runs faster than on an idle machine.
+    const sorted = [...probe].sort((a, b) => a - b);
+    const floor = Math.max(0.1, sorted[Math.floor(sorted.length * 0.05)]);
+    const ratio = (q: number) => (sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] / floor).toFixed(1);
+    const slow = probe.filter((v) => v >= floor * 2).length;
+    console.log(
+      `  CPUの空き(プローブ): 基準 ${floor.toFixed(1)}ms | 中央値 ×${ratio(0.5)} 95% ×${ratio(0.95)} 最大 ×${ratio(1)} | 基準の2倍以上かかった区間 ${pct(slow, probe.length)} | タイマー遅れ 最大${probeLateMax}ms`,
+    );
+  }
+  if (raf.n) {
+    console.log(`  画面のコマ(表示中): 平均${Math.round(raf.fps / raf.n)}fps | 100ms以上止まった区間 ${pct(raf.stalls100, raf.n)} | 最長 ${raf.maxGap}ms`);
+  }
+  if (bgg.n) {
+    console.log(`  送ったカメラのコマ間隔(背景処理の後): 200ms以上空いた区間 ${pct(bgg.over200, bgg.n)} | 最長 ${bgg.max}ms`);
+  }
+  if (streams.size) {
+    const rows = [...streams.entries()]
+      .sort((a, b) => b[1].freezes / b[1].n - a[1].freezes / a[1].n)
+      .map(([k, v]) => `${k} ${Math.round(v.fps / v.n)}fps 固まり${((v.freezes / v.n) * 30).toFixed(1)}回/分 止まっていた${Math.round(v.frozenMs / (v.n * 20))}%`);
+    console.log(`  受信した映像(送り手ごと): ${rows.join(' | ')}`);
+  }
   console.log(`  音声: 最軽量/素通し ${pct(audioStressed, audioChunks)}  素通し ${audioPass}  再生の途切れ ${audioUnderruns}`);
   console.log(
     recv.samples

@@ -86,6 +86,15 @@ export interface LoadSample {
   bgActive: boolean;
   /** Whole-machine CPU pressure, worst in the window: 0 nominal .. 3 critical (Chromium only). Telemetry only. */
   cpuPressure?: number;
+  /**
+   * Whole-machine CPU contention (lib/cpuProbe.worker): the same fixed work's duration, avg and
+   * worst in the window, and the probe worker's worst timer lateness. Telemetry only.
+   */
+  cpuProbe?: { workMsAvg: number; workMsMax: number; lateMsMax: number };
+  /** Page frame pacing while visible (requestAnimationFrame): frames/s and the longest gap, ms. Telemetry only. */
+  frames?: { fps: number; maxGapMs: number };
+  /** Longest gap between camera frames leaving the background effect, ms (worker pipeline only). Telemetry only. */
+  bgMaxGapMs?: number;
   bgFps?: number;
   bgExpectedFps?: number;
   /** Background effect cost per frame (all its threads), ms. */
@@ -134,6 +143,19 @@ export interface ReceiveStats {
   freezes: number;
   /** Tallest stream received, px. */
   maxHeight: number;
+  /** Per stream, to tell whose video froze. Telemetry only. */
+  perStream?: StreamStats[];
+}
+
+export interface StreamStats {
+  /** Sender's participant identity. */
+  identity: string;
+  source: 'camera' | 'share';
+  fps: number;
+  freezes: number;
+  /** Time spent frozen in the window, ms (Chromium's totalFreezesDuration). */
+  freezeMs: number;
+  height: number;
 }
 
 export interface NetStats {

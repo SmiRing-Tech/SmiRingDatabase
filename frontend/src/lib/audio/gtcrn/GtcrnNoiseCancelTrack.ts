@@ -2,6 +2,7 @@ import { GTCRN_MAX_SKIP_LEVEL, GTCRN_SAMPLE_RATE } from './GtcrnStreamProcessor'
 import { emitLoadSignal } from '../../loadSignals';
 import { keepAudioContextResumed } from '../keepAudioContextResumed';
 import { registerDiagProbe } from '../../connectDiagnostics';
+import { createLevelTap, trackStateTag } from '../audioPipelineHealth';
 import type { GtcrnPlaybackConnect, GtcrnPlaybackOptions, GtcrnPlaybackStats } from './gtcrnPlayback.worklet';
 import type { GtcrnCaptureConnect, GtcrnCaptureOptions } from './gtcrnCapture.worklet';
 import type { GtcrnWorkerRequest, GtcrnWorkerResponse } from './gtcrnInference.worker';
@@ -190,6 +191,13 @@ export class GtcrnNoiseCancelTrack {
   private bypass = false;
   private readonly unregisterDiagProbe: () => void;
 
+  // Health readout (see health()): cumulative, never reset by a reader.
+  private readonly inputTap: { node: AnalyserNode; read: () => number };
+  private readonly outputTap: { node: AnalyserNode; read: () => number };
+  private healthChunks = 0;
+  private healthInactiveChunks = 0;
+  private healthActive = true;
+
   /**
    * @param isActive Polled about once per chunk (ACTIVE_POLL_MS); changes are passed to the
    *   worker. While it returns false the worker drops chunks uninferred, skipping the inference
@@ -289,6 +297,7 @@ export class GtcrnNoiseCancelTrack {
     this.capture.port.postMessage({ type: 'connect', port: toWorker.port1 } satisfies GtcrnCaptureConnect, [toWorker.port1]);
     this.playback.port.postMessage({ type: 'connect', port: fromWorker.port1 } satisfies GtcrnPlaybackConnect, [fromWorker.port1]);
     let active = isActive();
+    this.healthActive = active;
     postToWorker(
       { type: 'open', streamId: this.streamId, capturePort: toWorker.port2, playbackPort: fromWorker.port2, active },
       [toWorker.port2, fromWorker.port2],
@@ -297,6 +306,7 @@ export class GtcrnNoiseCancelTrack {
       const next = isActive();
       if (next === active || this.stopped) return;
       active = next;
+      this.healthActive = next;
       postToWorker({ type: 'active', streamId: this.streamId, active });
     }, ACTIVE_POLL_MS);
 
@@ -314,6 +324,8 @@ export class GtcrnNoiseCancelTrack {
         onOverload?.();
         return;
       }
+      this.healthChunks++;
+      this.healthInactiveChunks += msg.inactiveChunks;
       emitLoadSignal({ kind: 'audio-chunk', level: msg.level, maxLevel: GTCRN_MAX_SKIP_LEVEL, passthrough: msg.passthrough });
       this.loadedModels = msg.loadedModels;
       this.diagBacklogMax = Math.max(this.diagBacklogMax, msg.backlog);
@@ -343,6 +355,12 @@ export class GtcrnNoiseCancelTrack {
     sourceNode.connect(this.capture);
     this.capture.connect(this.silentGain);
     this.silentGain.connect(this.ctx.destination);
+
+    // Level taps: what this stage receives from the mic clone, and what it hands downstream.
+    this.inputTap = createLevelTap(this.ctx);
+    sourceNode.connect(this.inputTap.node);
+    this.outputTap = createLevelTap(this.ctx);
+    this.playback.connect(this.outputTap.node);
 
     this.unregisterDiagProbe = registerDiagProbe('gtcrn', () => {
       const chunkMs = (CAPTURE_CHUNK / GTCRN_SAMPLE_RATE) * 1000;
@@ -399,6 +417,23 @@ export class GtcrnNoiseCancelTrack {
     }
   }
 
+  /** Instantaneous/cumulative state for lib/audio/audioPipelineHealth (safe to read anytime). */
+  health(): Record<string, unknown> {
+    return {
+      ctx: this.ctx.state,
+      in: this.inputTap.read(),
+      out: this.outputTap.read(),
+      src: trackStateTag(this.sourceClone),
+      act: this.healthActive ? 1 : 0,
+      ch: this.healthChunks,
+      ina: this.healthInactiveChunks,
+      prm: this.playbackStats?.priming ? 1 : 0,
+      q: this.playbackStats ? Math.round(this.playbackStats.queuedMs) : undefined,
+      ur: this.playbackStats?.underrunCount,
+      byp: this.bypass ? 1 : 0,
+    };
+  }
+
   get track(): MediaStreamTrack {
     return this.destination.stream.getAudioTracks()[0];
   }
@@ -419,6 +454,8 @@ export class GtcrnNoiseCancelTrack {
     this.playback.port.postMessage({ type: 'stop' });
     this.playback.disconnect();
     this.silentGain.disconnect();
+    this.inputTap.node.disconnect();
+    this.outputTap.node.disconnect();
     this.sourceClone.stop();
     this.track.stop();
     void this.ctx.close();
