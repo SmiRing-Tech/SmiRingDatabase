@@ -556,6 +556,92 @@ export function useLoadGovernor({
       return result;
     };
 
+    // Audio quality, telemetry only (never judged). Receiving: per remote mic, how much of what
+    // played was invented by the jitter buffer to cover lost/late packets ("concealed" — heard as
+    // robotic/crackly audio) or time-stretched, plus loss, jitter and loudness. Sending: what the
+    // server reports back about our own mic's packets.
+    const lastAudioIn = new Map<string, Record<string, number>>();
+    let lastMicOut: { bytes: number; at: number } | null = null;
+    const audioStats = async () => {
+      const recv: { identity: string; source: string; v: (number | undefined)[] }[] = [];
+      const seen = new Set<string>();
+      for (const participant of room.remoteParticipants.values()) {
+        for (const publication of participant.audioTrackPublications.values()) {
+          const receiver = publication.isSubscribed ? (publication.track as { receiver?: RTCRtpReceiver } | undefined)?.receiver : undefined;
+          if (!receiver) continue;
+          const report = await receiver.getStats();
+          report.forEach((stat) => {
+            if (stat.type !== 'inbound-rtp' || stat.kind !== 'audio') return;
+            seen.add(stat.id);
+            const now: Record<string, number> = {
+              recv: stat.packetsReceived ?? 0,
+              lost: stat.packetsLost ?? 0,
+              samples: stat.totalSamplesReceived ?? 0,
+              concealed: stat.concealedSamples ?? 0,
+              silentConcealed: stat.silentConcealedSamples ?? 0,
+              events: stat.concealmentEvents ?? 0,
+              stretched: (stat.insertedSamplesForDeceleration ?? 0) + (stat.removedSamplesForAcceleration ?? 0),
+              jbDelay: stat.jitterBufferDelay ?? 0,
+              jbCount: stat.jitterBufferEmittedCount ?? 0,
+              energy: stat.totalAudioEnergy ?? 0,
+              duration: stat.totalSamplesDuration ?? 0,
+            };
+            const prev = lastAudioIn.get(stat.id);
+            lastAudioIn.set(stat.id, now);
+            if (!prev || now.samples < prev.samples) return;
+            const d = (k: string) => Math.max(0, now[k] - prev[k]);
+            const samples = d('samples');
+            if (samples === 0) return;
+            const packets = d('recv') + d('lost');
+            const energy = d('energy');
+            const duration = d('duration');
+            const pct = (v: number, of: number) => (of > 0 ? Math.round((v / of) * 1000) / 10 : undefined);
+            recv.push({
+              identity: participant.identity,
+              source: publication.source === Track.Source.Microphone ? 'm' : 'o',
+              v: [
+                // loss %, concealed % (excluding concealment of silence), concealment events, stretched %,
+                pct(d('lost'), packets),
+                pct(Math.max(0, d('concealed') - d('silentConcealed')), samples),
+                d('events'),
+                pct(d('stretched'), samples),
+                // jitter ms, jitter buffer ms, received loudness dBFS (mean over the window).
+                typeof stat.jitter === 'number' ? Math.round(stat.jitter * 1000) : undefined,
+                d('jbCount') > 0 ? Math.round((d('jbDelay') / d('jbCount')) * 1000) : undefined,
+                duration > 0 && energy > 0 ? Math.round(10 * Math.log10(energy / duration)) : -120,
+              ],
+            });
+          });
+        }
+      }
+      for (const id of lastAudioIn.keys()) if (!seen.has(id)) lastAudioIn.delete(id);
+
+      // Our mic as the server sees it: loss %, jitter ms, send kbps.
+      let mic: (number | undefined)[] | undefined;
+      const sender = localParticipant.getTrackPublication(Track.Source.Microphone)?.track?.sender;
+      if (sender) {
+        const report = await sender.getStats();
+        let lossPct: number | undefined;
+        let jitterMs: number | undefined;
+        let kbps: number | undefined;
+        report.forEach((stat) => {
+          if (stat.type === 'remote-inbound-rtp' && stat.kind === 'audio') {
+            if (typeof stat.fractionLost === 'number') lossPct = Math.round(stat.fractionLost * 1000) / 10;
+            if (typeof stat.jitter === 'number') jitterMs = Math.round(stat.jitter * 1000);
+          } else if (stat.type === 'outbound-rtp' && stat.kind === 'audio') {
+            const at = performance.now();
+            const bytes = stat.bytesSent ?? 0;
+            if (lastMicOut && bytes >= lastMicOut.bytes && at > lastMicOut.at) {
+              kbps = Math.round(((bytes - lastMicOut.bytes) * 8) / (at - lastMicOut.at));
+            }
+            lastMicOut = { bytes, at };
+          }
+        });
+        mic = [lossPct, jitterMs, kbps];
+      }
+      return { recv, mic };
+    };
+
     let lastSampleAt = performance.now();
     let running = false;
     const forceShare = forcedShareStep();
@@ -571,6 +657,7 @@ export function useLoadGovernor({
         const sent = await sendStats(seconds).catch(() => undefined);
         const cameras: CameraFps[] = [];
         const recv = await receiveStats(seconds, cameras).catch(() => undefined);
+        const audio = await audioStats().catch(() => undefined);
         recvController.update(cameras);
         await keepTemporalLayers(cameraTrack()).catch(() => {});
         const t = totals;
@@ -651,7 +738,15 @@ export function useLoadGovernor({
 
         // `ah`: outgoing mic pipeline health (lib/audio/audioPipelineHealth) — stage, AudioContext
         // states and signal level at each tap, to locate "mic is ON but nobody hears me".
-        recordTelemetry('sample', { ...compactSample(sample, step, peerIndex), ah: readAudioPipelineHealth() });
+        // `ra`: per received audio [peer#, m(ic)|o(ther), loss%, concealed%, concealment events,
+        // stretched%, jitter ms, jitter buffer ms, loudness dBFS]. `ma`: our mic as the server sees
+        // it [loss%, jitter ms, kbps].
+        recordTelemetry('sample', {
+          ...compactSample(sample, step, peerIndex),
+          ah: readAudioPipelineHealth(),
+          ra: audio?.recv.length ? audio.recv.map((a) => [peerIndex(a.identity), a.source, ...a.v]) : undefined,
+          ma: audio?.mic,
+        });
         if (step.action) {
           const applied = mode === 'active';
           recordTelemetry('action', { action: step.action, applied, reasons: step.verdict.reasons });

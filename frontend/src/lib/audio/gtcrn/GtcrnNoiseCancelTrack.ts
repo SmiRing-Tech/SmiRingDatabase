@@ -49,6 +49,12 @@ import captureWorkletUrl from './gtcrnCapture.worklet.ts?worker&url';
 
 /** How often the page re-checks isActive() and tells the worker if it changed — about one chunk. */
 const ACTIVE_POLL_MS = 64;
+/** How much per-chunk loudness history levelWindow() can look back over. */
+const LEVEL_HISTORY_MS = 10_000;
+
+function rmsToDb(rms: number): number {
+  return rms > 0 ? Math.max(-120, 20 * Math.log10(rms)) : -120;
+}
 
 // 1024 samples @ 16kHz = 64ms = exactly one GTCRN_FRAMES_PER_BATCH batch of hops, which is
 // what lets the worker run 4 frames per session.run() with no added latency. Keep it a multiple
@@ -197,6 +203,8 @@ export class GtcrnNoiseCancelTrack {
   private healthChunks = 0;
   private healthInactiveChunks = 0;
   private healthActive = true;
+  /** Per-chunk loudness in/out of the model, dBFS, for levelWindow(). Pruned to LEVEL_HISTORY_MS. */
+  private levelHistory: { t: number; inDb: number; outDb: number }[] = [];
 
   /**
    * @param isActive Polled about once per chunk (ACTIVE_POLL_MS); changes are passed to the
@@ -345,6 +353,7 @@ export class GtcrnNoiseCancelTrack {
       if (msg.inferenceMs > this.diagInferenceMsMax) this.diagInferenceMsMax = msg.inferenceMs;
       this.lastInputRms = msg.inputRms;
       this.lastOutputRms = msg.outputRms;
+      this.recordLevels(msg.inputRms, msg.outputRms);
     });
 
     // An AudioWorkletNode is only pulled once it's wired into a graph reaching the destination.
@@ -417,6 +426,51 @@ export class GtcrnNoiseCancelTrack {
     }
   }
 
+  private recordLevels(inputRms: number, outputRms: number) {
+    const now = performance.now();
+    this.levelHistory.push({ t: now, inDb: rmsToDb(inputRms), outDb: rmsToDb(outputRms) });
+    const cutoff = now - LEVEL_HISTORY_MS;
+    let drop = 0;
+    while (drop < this.levelHistory.length && this.levelHistory[drop].t < cutoff) drop++;
+    if (drop) this.levelHistory.splice(0, drop);
+  }
+
+  /**
+   * Noise numbers over the last `ms`, from each 64ms chunk's loudness going into and coming out
+   * of the model (inferred chunks only; muted chunks never get here). Read-only, any reader.
+   *
+   *  inFl / inSp   room noise floor and speech level *before* noise cancellation (10th / 90th
+   *                percentile chunk) — how noisy the room is and how loud the voice reaches the mic.
+   *  outFl / outSp the same *after* noise cancellation.
+   *  noiseCut      how much the model takes off the quiet chunks (background only), dB.
+   *  speechCut     how much it takes off the loud chunks when clear speech is present, dB. Close to
+   *                noiseCut means it is eating into the voice too (muffled / "watery" artifacts);
+   *                near 0 means voice passes intact.
+   * Undefined until there are enough chunks to say anything.
+   */
+  levelWindow(ms: number): Record<string, number> | undefined {
+    const cutoff = performance.now() - ms;
+    const xs = this.levelHistory.filter((x) => x.t >= cutoff);
+    if (xs.length < 8) return undefined;
+    const pct = (vals: number[], q: number) => {
+      const sorted = [...vals].sort((a, b) => a - b);
+      return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))];
+    };
+    const ins = xs.map((x) => x.inDb);
+    const outs = xs.map((x) => x.outDb);
+    const inFl = pct(ins, 0.1);
+    const inSp = pct(ins, 0.9);
+    const mean = (vals: number[]) => (vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : undefined);
+    const noiseCut = mean(xs.filter((x) => x.inDb <= inFl + 6).map((x) => x.inDb - x.outDb));
+    const speechCut =
+      inSp - inFl >= 15 ? mean(xs.filter((x) => x.inDb >= inSp - 6).map((x) => x.inDb - x.outDb)) : undefined;
+    const r = (v: number | undefined) => (v === undefined ? undefined : Math.round(v));
+    const out: Record<string, number> = { inFl: r(inFl)!, inSp: r(inSp)!, outFl: r(pct(outs, 0.1))!, outSp: r(pct(outs, 0.9))! };
+    if (noiseCut !== undefined) out.noiseCut = r(noiseCut)!;
+    if (speechCut !== undefined) out.speechCut = r(speechCut)!;
+    return out;
+  }
+
   /** Instantaneous/cumulative state for lib/audio/audioPipelineHealth (safe to read anytime). */
   health(): Record<string, unknown> {
     return {
@@ -431,6 +485,8 @@ export class GtcrnNoiseCancelTrack {
       q: this.playbackStats ? Math.round(this.playbackStats.queuedMs) : undefined,
       ur: this.playbackStats?.underrunCount,
       byp: this.bypass ? 1 : 0,
+      // Over the telemetry sample interval (2s).
+      w: this.levelWindow(2000),
     };
   }
 

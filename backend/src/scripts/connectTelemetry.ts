@@ -116,7 +116,53 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
   const peerNames = new Map<number, string>();
   for (const e of s.entries) if (e.type === 'peer') peerNames.set(e.i, e.name || String(e.identity).slice(0, 8));
   const streams = new Map<string, { n: number; fps: number; freezes: number; frozenMs: number }>();
+  // Received audio, by sender: [peer#, m|o, loss%, concealed%, events, stretched%, jitter, jb ms, dBFS].
+  // Only windows where the sender was audible (> -60dBFS) count toward the averages.
+  const audioIn = new Map<string, { n: number; loss: number; conceal: number; concealMax: number; bad: number; stretch: number; jb: number; jbN: number }>();
+  // Our own mic as the server sees it: [loss%, jitter ms, kbps].
+  const micOut = { n: 0, loss: 0, lossMax: 0, jitterMax: 0 };
+  // Noise cancellation in/out levels (ah.nc.w), windows with clear speech vs all.
+  const nz = { n: 0, inFl: 0, outFl: 0, noiseCut: 0, noiseCutN: 0, sp: 0, inSp: 0, snr: 0, speechCut: 0, speechCutN: 0 };
   for (const e of samples) {
+    for (const [peer, src, loss, conceal, , stretch, , jb, db] of e.ra ?? []) {
+      if (typeof db !== 'number' || db < -60) continue;
+      const key = `${peerNames.get(peer) ?? `#${peer}`}${src === 'o' ? '(その他の音声)' : ''}`;
+      const a = audioIn.get(key) ?? { n: 0, loss: 0, conceal: 0, concealMax: 0, bad: 0, stretch: 0, jb: 0, jbN: 0 };
+      a.n += 1;
+      a.loss += loss ?? 0;
+      a.conceal += conceal ?? 0;
+      a.concealMax = Math.max(a.concealMax, conceal ?? 0);
+      if ((conceal ?? 0) >= 5) a.bad += 1;
+      a.stretch += stretch ?? 0;
+      if (typeof jb === 'number') {
+        a.jb += jb;
+        a.jbN += 1;
+      }
+      audioIn.set(key, a);
+    }
+    if (Array.isArray(e.ma) && typeof e.ma[0] === 'number') {
+      micOut.n += 1;
+      micOut.loss += e.ma[0];
+      micOut.lossMax = Math.max(micOut.lossMax, e.ma[0]);
+      micOut.jitterMax = Math.max(micOut.jitterMax, e.ma[1] ?? 0);
+    }
+    const w = e.ah?.nc?.w;
+    if (w && e.ah?.mic) {
+      nz.n += 1;
+      nz.inFl += w.inFl;
+      nz.outFl += w.outFl;
+      if (typeof w.noiseCut === 'number') {
+        nz.noiseCut += w.noiseCut;
+        nz.noiseCutN += 1;
+      }
+      if (typeof w.speechCut === 'number') {
+        nz.sp += 1;
+        nz.inSp += w.inSp;
+        nz.snr += w.inSp - w.inFl;
+        nz.speechCut += w.speechCut;
+        nz.speechCutN += 1;
+      }
+    }
     levelTime[e.lv] = (levelTime[e.lv] ?? 0) + 1;
     if (typeof e.cpu === 'number' && cpu[e.cpu] !== undefined) cpu[e.cpu] += 1;
     if (typeof e.cpa === 'number') probe.push(e.cpa);
@@ -254,6 +300,29 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
       .sort((a, b) => b[1].freezes / b[1].n - a[1].freezes / a[1].n)
       .map(([k, v]) => `${k} ${Math.round(v.fps / v.n)}fps 固まり${((v.freezes / v.n) * 30).toFixed(1)}回/分 止まっていた${Math.round(v.frozenMs / (v.n * 20))}%`);
     console.log(`  受信した映像(送り手ごと): ${rows.join(' | ')}`);
+  }
+  if (nz.n) {
+    console.log(
+      `  ノイズキャンセル(マイクON中): 部屋のノイズ(処理前) 平均${(nz.inFl / nz.n).toFixed(0)}dBFS → 処理後 ${(nz.outFl / nz.n).toFixed(0)}dBFS | ノイズの削減 ${
+        nz.noiseCutN ? (nz.noiseCut / nz.noiseCutN).toFixed(0) : '-'
+      }dB | 話している区間 ${nz.sp}件: 声(処理前) ${nz.sp ? (nz.inSp / nz.sp).toFixed(0) : '-'}dBFS・声とノイズの差 ${nz.sp ? (nz.snr / nz.sp).toFixed(0) : '-'}dB・声から削った量 ${
+        nz.speechCutN ? (nz.speechCut / nz.speechCutN).toFixed(0) : '-'
+      }dB`,
+    );
+  }
+  if (micOut.n) {
+    console.log(`  自分のマイクの送信(サーバー側で見た値): パケット損失 平均${(micOut.loss / micOut.n).toFixed(1)}% 最大${micOut.lossMax}% | ゆらぎ 最大${micOut.jitterMax}ms`);
+  }
+  if (audioIn.size) {
+    const rows = [...audioIn.entries()]
+      .sort((a, b) => b[1].conceal / b[1].n - a[1].conceal / a[1].n)
+      .map(
+        ([k, v]) =>
+          `${k} 補間${(v.conceal / v.n).toFixed(1)}%(最大${v.concealMax}%, 5%以上の区間${pct(v.bad, v.n)}) 損失${(v.loss / v.n).toFixed(1)}% 伸縮${(v.stretch / v.n).toFixed(1)}% バッファ${
+            v.jbN ? Math.round(v.jb / v.jbN) : '-'
+          }ms`,
+      );
+    console.log(`  受信した音声(送り手ごと、聞こえていた区間): ${rows.join(' | ')}`);
   }
   console.log(`  音声: 最軽量/素通し ${pct(audioStressed, audioChunks)}  素通し ${audioPass}  再生の途切れ ${audioUnderruns}`);
   console.log(
