@@ -44,6 +44,13 @@ import { currentShareCodec, setShareFloor, switchShareToVp8 } from '../../../lib
  */
 
 const SAMPLE_MS = 2000;
+const CPU_PRESSURE_LEVELS = ['nominal', 'fair', 'serious', 'critical'];
+
+interface PressureObserverLike {
+  observe(source: 'cpu', options?: { sampleInterval?: number }): Promise<void>;
+  disconnect(): void;
+}
+type PressureObserverCtor = new (callback: (records: Array<{ state: string }>) => void) => PressureObserverLike;
 const LAG_TICK_MS = 100;
 /** One noise-cancel chunk is 64ms of audio. */
 const AUDIO_CHUNK_MS = 64;
@@ -307,6 +314,29 @@ export function useLoadGovernor({
       longTaskObserver.observe({ type: 'longtask', buffered: false });
     }
 
+    // The whole machine's CPU, as the browser sees it (Compute Pressure API, Chromium only).
+    // Everything above only sees this page stalling; this also catches the decoders, encoders,
+    // GPU process and other apps fighting for the CPU. Worst state per window; telemetry only.
+    let cpuPressureNow: number | undefined;
+    let cpuPressureWorst: number | undefined;
+    let pressureObserver: PressureObserverLike | undefined;
+    const Pressure = (globalThis as unknown as { PressureObserver?: PressureObserverCtor }).PressureObserver;
+    if (Pressure) {
+      try {
+        pressureObserver = new Pressure((records) => {
+          for (const record of records) {
+            const level = CPU_PRESSURE_LEVELS.indexOf(record.state);
+            if (level < 0) continue;
+            cpuPressureNow = level;
+            cpuPressureWorst = Math.max(cpuPressureWorst ?? 0, level);
+          }
+        });
+        void pressureObserver.observe('cpu', { sampleInterval: 1000 }).catch(() => {});
+      } catch {
+        pressureObserver = undefined; // permissions policy or an older implementation
+      }
+    }
+
     // What this device sends: per video (camera, screen share) its bitrate, tallest layer sent and
     // how much of the window its encoder was held back by CPU or by the uplink (from the
     // cumulative qualityLimitationDurations); and the publisher connection's throughput and
@@ -495,7 +525,10 @@ export function useLoadGovernor({
           encoderCpuFraction: sent?.encoderCpu,
           mainLagMaxMs: Math.max(0, lagMax),
           longTaskMsPerSec: longTaskMs / seconds,
-          bgActive: t.bgReports > 0,
+          // The background processor keeps reporting (0 frames) while the camera is off; judging
+          // that as "background can't keep up" pinned the receive step at r3 for whole calls.
+          bgActive: t.bgReports > 0 && localParticipant.isCameraEnabled,
+          cpuPressure: cpuPressureWorst,
           bgFps: t.bgSeconds > 0 ? t.bgFrames / t.bgSeconds : undefined,
           bgExpectedFps: t.bgExpectedFps || undefined,
           bgCostMs: t.bgFrames > 0 ? t.bgCostMs / t.bgFrames : undefined,
@@ -520,6 +553,7 @@ export function useLoadGovernor({
         lastSampleAt = now;
         lagMax = 0;
         longTaskMs = 0;
+        cpuPressureWorst = cpuPressureNow; // the observer only reports changes
 
         const state = stateRef.current;
         const actualQuality = bg.supported && bg.mode !== 'off' ? bg.quality : null;
@@ -584,6 +618,7 @@ export function useLoadGovernor({
       recvControllerRef.current = null;
       clearInterval(lagTimer);
       longTaskObserver?.disconnect();
+      pressureObserver?.disconnect();
       unsubscribe();
       recordTelemetry('governor-stop', {});
       stopTelemetry();
@@ -614,6 +649,8 @@ function compactSample(s: LoadSample, step: GovernorStep) {
     enc: s.encoderCpuFraction === undefined ? undefined : Math.round(s.encoderCpuFraction * 100) / 100,
     lag: Math.round(s.mainLagMaxMs),
     lt: Math.round(s.longTaskMsPerSec),
+    // Whole-machine CPU pressure, worst in the window: 0 nominal, 1 fair, 2 serious, 3 critical.
+    cpu: s.cpuPressure,
     bgf: r1(s.bgFps),
     bge: s.bgExpectedFps === undefined ? undefined : Math.round(s.bgExpectedFps),
     bgc: r1(s.bgCostMs),

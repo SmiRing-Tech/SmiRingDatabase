@@ -82,7 +82,10 @@ export interface LoadSample {
   mainLagMaxMs: number;
   /** Long tasks on the main thread, ms per second (Chromium only; 0 elsewhere). */
   longTaskMsPerSec: number;
+  /** The background effect is running on a live camera (it keeps reporting while the camera is off). */
   bgActive: boolean;
+  /** Whole-machine CPU pressure, worst in the window: 0 nominal .. 3 critical (Chromium only). Telemetry only. */
+  cpuPressure?: number;
   bgFps?: number;
   bgExpectedFps?: number;
   /** Background effect cost per frame (all its threads), ms. */

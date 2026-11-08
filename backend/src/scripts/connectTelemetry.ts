@@ -18,6 +18,8 @@ import { r2, BUCKET_NAME } from '../lib/r2';
  * s=自分の画面共有を720pに下げた / x=カメラOFF」。
  * 「重い」理由(reasons)は governorPolicy.ts の classify() が付けたもの。
  * React再描画は通話画面の再描画にかかった画面スレッドの時間(lib/renderMeter.ts)。
+ * PC全体のCPUは Compute Pressure API(Chromeのみ)の判定。画面スレッドの数値と違い、デコード・圧縮・
+ * GPUプロセス・他のアプリまで含めた「PCそのものが重いか」を表す(余裕/やや混雑/混雑/限界)。
  */
 
 const PREFIX = 'connect-telemetry/';
@@ -103,8 +105,11 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
   const lev = { n: 0, gain: 0, atMax: 0, speaking: 0, floor: 0, floorN: 0, speech: 0, speechN: 0 };
   const react = { samples: 0, perSec: 0, msPerSec: 0, maxMsPerSec: 0, maxPass: 0 };
   const recv = { samples: 0, maxStreams: 0, fps: 0, decodeMax: 0, decodeSum: 0, decodeN: 0, dropped: 0, freezes: 0, maxHeight: 0 };
+  // Whole-machine CPU pressure (Chromium only), counted for hidden windows too: it's the machine, not the tab.
+  const cpu = [0, 0, 0, 0];
   for (const e of samples) {
     levelTime[e.lv] = (levelTime[e.lv] ?? 0) + 1;
+    if (typeof e.cpu === 'number' && cpu[e.cpu] !== undefined) cpu[e.cpu] += 1;
     if (e.vis === 0) continue;
     visible += 1;
     if (e.p === 'overloaded') overloaded += 1;
@@ -190,6 +195,12 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
     `  最大値: 圧縮CPU不足 ${Math.round(max.enc * 100)}% | 画面スレッド遅れ ${max.lag}ms | 長いタスク ${max.lt}ms/s | 背景1コマ ${max.bgc}ms | 背景の処理率 最低 ${
       minBgRatio === Infinity ? '-' : `${Math.round(minBgRatio * 100)}%`
     }`,
+  );
+  const cpuN = cpu.reduce((a, b) => a + b, 0);
+  console.log(
+    cpuN
+      ? `  PC全体のCPU: 余裕 ${pct(cpu[0], cpuN)} / やや混雑 ${pct(cpu[1], cpuN)} / 混雑 ${pct(cpu[2], cpuN)} / 限界 ${pct(cpu[3], cpuN)}`
+      : '  PC全体のCPU: (記録なし。Chrome以外か、この記録より前の版)',
   );
   console.log(`  音声: 最軽量/素通し ${pct(audioStressed, audioChunks)}  素通し ${audioPass}  再生の途切れ ${audioUnderruns}`);
   console.log(

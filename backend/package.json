@@ -29,6 +29,11 @@
     "multer": "^2.1.1",
     "sharp": "^0.34.5"
   },
+  "overrides": {
+    "@xenova/transformers": {
+      "sharp": "$sharp"
+    }
+  },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
