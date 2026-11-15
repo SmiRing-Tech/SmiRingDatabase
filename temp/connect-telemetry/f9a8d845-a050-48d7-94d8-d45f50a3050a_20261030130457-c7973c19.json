@@ -1,0 +1,643 @@
+{
+ "dir": "f9a8d845-a050-48d7-94d8-d45f50a3050a_20261030130457-c7973c19",
+ "uploader": "Shunsuke Kawano",
+ "session": "20261030130457-c7973c19",
+ "roomId": "Kyushu26",
+ "startedAt": 1793365497846,
+ "context": {
+  "mode": "active",
+  "base": {
+   "width": 1280,
+   "height": 720,
+   "frameRate": 20,
+   "segmentationFps": 20,
+   "segmentationScheduler": "interval"
+  }
+ },
+ "env": {
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+  "platform": "Windows",
+  "mobile": false,
+  "brands": [
+   {
+    "brand": "Not:A-Brand",
+    "version": "8"
+   },
+   {
+    "brand": "Chromium",
+    "version": "156"
+   },
+   {
+    "brand": "Google Chrome",
+    "version": "156"
+   }
+  ],
+  "cpuCores": 18,
+  "deviceMemoryGB": 16,
+  "language": "ja-JP",
+  "screen": "1440x900",
+  "devicePixelRatio": 2,
+  "window": "1440x765",
+  "crossOriginIsolated": false,
+  "connection": {
+   "effectiveType": "4g",
+   "downlinkMbps": 10,
+   "rttMs": 50,
+   "saveData": false
+  },
+  "gpu": {
+   "webgl": 2,
+   "vendor": "Google Inc. (Intel)",
+   "renderer": "ANGLE (Intel, Intel(R) Arc(TM) Graphics (0x00007D55) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+  },
+  "uaDetails": {
+   "architecture": "x86",
+   "brands": [
+    {
+     "brand": "Not:A-Brand",
+     "version": "8"
+    },
+    {
+     "brand": "Chromium",
+     "version": "156"
+    },
+    {
+     "brand": "Google Chrome",
+     "version": "156"
+    }
+   ],
+   "fullVersionList": [
+    {
+     "brand": "Not:A-Brand",
+     "version": "8.0.0.0"
+    },
+    {
+     "brand": "Chromium",
+     "version": "156.0.8078.49"
+    },
+    {
+     "brand": "Google Chrome",
+     "version": "156.0.8078.49"
+    }
+   ],
+   "mobile": false,
+   "model": "",
+   "platform": "Windows",
+   "platformVersion": "19.0.0"
+  },
+  "battery": {
+   "charging": true,
+   "level": 0.55
+  },
+  "codecs": {
+   "vp8": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    }
+   },
+   "h264": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": true
+    }
+   },
+   "vp9": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": true
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": true
+    }
+   },
+   "av1": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": true
+    }
+   }
+  }
+ },
+ "missingParts": 0,
+ "entries": [
+  {
+   "t": 1793365497846,
+   "type": "state-snapshot",
+   "state": {
+    "background": "image",
+    "backgroundQuality": "balanced",
+    "noiseCancel": true,
+    "autoMute": false
+   }
+  },
+  {
+   "t": 1793365497862,
+   "type": "governor-start",
+   "mode": "active"
+  },
+  {
+   "key": "loadGovernor",
+   "to": "active",
+   "t": 1793365497862,
+   "type": "state"
+  },
+  {
+   "key": "layout",
+   "to": "grid",
+   "t": 1793365497863,
+   "type": "state"
+  },
+  {
+   "key": "pip",
+   "to": false,
+   "t": 1793365497863,
+   "type": "state"
+  },
+  {
+   "key": "camera",
+   "to": false,
+   "t": 1793365497864,
+   "type": "state"
+  },
+  {
+   "key": "microphone",
+   "to": false,
+   "t": 1793365497864,
+   "type": "state"
+  },
+  {
+   "key": "screenShare",
+   "to": false,
+   "t": 1793365497864,
+   "type": "state"
+  },
+  {
+   "key": "participants",
+   "to": 1,
+   "t": 1793365497864,
+   "type": "state"
+  },
+  {
+   "t": 1793365499864,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "lag": 49,
+   "lt": 107,
+   "bgf": 0,
+   "bge": 20,
+   "rr": 1.5,
+   "rms": 3.8,
+   "rmax": 4.1
+  },
+  {
+   "kind": "videoinput",
+   "t": 1793365500532,
+   "type": "event:device-changed"
+  },
+  {
+   "kind": "audioinput",
+   "t": 1793365500734,
+   "type": "event:device-changed"
+  },
+  {
+   "t": 1793365501870,
+   "type": "send-codec",
+   "source": "camera",
+   "codec": "video/VP8"
+  },
+  {
+   "t": 1793365501870,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "lag": 49,
+   "lt": 65,
+   "bgf": 0,
+   "bge": 20,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 1.5,
+   "rms": 3,
+   "rmax": 2.4
+  },
+  {
+   "t": 1793365503865,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 5,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 300,
+   "rtt": 304,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "key": "connectionQuality",
+   "to": "excellent",
+   "t": 1793365504054,
+   "type": "state"
+  },
+  {
+   "t": 1793365505869,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 5,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 300,
+   "rtt": 304,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.7,
+   "rmax": 1.5
+  },
+  {
+   "t": 1793365507869,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 5,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 325,
+   "rtt": 304,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1793365509866,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 4,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 381,
+   "rtt": 304,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.3,
+   "rmax": 0.6
+  },
+  {
+   "t": 1793365511865,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 8,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 447,
+   "rtt": 306,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1793365513865,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 5,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 523,
+   "rtt": 312,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1793365515865,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 5,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 612,
+   "rtt": 307,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1793365517869,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 4,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 716,
+   "rtt": 307,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1793365519864,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 5,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 837,
+   "rtt": 309,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.7,
+   "rmax": 1.3
+  },
+  {
+   "t": 1793365521869,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 5,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 979,
+   "rtt": 307,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1793365523865,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 5,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1144,
+   "rtt": 304,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1793365525866,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 4,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1793365527870,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 4,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1561,
+   "rtt": 305,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1793365529865,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1822,
+   "rtt": 390,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.3,
+   "rmax": 0.5
+  },
+  {
+   "t": 1793365531865,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 2128,
+   "rtt": 338,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1793365533865,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 3,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1793365535866,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 2899,
+   "rtt": 332,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  }
+ ]
+}

@@ -1,0 +1,663 @@
+{
+ "dir": "126fdc3a-f098-4605-a4b4-90c306dd9e89_20261026030551-828bab0f",
+ "uploader": "Tamaki Akamatsu",
+ "session": "20261026030551-828bab0f",
+ "roomId": "general",
+ "startedAt": 1792983951713,
+ "context": {
+  "mode": "active",
+  "base": {
+   "width": 1280,
+   "height": 720,
+   "frameRate": 20,
+   "segmentationFps": 20,
+   "segmentationScheduler": "interval"
+  }
+ },
+ "env": {
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+  "platform": "macOS",
+  "mobile": false,
+  "brands": [
+   {
+    "brand": "Google Chrome",
+    "version": "155"
+   },
+   {
+    "brand": "Chromium",
+    "version": "155"
+   },
+   {
+    "brand": "Not(A:Brand",
+    "version": "24"
+   }
+  ],
+  "cpuCores": 10,
+  "deviceMemoryGB": 16,
+  "language": "ja",
+  "screen": "1920x1243",
+  "devicePixelRatio": 2,
+  "window": "1864x1124",
+  "crossOriginIsolated": false,
+  "connection": {
+   "effectiveType": "4g",
+   "downlinkMbps": 1.35,
+   "rttMs": 100,
+   "saveData": false
+  },
+  "gpu": {
+   "webgl": 2,
+   "vendor": "Google Inc. (Apple)",
+   "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M5, Unspecified Version)"
+  },
+  "uaDetails": {
+   "architecture": "arm",
+   "brands": [
+    {
+     "brand": "Google Chrome",
+     "version": "155"
+    },
+    {
+     "brand": "Chromium",
+     "version": "155"
+    },
+    {
+     "brand": "Not(A:Brand",
+     "version": "24"
+    }
+   ],
+   "fullVersionList": [
+    {
+     "brand": "Google Chrome",
+     "version": "155.0.8059.40"
+    },
+    {
+     "brand": "Chromium",
+     "version": "155.0.8059.40"
+    },
+    {
+     "brand": "Not(A:Brand",
+     "version": "24.0.0.0"
+    }
+   ],
+   "mobile": false,
+   "model": "",
+   "platform": "macOS",
+   "platformVersion": "26.5.2"
+  },
+  "battery": {
+   "charging": false,
+   "level": 0.9
+  },
+  "codecs": {
+   "vp8": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    }
+   },
+   "h264": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": true
+    }
+   },
+   "vp9": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": true
+    }
+   },
+   "av1": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": true
+    }
+   }
+  }
+ },
+ "missingParts": 0,
+ "entries": [
+  {
+   "t": 1792983951713,
+   "type": "state-snapshot",
+   "state": {
+    "background": "off",
+    "backgroundQuality": "high",
+    "noiseCancel": true,
+    "autoMute": false
+   }
+  },
+  {
+   "t": 1792983951718,
+   "type": "governor-start",
+   "mode": "active"
+  },
+  {
+   "key": "loadGovernor",
+   "to": "active",
+   "t": 1792983951718,
+   "type": "state"
+  },
+  {
+   "key": "layout",
+   "to": "grid",
+   "t": 1792983951719,
+   "type": "state"
+  },
+  {
+   "key": "pip",
+   "to": false,
+   "t": 1792983951719,
+   "type": "state"
+  },
+  {
+   "key": "camera",
+   "to": false,
+   "t": 1792983951719,
+   "type": "state"
+  },
+  {
+   "key": "microphone",
+   "to": false,
+   "t": 1792983951719,
+   "type": "state"
+  },
+  {
+   "key": "screenShare",
+   "to": false,
+   "t": 1792983951719,
+   "type": "state"
+  },
+  {
+   "key": "participants",
+   "to": 1,
+   "t": 1792983951719,
+   "type": "state"
+  },
+  {
+   "t": 1792983953720,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "lag": 1,
+   "lt": 0,
+   "rr": 1.5,
+   "rms": 2.9,
+   "rmax": 2.4
+  },
+  {
+   "key": "camera",
+   "from": false,
+   "to": true,
+   "t": 1792983954355,
+   "type": "state"
+  },
+  {
+   "key": "cameraCapture",
+   "to": "1280x720@20",
+   "t": 1792983954355,
+   "type": "state"
+  },
+  {
+   "kind": "videoinput",
+   "t": 1792983954356,
+   "type": "event:device-changed"
+  },
+  {
+   "t": 1792983955721,
+   "type": "send-codec",
+   "source": "camera",
+   "codec": "video/VP8"
+  },
+  {
+   "t": 1792983955721,
+   "type": "decoder",
+   "impl": "libvpx",
+   "powerEfficient": false
+  },
+  {
+   "t": 1792983955721,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 1,
+   "lag": 4,
+   "lt": 0,
+   "rv": 3,
+   "rfps": 0,
+   "rh": 135,
+   "ck": 0,
+   "ch": 180,
+   "rr": 3,
+   "rms": 9.9,
+   "rmax": 5.8
+  },
+  {
+   "t": 1792983957722,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 1,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "rv": 3,
+   "rfps": 0,
+   "rh": 135,
+   "ck": 188,
+   "ch": 180,
+   "cbw": 1,
+   "rr": 0.5,
+   "rms": 1.8,
+   "rmax": 3.6
+  },
+  {
+   "key": "camera",
+   "from": true,
+   "to": false,
+   "t": 1792983959159,
+   "type": "state"
+  },
+  {
+   "t": 1792983959723,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "rv": 3,
+   "rfps": 0,
+   "rh": 135,
+   "ck": 70,
+   "ch": 180,
+   "cbw": 1,
+   "rr": 0.5,
+   "rms": 1.2,
+   "rmax": 2.4
+  },
+  {
+   "t": 1792983961721,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "rv": 3,
+   "rfps": 0.5,
+   "rdec": 0.9,
+   "rh": 135,
+   "up": 180,
+   "down": 585,
+   "bwe": 95,
+   "rtt": 321,
+   "ck": 0,
+   "ch": 180,
+   "cbw": 1,
+   "rr": 0.5,
+   "rms": 0.7,
+   "rmax": 1.4
+  },
+  {
+   "key": "microphone",
+   "from": false,
+   "to": true,
+   "t": 1792983962250,
+   "type": "state"
+  },
+  {
+   "kind": "audioinput",
+   "t": 1792983962453,
+   "type": "event:device-changed"
+  },
+  {
+   "key": "connectionQuality",
+   "to": "excellent",
+   "t": 1792983963594,
+   "type": "state"
+  },
+  {
+   "t": 1792983963720,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "ac": 12,
+   "rv": 3,
+   "rfps": 11.5,
+   "rdec": 0.3,
+   "rh": 180,
+   "ck": 0,
+   "ch": 180,
+   "cbw": 1,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -119.4,
+   "rr": 0.5,
+   "rms": 0.9,
+   "rmax": 1.7
+  },
+  {
+   "t": 1792983965722,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "ac": 31,
+   "rv": 3,
+   "rfps": 16.5,
+   "rdec": 0.2,
+   "rfrz": 3,
+   "rh": 180,
+   "up": 51,
+   "down": 436,
+   "bwe": 95,
+   "rtt": 341,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -119.9,
+   "rr": 0.5,
+   "rms": 0.6,
+   "rmax": 1.2
+  },
+  {
+   "key": "connectionQuality",
+   "from": "excellent",
+   "to": "poor",
+   "t": 1792983967081,
+   "type": "state"
+  },
+  {
+   "origin": "main",
+   "wantEnabled": false,
+   "published": true,
+   "pubMuted": false,
+   "upstreamPaused": false,
+   "rawEnabled": true,
+   "rawMuted": false,
+   "rawState": "live",
+   "senderHasTrack": true,
+   "t": 1792983967242,
+   "type": "event:mic-toggle-click"
+  },
+  {
+   "key": "microphone",
+   "from": true,
+   "to": false,
+   "t": 1792983967242,
+   "type": "state"
+  },
+  {
+   "origin": "main",
+   "wantEnabled": false,
+   "ms": 3,
+   "isMicrophoneEnabled": false,
+   "published": true,
+   "pubMuted": true,
+   "upstreamPaused": false,
+   "rawEnabled": false,
+   "rawMuted": false,
+   "rawState": "live",
+   "senderHasTrack": true,
+   "t": 1792983967244,
+   "type": "event:mic-toggle-done"
+  },
+  {
+   "t": 1792983967721,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "ac": 24,
+   "rv": 3,
+   "rfps": 0,
+   "rh": 180,
+   "up": 29,
+   "down": 471,
+   "bwe": 95,
+   "rtt": 215,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 2,
+   "rms": 4.5,
+   "rmax": 2.9
+  },
+  {
+   "t": 1792983969721,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 25,
+   "lt": 0,
+   "rv": 3,
+   "rfps": 0,
+   "rh": 180,
+   "up": 41,
+   "down": 426,
+   "bwe": 95,
+   "rtt": 204,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 3.5,
+   "rms": 25.9,
+   "rmax": 42.9
+  },
+  {
+   "t": 1792983971722,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "rv": 3,
+   "rfps": 10,
+   "rdec": 0.2,
+   "rfrz": 1,
+   "rh": 180,
+   "up": 40,
+   "down": 381,
+   "bwe": 95,
+   "rtt": 269,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 2.5,
+   "rms": 6.2,
+   "rmax": 4.3
+  },
+  {
+   "t": 1792983973721,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "rv": 3,
+   "rfps": 1,
+   "rdec": 1,
+   "rfrz": 2,
+   "rh": 180,
+   "up": 22,
+   "down": 350,
+   "bwe": 95,
+   "rtt": 269,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 1.5,
+   "rms": 4.2,
+   "rmax": 2.9
+  },
+  {
+   "t": 1792983975723,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "rv": 3,
+   "rfps": 8.5,
+   "rdec": 0.3,
+   "rfrz": 1,
+   "rh": 180,
+   "up": 17,
+   "down": 299,
+   "bwe": 95,
+   "rtt": 235,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 2,
+   "rms": 3.1,
+   "rmax": 1.8
+  },
+  {
+   "t": 1792983977721,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "rv": 3,
+   "rfps": 13.5,
+   "rdec": 0.4,
+   "rfrz": 2,
+   "rh": 180,
+   "up": 9,
+   "down": 286,
+   "bwe": 95,
+   "rtt": 225,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 2,
+   "rms": 3.7,
+   "rmax": 3
+  },
+  {
+   "t": 1792983979721,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "rv": 3,
+   "rfps": 12,
+   "rdec": 0.4,
+   "rfrz": 2,
+   "rh": 180,
+   "up": 10,
+   "down": 305,
+   "bwe": 95,
+   "rtt": 279,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 2.5,
+   "rms": 4.9,
+   "rmax": 2.7
+  },
+  {
+   "t": 1792983981722,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "rv": 3,
+   "rfps": 37.5,
+   "rdec": 0.2,
+   "rh": 180,
+   "up": 7,
+   "down": 250,
+   "bwe": 95,
+   "rtt": 279,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 1.5,
+   "rms": 2.2,
+   "rmax": 1.5
+  },
+  {
+   "key": "participants",
+   "from": 1,
+   "to": 3,
+   "t": 1792983982277,
+   "type": "state"
+  },
+  {
+   "reason": "1",
+   "t": 1792983982661,
+   "type": "event:disconnected"
+  },
+  {
+   "t": 1792983982666,
+   "type": "governor-stop"
+  }
+ ]
+}

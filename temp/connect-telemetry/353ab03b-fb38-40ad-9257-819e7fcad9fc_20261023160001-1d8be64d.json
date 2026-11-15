@@ -1,0 +1,205 @@
+{
+ "dir": "353ab03b-fb38-40ad-9257-819e7fcad9fc_20261023160001-1d8be64d",
+ "uploader": "Futa Sato",
+ "session": "20261023160001-1d8be64d",
+ "roomId": "x5r-8q1-qsk",
+ "startedAt": 1792771201982,
+ "context": {
+  "mode": "active",
+  "base": {
+   "width": 640,
+   "height": 360,
+   "frameRate": 20,
+   "segmentationFps": 20,
+   "segmentationScheduler": "interval"
+  }
+ },
+ "env": {
+  "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6.1 Mobile/15E148 Safari/604.1",
+  "cpuCores": 4,
+  "language": "ja",
+  "screen": "393x852",
+  "devicePixelRatio": 3,
+  "window": "393x695",
+  "crossOriginIsolated": false,
+  "gpu": {
+   "webgl": 2,
+   "vendor": "Apple Inc.",
+   "renderer": "Apple GPU"
+  },
+  "codecs": {
+   "vp8": {
+    "encode": {
+     "supported": true,
+     "smooth": false,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    }
+   },
+   "h264": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": true
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": true
+    }
+   },
+   "vp9": {
+    "encode": {
+     "supported": true,
+     "smooth": false,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": true
+    }
+   },
+   "av1": {
+    "encode": {
+     "supported": false,
+     "smooth": false,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": false,
+     "smooth": false,
+     "powerEfficient": false
+    }
+   }
+  }
+ },
+ "missingParts": 0,
+ "entries": [
+  {
+   "t": 1792771201982,
+   "type": "state-snapshot",
+   "state": {
+    "background": "off",
+    "backgroundQuality": "balanced",
+    "noiseCancel": true,
+    "autoMute": false
+   }
+  },
+  {
+   "t": 1792771202016,
+   "type": "governor-start",
+   "mode": "active"
+  },
+  {
+   "key": "loadGovernor",
+   "to": "active",
+   "t": 1792771202016,
+   "type": "state"
+  },
+  {
+   "key": "layout",
+   "to": "grid",
+   "t": 1792771202016,
+   "type": "state"
+  },
+  {
+   "key": "pip",
+   "to": false,
+   "t": 1792771202016,
+   "type": "state"
+  },
+  {
+   "key": "camera",
+   "to": false,
+   "t": 1792771202017,
+   "type": "state"
+  },
+  {
+   "key": "microphone",
+   "to": false,
+   "t": 1792771202017,
+   "type": "state"
+  },
+  {
+   "key": "screenShare",
+   "to": false,
+   "t": 1792771202017,
+   "type": "state"
+  },
+  {
+   "key": "participants",
+   "to": 1,
+   "t": 1792771202017,
+   "type": "state"
+  },
+  {
+   "kind": "videoinput",
+   "t": 1792771202890,
+   "type": "event:device-changed"
+  },
+  {
+   "kind": "audioinput",
+   "t": 1792771203226,
+   "type": "event:device-changed"
+  },
+  {
+   "t": 1792771204022,
+   "type": "send-codec",
+   "source": "camera",
+   "codec": "video/VP8"
+  },
+  {
+   "t": 1792771204026,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "lag": 31,
+   "lt": 0,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 3.5,
+   "rms": 9,
+   "rmax": 6
+  },
+  {
+   "t": 1792771206020,
+   "type": "sample",
+   "p": "calm",
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 21,
+   "lt": 0,
+   "up": 2,
+   "bwe": 300,
+   "rtt": 78,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "key": "connectionQuality",
+   "to": "excellent",
+   "t": 1792771207752,
+   "type": "state"
+  },
+  {
+   "reason": "1",
+   "t": 1792771207973,
+   "type": "event:disconnected"
+  },
+  {
+   "t": 1792771207978,
+   "type": "governor-stop"
+  }
+ ]
+}

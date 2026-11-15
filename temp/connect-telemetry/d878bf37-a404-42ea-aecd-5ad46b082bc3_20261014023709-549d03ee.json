@@ -1,0 +1,29 @@
+{
+ "dir": "d878bf37-a404-42ea-aecd-5ad46b082bc3_20261014023709-549d03ee",
+ "uploader": "Shogo Toiyama",
+ "session": "20261014023709-549d03ee",
+ "roomId": "tech",
+ "startedAt": 1791945429719,
+ "context": {
+  "mode": "active",
+  "base": {
+   "width": 1280,
+   "height": 720,
+   "frameRate": 20,
+   "segmentationFps": 20,
+   "segmentationScheduler": "interval"
+  }
+ },
+ "missingParts": 0,
+ "entries": [
+  {
+   "t": 1791945429755,
+   "type": "governor-start",
+   "mode": "active"
+  },
+  {
+   "t": 1791945429758,
+   "type": "governor-stop"
+  }
+ ]
+}

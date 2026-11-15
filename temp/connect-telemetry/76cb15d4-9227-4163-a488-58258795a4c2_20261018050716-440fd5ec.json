@@ -1,0 +1,1899 @@
+{
+ "dir": "76cb15d4-9227-4163-a488-58258795a4c2_20261018050716-440fd5ec",
+ "uploader": "Meiri Hijikata",
+ "session": "20261018050716-440fd5ec",
+ "roomId": "general",
+ "startedAt": 1792300036688,
+ "context": {
+  "mode": "active",
+  "base": {
+   "width": 1280,
+   "height": 720,
+   "frameRate": 20,
+   "segmentationFps": 20,
+   "segmentationScheduler": "interval"
+  }
+ },
+ "env": {
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+  "platform": "Windows",
+  "mobile": false,
+  "brands": [
+   {
+    "brand": "Chromium",
+    "version": "154"
+   },
+   {
+    "brand": "Google Chrome",
+    "version": "154"
+   },
+   {
+    "brand": "Not A(Brand",
+    "version": "99"
+   }
+  ],
+  "cpuCores": 4,
+  "deviceMemoryGB": 8,
+  "language": "ja",
+  "screen": "1280x720",
+  "devicePixelRatio": 2,
+  "window": "1280x559",
+  "crossOriginIsolated": false,
+  "connection": {
+   "effectiveType": "4g",
+   "downlinkMbps": 10,
+   "rttMs": 50,
+   "saveData": false
+  },
+  "gpu": {
+   "webgl": 2,
+   "vendor": "Google Inc. (Intel)",
+   "renderer": "ANGLE (Intel, Intel(R) HD Graphics 520 (0x00001916) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+  },
+  "uaDetails": {
+   "architecture": "x86",
+   "brands": [
+    {
+     "brand": "Chromium",
+     "version": "154"
+    },
+    {
+     "brand": "Google Chrome",
+     "version": "154"
+    },
+    {
+     "brand": "Not A(Brand",
+     "version": "99"
+    }
+   ],
+   "fullVersionList": [
+    {
+     "brand": "Chromium",
+     "version": "154.0.8037.99"
+    },
+    {
+     "brand": "Google Chrome",
+     "version": "154.0.8037.99"
+    },
+    {
+     "brand": "Not A(Brand",
+     "version": "99.0.0.0"
+    }
+   ],
+   "mobile": false,
+   "model": "",
+   "platform": "Windows",
+   "platformVersion": "10.0.0"
+  },
+  "battery": {
+   "charging": true,
+   "level": 0.9
+  },
+  "codecs": {
+   "vp8": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    }
+   },
+   "h264": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": true
+    }
+   },
+   "vp9": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    }
+   },
+   "av1": {
+    "encode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    },
+    "decode": {
+     "supported": true,
+     "smooth": true,
+     "powerEfficient": false
+    }
+   }
+  }
+ },
+ "missingParts": 0,
+ "entries": [
+  {
+   "t": 1792300036688,
+   "type": "state-snapshot",
+   "state": {
+    "background": "image",
+    "backgroundQuality": "high",
+    "noiseCancel": true,
+    "autoMute": false
+   }
+  },
+  {
+   "t": 1792300036706,
+   "type": "governor-start",
+   "mode": "active"
+  },
+  {
+   "key": "loadGovernor",
+   "to": "active",
+   "t": 1792300036706,
+   "type": "state"
+  },
+  {
+   "key": "layout",
+   "to": "grid",
+   "t": 1792300036707,
+   "type": "state"
+  },
+  {
+   "key": "pip",
+   "to": false,
+   "t": 1792300036707,
+   "type": "state"
+  },
+  {
+   "key": "camera",
+   "to": false,
+   "t": 1792300036709,
+   "type": "state"
+  },
+  {
+   "key": "microphone",
+   "to": false,
+   "t": 1792300036709,
+   "type": "state"
+  },
+  {
+   "key": "screenShare",
+   "to": false,
+   "t": 1792300036709,
+   "type": "state"
+  },
+  {
+   "key": "participants",
+   "to": 1,
+   "t": 1792300036709,
+   "type": "state"
+  },
+  {
+   "t": 1792300038716,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "lag": 32,
+   "lt": 80,
+   "bgf": 0,
+   "bge": 20,
+   "rr": 2.5,
+   "rms": 14.7,
+   "rmax": 10.3
+  },
+  {
+   "kind": "audioinput",
+   "t": 1792300038733,
+   "type": "event:device-changed"
+  },
+  {
+   "kind": "videoinput",
+   "t": 1792300038918,
+   "type": "event:device-changed"
+  },
+  {
+   "t": 1792300040711,
+   "type": "send-codec",
+   "source": "camera",
+   "codec": "video/VP8"
+  },
+  {
+   "t": 1792300040713,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "lag": 8,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 3,
+   "bwe": 300,
+   "rtt": 170,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 1,
+   "rms": 8.6,
+   "rmax": 9.1
+  },
+  {
+   "key": "connectionQuality",
+   "to": "excellent",
+   "t": 1792300042540,
+   "type": "state"
+  },
+  {
+   "t": 1792300042718,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 9,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 300,
+   "rtt": 170,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 4.4,
+   "rmax": 8.9
+  },
+  {
+   "t": 1792300044719,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 12,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 300,
+   "rtt": 187,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300046711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 13,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 352,
+   "rtt": 170,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300048711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 13,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.8,
+   "rmax": 1.7
+  },
+  {
+   "t": 1792300050717,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 6,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 483,
+   "rtt": 169,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300052711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 13,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 566,
+   "rtt": 181,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300052711,
+   "type": "action",
+   "action": {
+    "kind": "bg-balanced"
+   },
+   "applied": true,
+   "reasons": [
+    "bg-fps"
+   ]
+  },
+  {
+   "action": {
+    "kind": "bg-balanced"
+   },
+   "applied": true,
+   "reasons": [
+    "bg-fps"
+   ],
+   "t": 1792300052711,
+   "type": "event:load-governor"
+  },
+  {
+   "key": "backgroundQuality",
+   "from": "high",
+   "to": "balanced",
+   "t": 1792300052718,
+   "type": "state"
+  },
+  {
+   "t": 1792300056712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 14,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 774,
+   "rtt": 174,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 1.8,
+   "rmax": 5.4
+  },
+  {
+   "t": 1792300058711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 9,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 905,
+   "rtt": 180,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.9,
+   "rmax": 1.7
+  },
+  {
+   "t": 1792300060711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 11,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1058,
+   "rtt": 176,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300062712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 8,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1236,
+   "rtt": 173,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300064711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1444,
+   "rtt": 173,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300066723,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 13,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1686,
+   "rtt": 173,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300068710,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 4,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1969,
+   "rtt": 179,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 1,
+   "rms": 3.5,
+   "rmax": 3.6
+  },
+  {
+   "t": 1792300070712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 2299,
+   "rtt": 176,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300072710,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 8,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 2683,
+   "rtt": 176,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300074711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 7,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 3132,
+   "rtt": 178,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300076712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 16,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 3655,
+   "rtt": 183,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300078711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.7,
+   "rmax": 1.3
+  },
+  {
+   "t": 1792300080712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 4978,
+   "rtt": 184,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300082710,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 5808,
+   "rtt": 201,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300084708,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 10,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 6776,
+   "rtt": 178,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300086709,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 7906,
+   "rtt": 178,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300088711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 9224,
+   "rtt": 192,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.4,
+   "rmax": 0.9
+  },
+  {
+   "t": 1792300090709,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 10761,
+   "rtt": 174,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300092710,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 12553,
+   "rtt": 172,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300094710,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 14644,
+   "rtt": 172,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300096712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 17083,
+   "rtt": 179,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300098711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 19928,
+   "rtt": 174,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.8,
+   "rmax": 1.6
+  },
+  {
+   "t": 1792300100711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 3,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 23246,
+   "rtt": 177,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300102711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 27116,
+   "rtt": 177,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300104710,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 31630,
+   "rtt": 180,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300106712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 36896,
+   "rtt": 177,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300108712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.9,
+   "rmax": 1.8
+  },
+  {
+   "t": 1792300110712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 50201,
+   "rtt": 177,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300112710,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 58556,
+   "rtt": 197,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300114711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 68302,
+   "rtt": 177,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300116713,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 79669,
+   "rtt": 177,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300118711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 6,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 92928,
+   "rtt": 173,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.9,
+   "rmax": 1.7
+  },
+  {
+   "t": 1792300120711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 108394,
+   "rtt": 174,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300122712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 126433,
+   "rtt": 186,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300124710,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 147473,
+   "rtt": 186,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300126714,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 172015,
+   "rtt": 176,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300128711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 200640,
+   "rtt": 177,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 1.1,
+   "rmax": 2.3
+  },
+  {
+   "t": 1792300130711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 6,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300132712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 10,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 272973,
+   "rtt": 176,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300134709,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 318398,
+   "rtt": 177,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300136716,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 371382,
+   "rtt": 184,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300138712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 433181,
+   "rtt": 184,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.8,
+   "rmax": 1.6
+  },
+  {
+   "t": 1792300140711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 505265,
+   "rtt": 180,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300142712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 589343,
+   "rtt": 173,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300144712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 687412,
+   "rtt": 175,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300146712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 5,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 801799,
+   "rtt": 175,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300148711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 9,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 935221,
+   "rtt": 177,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 0.7,
+   "rmax": 1.4
+  },
+  {
+   "t": 1792300150711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 175,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300152711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 180,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300154712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 180,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300156712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 12,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 179,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300158711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 10,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 175,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 1.8,
+   "rmax": 3.5
+  },
+  {
+   "t": 1792300160711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300162711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 183,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300164710,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 6,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 179,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300166711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 177,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300168710,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 177,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 1,
+   "rmax": 2
+  },
+  {
+   "t": 1792300170711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 174,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300172712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 173,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300174711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 12,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 174,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300176711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 2,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 174,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300178711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 13,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 172,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120,
+   "rr": 0.5,
+   "rms": 1.4,
+   "rmax": 2.8
+  },
+  {
+   "t": 1792300180712,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 183,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300182711,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 1,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 1,
+   "bwe": 1000000,
+   "rtt": 171,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "t": 1792300184718,
+   "type": "sample",
+   "p": "overloaded",
+   "r": [
+    "bg-fps"
+   ],
+   "lv": "b0",
+   "cam": 0,
+   "enc": 0,
+   "lag": 10,
+   "lt": 0,
+   "bgf": 0,
+   "bge": 20,
+   "up": 2,
+   "bwe": 1000000,
+   "rtt": 171,
+   "lg": 0,
+   "lgx": 0,
+   "lsp": 0,
+   "lfl": -120
+  },
+  {
+   "reason": "1",
+   "t": 1792300185661,
+   "type": "event:disconnected"
+  },
+  {
+   "t": 1792300185668,
+   "type": "governor-stop"
+  }
+ ]
+}

@@ -1,0 +1,81 @@
+{
+ "dir": "d878bf37-a404-42ea-aecd-5ad46b082bc3_20261016020506-a2f4f3ec",
+ "uploader": "Shogo Toiyama",
+ "session": "20261016020506-a2f4f3ec",
+ "roomId": "tech",
+ "startedAt": 1792116306590,
+ "context": {
+  "mode": "active",
+  "base": {
+   "width": 1280,
+   "height": 720,
+   "frameRate": 20,
+   "segmentationFps": 20,
+   "segmentationScheduler": "interval"
+  }
+ },
+ "missingParts": 0,
+ "entries": [
+  {
+   "t": 1792116306590,
+   "type": "state-snapshot",
+   "state": {
+    "background": "image",
+    "backgroundQuality": "high",
+    "noiseCancel": true,
+    "autoMute": false
+   }
+  },
+  {
+   "t": 1792116306641,
+   "type": "governor-start",
+   "mode": "active"
+  },
+  {
+   "key": "loadGovernor",
+   "to": "active",
+   "t": 1792116306641,
+   "type": "state"
+  },
+  {
+   "key": "layout",
+   "to": "grid",
+   "t": 1792116306642,
+   "type": "state"
+  },
+  {
+   "key": "pip",
+   "to": false,
+   "t": 1792116306642,
+   "type": "state"
+  },
+  {
+   "key": "camera",
+   "to": false,
+   "t": 1792116306645,
+   "type": "state"
+  },
+  {
+   "key": "microphone",
+   "to": false,
+   "t": 1792116306645,
+   "type": "state"
+  },
+  {
+   "key": "screenShare",
+   "to": false,
+   "t": 1792116306646,
+   "type": "state"
+  },
+  {
+   "key": "participants",
+   "to": 1,
+   "t": 1792116306646,
+   "type": "state"
+  },
+  {
+   "t": 1792116306664,
+   "type": "governor-stop"
+  }
+ ]
+}
