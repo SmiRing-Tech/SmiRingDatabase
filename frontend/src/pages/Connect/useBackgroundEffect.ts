@@ -68,6 +68,10 @@ export function useBackgroundEffect(isGuest = false) {
   // matteSync follows the governor's camera level: on only while segmentation runs at the camera's
   // own rate (level 0), where it costs latency rather than extra inferences.
   const frameModeRef = useRef({ matteSync: true, photoIntervalMs: 0 });
+  // Segmentation at half the camera's rate at governor level 0: its step 0b, or the window being in
+  // the background (nobody is looking at the preview, and the 2026-11-19 window-switch stalls
+  // hit the segmenter hardest). Both feed segmentationFor().
+  const segHalfRef = useRef({ step: false, hidden: false });
   // The person switched to 'balanced' themselves during this call: the governor leaves it there
   // until they pick 'high' again. Not stored — the next call is fully automatic again.
   const pinnedBalancedRef = useRef(false);
@@ -258,8 +262,7 @@ export function useBackgroundEffect(isGuest = false) {
         edgeFeather: 1.5,
         matteLo: 0.3,
         matteHi: 0.75,
-        segmentationFps: perfProfileRef.current?.segmentationFps ?? detectSegmentationFps(),
-        segmentationScheduler: perfProfileRef.current?.segmentationScheduler ?? defaultSegmentationScheduler(),
+        ...segmentationFor(perfProfileRef.current, segHalfRef.current),
         matteSync: frameModeRef.current.matteSync,
         photoIntervalMs: frameModeRef.current.photoIntervalMs,
         // Every processor reports when it's too heavy (see handlePerfSlow for what happens
@@ -417,11 +420,24 @@ export function useBackgroundEffect(isGuest = false) {
       frameModeRef.current = { ...frameModeRef.current, matteSync: profile === null };
       const processor = getCameraTrack()?.getProcessor();
       if (!isBackgroundProcessor(processor)) return;
-      processor.updateOptions({
-        segmentationFps: profile?.segmentationFps ?? detectSegmentationFps(),
-        segmentationScheduler: profile?.segmentationScheduler ?? defaultSegmentationScheduler(),
-      });
+      processor.updateOptions(segmentationFor(profile, segHalfRef.current));
       if (processor instanceof WorkerBackgroundProcessor) processor.setFrameMode({ matteSync: profile === null });
+    },
+    [getCameraTrack],
+  );
+
+  /**
+   * Halves the segmentation rate at governor level 0 (`step`: its step 0b; `hidden`: the window is
+   * in the background). Idempotent; the camera levels' own rates take precedence.
+   */
+  const setSegmentationHalf = useCallback(
+    (half: { step?: boolean; hidden?: boolean }) => {
+      const next = { ...segHalfRef.current, ...half };
+      if (next.step === segHalfRef.current.step && next.hidden === segHalfRef.current.hidden) return;
+      segHalfRef.current = next;
+      const processor = getCameraTrack()?.getProcessor();
+      if (!isBackgroundProcessor(processor)) return;
+      processor.updateOptions(segmentationFor(perfProfileRef.current, next));
     },
     [getCameraTrack],
   );
@@ -463,6 +479,7 @@ export function useBackgroundEffect(isGuest = false) {
     commit,
     setQuality,
     setPerformanceProfile,
+    setSegmentationHalf,
     setPhotoInterval,
     /**
      * Whether the governor may try 'high' (its step-1 restore trial): a desktop, the worker
@@ -487,6 +504,18 @@ export function useBackgroundEffect(isGuest = false) {
     handleDelete,
     imageUrlFor,
   };
+}
+
+/**
+ * Segmentation rate and scheduler: the governor's camera level when it set one, otherwise the
+ * device default — halved (10/s, 'exact') for the governor's step 0b or while the window is hidden.
+ */
+function segmentationFor(profile: PerformanceProfile | null, half: { step: boolean; hidden: boolean }) {
+  if (profile) return { segmentationFps: profile.segmentationFps, segmentationScheduler: profile.segmentationScheduler };
+  if (half.step || half.hidden) {
+    return { segmentationFps: Math.max(1, Math.round(detectSegmentationFps() / 2)), segmentationScheduler: 'exact' as const };
+  }
+  return { segmentationFps: detectSegmentationFps(), segmentationScheduler: defaultSegmentationScheduler() };
 }
 
 export type BackgroundEffectState = ReturnType<typeof useBackgroundEffect>;

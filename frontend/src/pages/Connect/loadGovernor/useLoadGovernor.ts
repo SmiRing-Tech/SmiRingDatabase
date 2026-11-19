@@ -30,6 +30,7 @@ import { ReceiveFpsController, type CameraFps } from './receiveFpsController';
 import { keepTemporalLayers } from './temporalLayers';
 import { currentShareCodec, currentShareHeight, setShareCap, switchShareToVp8 } from '../../../lib/video/screenShare';
 import { setLocalCameraPhoto } from '../../../lib/cameraPhotoSignal';
+import { logActiveDebugFlags } from '../../../lib/debugFlags';
 
 /**
  * Watches how the machine is coping during a call and lightens the camera side when it isn't
@@ -132,6 +133,7 @@ function createSignalTotals() {
     bgMatteDelayMs: undefined as number | undefined,
     bgOwnMattePct: undefined as number | undefined,
     bgForcedOut: 0,
+    bgStaleDropped: 0,
     bgSegmentations: 0,
     bgSegRoundTripMax: undefined as number | undefined,
     bgSegWorkMax: undefined as number | undefined,
@@ -264,6 +266,11 @@ export function useLoadGovernor({
         await bg.setQuality('high', { auto: true });
         return;
       }
+      if (action.kind === 'seg-half') {
+        // Step 0b; no notice — nothing visible changes but how often the cut-out is redrawn.
+        bg.setSegmentationHalf({ step: action.direction === 'down' });
+        return;
+      }
       if (action.kind === 'share-1080') {
         // 1440p is the bonus for small text; no notice either way.
         await setShareCap(localParticipant, action.direction === 'down' ? '1080' : 'max').catch((err) =>
@@ -346,7 +353,12 @@ export function useLoadGovernor({
   useEffect(() => {
     if (mode === 'off') return;
     startTelemetry(roomId, { mode, base: BASE_PROFILE });
-    recordTelemetry('governor-start', { mode, ...(forcedRecv !== null ? { forcedRecv } : {}) });
+    const debugFlags = logActiveDebugFlags();
+    recordTelemetry('governor-start', {
+      mode,
+      ...(forcedRecv !== null ? { forcedRecv } : {}),
+      ...(Object.keys(debugFlags).length ? { debugFlags } : {}),
+    });
     // Remote participants get a small number in the per-stream telemetry; who that is is recorded
     // once, the first time they're seen (identities are long, and this is every 2s per stream).
     const peers = new Map<string, number>();
@@ -390,6 +402,7 @@ export function useLoadGovernor({
           totals.bgOwnMattePct = Math.min(totals.bgOwnMattePct ?? 100, signal.ownMattePct);
         }
         totals.bgForcedOut += signal.forcedOut ?? 0;
+        totals.bgStaleDropped += signal.staleDropped ?? 0;
         totals.bgSegmentations += signal.segmentations ?? 0;
         if (signal.segmentRoundTripMs !== undefined) {
           totals.bgSegRoundTripMax = Math.max(totals.bgSegRoundTripMax ?? 0, signal.segmentRoundTripMs);
@@ -798,9 +811,10 @@ export function useLoadGovernor({
             : undefined,
           frames: rafFrames > 1 ? { fps: rafFrames / seconds, maxGapMs: rafMaxGap } : undefined,
           bgMaxGapMs: localParticipant.isCameraEnabled ? t.bgMaxGapMs : undefined,
-          bgMatte: localParticipant.isCameraEnabled && t.bgMatteDelayMs !== undefined
-            ? { delayMs: t.bgMatteDelayMs, ownPct: t.bgOwnMattePct, forcedOut: t.bgForcedOut }
-            : undefined,
+          bgMatte:
+            localParticipant.isCameraEnabled && (t.bgMatteDelayMs !== undefined || t.bgStaleDropped > 0)
+              ? { delayMs: t.bgMatteDelayMs, ownPct: t.bgOwnMattePct, forcedOut: t.bgForcedOut, staleDropped: t.bgStaleDropped }
+              : undefined,
           bgSegment:
             localParticipant.isCameraEnabled && t.bgSeconds > 0 && t.bgSegmentations > 0
               ? { perSec: t.bgSegmentations / t.bgSeconds, roundTripMs: t.bgSegRoundTripMax, workMs: t.bgSegWorkMax }
@@ -853,6 +867,7 @@ export function useLoadGovernor({
             ? {
                 bgQuality: actualQuality,
                 bgUpgradable: bg.canAutoUpgradeQuality(),
+                segHalfAvailable: actualQuality !== null,
                 cameraOn: sample.cameraOn,
                 recvRelief,
                 shareCodec,
@@ -861,6 +876,7 @@ export function useLoadGovernor({
             : {
                 bgQuality: actualQuality === 'high' && state.bgDowngraded ? ('balanced' as const) : actualQuality,
                 bgUpgradable: bg.canAutoUpgradeQuality(),
+                segHalfAvailable: actualQuality !== null,
                 cameraOn: sample.cameraOn,
                 recvRelief,
                 shareCodec: shareCodec === 'av1' && state.shareVp8 ? ('vp8' as const) : shareCodec,
@@ -884,6 +900,8 @@ export function useLoadGovernor({
         }
         if (mode === 'active') {
           syncCameraProfile(step.state.video);
+          // Segmentation at half rate for step 0b, and whenever the window is in the background.
+          bg.setSegmentationHalf({ step: step.state.segHalf, hidden: !sample.visible });
           // Photo mode: one still a second, or one every few while still overloaded. Re-applied
           // when the camera's processor changes (a rebuilt effect starts without it).
           if (step.state.photo && sample.cameraOn) {
@@ -965,7 +983,7 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
   return {
     p: step.verdict.pressure,
     r: step.verdict.reasons.length ? step.verdict.reasons : undefined,
-    lv: `${st.bgDowngraded ? 'b' : ''}${st.video}${st.recv ? `r${st.recv}` : ''}${st.shareVp8 ? 'v' : ''}${st.share1080 ? 'h' : ''}${
+    lv: `${st.segHalf ? 'g' : ''}${st.bgDowngraded ? 'b' : ''}${st.video}${st.recv ? `r${st.recv}` : ''}${st.shareVp8 ? 'v' : ''}${st.share1080 ? 'h' : ''}${
       st.share720 ? 's' : ''
     }${st.photo ? 'p' : ''}`,
     vis: s.visible ? undefined : 0,
@@ -995,6 +1013,8 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
     bgw: r1(s.bgMatte?.delayMs),
     bgo: r0(s.bgMatte?.ownPct),
     bgx: s.bgMatte?.forcedOut || undefined,
+    // Frames dropped (not sent) because their matte was too old.
+    bgd: s.bgMatte?.staleDropped || undefined,
     // Segmentation: per second, round trip (asked -> matte ready) and the segmenter's own time per
     // segmentation, ms (worst second in the window).
     bgs: r1(s.bgSegment?.perSec),

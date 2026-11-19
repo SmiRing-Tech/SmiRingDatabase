@@ -15,7 +15,7 @@ import {
 
 const SAMPLE_MS = 2000;
 
-type Load = 'calm' | 'busy' | 'encoder' | 'audio' | 'bg-heavy' | 'switch' | 'switch-broken';
+type Load = 'calm' | 'busy' | 'encoder' | 'audio' | 'bg-heavy' | 'switch' | 'switch-broken' | 'switch-often';
 
 function sampleFor(t: number, load: Load, state: GovernorState): LoadSample {
   // Each step down relieves some pressure: two camera or receiving steps clear an "encoder"
@@ -45,6 +45,11 @@ function sampleFor(t: number, load: Load, state: GovernorState): LoadSample {
   // The background on 'high' is too much for this machine: its frames fall behind.
   if (load === 'bg-heavy') base.bgFps = 8;
   // A window switch every 30s; the 10s after each are loaded (the browser and OS redrawing).
+  // Switching every 5s and the background effect falling behind the whole time.
+  if (load === 'switch-often') {
+    base.sinceVisibilityChangeMs = t % 5_000;
+    base.bgFps = 6;
+  }
   if (load === 'switch' || load === 'switch-broken') {
     base.sinceVisibilityChangeMs = t % 30_000;
     if (base.sinceVisibilityChangeMs < 10_000) {
@@ -117,7 +122,9 @@ function run(
                   ? `share-1080-${a.direction}`
                   : a.kind === 'photo'
                     ? `photo-${a.direction}`
-                    : a.kind;
+                    : a.kind === 'seg-half'
+                      ? `seg-half-${a.direction}`
+                      : a.kind;
       if (a.kind === 'bg-balanced') ctx.bgQuality = 'balanced';
       if (a.kind === 'bg-high') ctx.bgQuality = 'high';
       log.push(`${(t / 1000).toFixed(0)}s:${what}(${step.verdict.reasons.join('+') || 'calm'})`);
@@ -126,8 +133,8 @@ function run(
   console.log(`${name}\n  ${log.join('  ') || '(no actions)'}\n  end: video=${state.video} recv=${state.recv} shareVp8=${state.shareVp8} share720=${state.share720} share1080=${state.share1080} photo=${state.photo} bgBlocked=${state.bgRestoreBlocked} backoff=${state.recoverBackoff}`);
 }
 
-const highBg: GovernorContext = { bgQuality: 'high', bgUpgradable: true, cameraOn: true };
-const balancedBg: GovernorContext = { bgQuality: 'balanced', bgUpgradable: true, cameraOn: true };
+const highBg: GovernorContext = { bgQuality: 'high', bgUpgradable: true, segHalfAvailable: true, cameraOn: true };
+const balancedBg: GovernorContext = { bgQuality: 'balanced', bgUpgradable: true, segHalfAvailable: true, cameraOn: true };
 const noBg: GovernorContext = { bgQuality: null, cameraOn: true };
 
 run('fast machine, always calm (must do nothing)', () => 'calm', 600_000, highBg);
@@ -198,3 +205,4 @@ run(
 );
 run('window switched every 30s, each followed by 10s of load (must do nothing)', () => 'switch', 300_000, highBg);
 run('window switched every 30s and the audio really breaks each time (steps down)', () => 'switch-broken', 120_000, highBg);
+run('window switched every 5s, background effect behind throughout (grace runs out, steps down)', () => 'switch-often', 120_000, highBg);

@@ -689,6 +689,7 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
           : undefined,
       ownMattePct: stats.heldFrames ? (stats.ownMatteFrames / stats.heldFrames) * 100 : undefined,
       forcedOut: stats.forcedOut || undefined,
+      staleDropped: stats.staleDropped || undefined,
       segmentations: stats.segmentations,
       segmentRoundTripMs: stats.segmentations ? stats.maskLatencyMsTotal / stats.segmentations : undefined,
       segmenterWorkMs: stats.segmentations ? stats.segmenterWorkMsTotal / stats.segmentations : undefined,
@@ -827,6 +828,7 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       heldMsAvg: avg(d.heldMsTotal, d.heldFrames),
       ownMatteFrames: d.ownMatteFrames || undefined,
       forcedOut: d.forcedOut || undefined,
+      staleDropped: d.staleDropped || undefined,
       syncFrames: d.syncFrames || undefined,
       syncWaitMsAvg: avg(d.syncWaitMsTotal, d.syncFrames),
       syncTimeouts: d.syncTimeouts || undefined,
@@ -853,6 +855,7 @@ function emptyTotals(): Omit<CompositorStats, 'intervalMs'> {
     heldMsTotal: 0,
     ownMatteFrames: 0,
     forcedOut: 0,
+    staleDropped: 0,
     syncFrames: 0,
     syncWaitMsTotal: 0,
     syncTimeouts: 0,
@@ -875,6 +878,7 @@ function addTotals(into: Omit<CompositorStats, 'intervalMs'>, stats: CompositorS
   into.heldMsTotal += stats.heldMsTotal;
   into.ownMatteFrames += stats.ownMatteFrames;
   into.forcedOut += stats.forcedOut;
+  into.staleDropped += stats.staleDropped;
   into.syncFrames += stats.syncFrames;
   into.syncWaitMsTotal += stats.syncWaitMsTotal;
   into.syncTimeouts += stats.syncTimeouts;

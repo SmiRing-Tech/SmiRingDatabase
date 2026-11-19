@@ -29,6 +29,8 @@ export type LoadSignal =
       ownMattePct?: number;
       /** matteSync: frames sent with the latest matte because they were held too long. */
       forcedOut?: number;
+      /** Frames dropped because their matte was too old to send. */
+      staleDropped?: number;
       /** Segmentations in this report, their average round trip (asked -> matte ready) and the
        *  segmenter worker's own time per segmentation, ms (worker pipeline only). */
       segmentations?: number;

@@ -25,6 +25,13 @@
  *    (The first version made each frame wait for its own matte before reading the next one: work
  *    and waiting no longer overlapped, the frame rate fell below the camera's, and on 2026-11-19
  *    the background went to 'balanced' within moments of joining.)
+ * Stale mattes: a frame whose newest matte comes from more than twice the segmentation interval
+ * away (in camera time) is dropped, not sent — receivers hold the previous frame for a moment.
+ * When only the segmenter stalls (switching windows on a Mac in Low Power Mode, 2026-11-19), the
+ * old matte otherwise trails the person by up to a second or more, cutting into them or showing
+ * the room the effect is there to hide. If no matte arrives for STALE_GIVE_UP_MS (a segmenter
+ * that broke rather than stalled), frames go out with the latest one again and the pipeline's
+ * failure checks take it from there.
  * photoIntervalMs > 0 (the governor's photo mode): only one frame per interval is processed at
  * all — the rest are dropped before upload or segmentation — and that frame waits for its own
  * matte (at one frame a second, waiting costs nothing).
@@ -119,6 +126,8 @@ export interface CompositorStats {
   syncTimeouts: number;
   /** Frames dropped unprocessed by photo mode. */
   photoSkipped: number;
+  /** Frames dropped because their matte was too old (see the header). */
+  staleDropped: number;
 }
 
 export type CompositorResponse =
@@ -140,6 +149,8 @@ const REQUIRED_STABLE_FRAMES = 5;
 const STATS_INTERVAL_MS = 1000;
 /** This many frames in a row failing to render means the pipeline is broken, not unlucky. */
 const MAX_CONSECUTIVE_FAILURES = 30;
+/** No matte for this long: stop dropping frames for stale mattes (see the header). */
+const STALE_GIVE_UP_MS = 3000;
 /** Photo mode: how long a frame waits for its own matte before going out with the latest one. */
 const SYNC_TIMEOUT_MS = 120;
 /** matteSync: at most this many camera frames held (the camera's own buffer pool is small)... */
@@ -187,7 +198,11 @@ const emptyStats = (): CompositorStats => ({
   syncWaitMsTotal: 0,
   syncTimeouts: 0,
   photoSkipped: 0,
+  staleDropped: 0,
 });
+/** Camera timestamp (µs) of the frame the current matte was made from, and when it arrived. */
+let matteFrameTimestamp: number | null = null;
+let matteArrivedAt = 0;
 /** Resolves the frame waiting for its own matte (photo mode), if any. */
 let replyWaiter: ((answered: boolean) => void) | null = null;
 /** matteSync: frames waiting for a matte from their own time, oldest first. */
@@ -298,6 +313,10 @@ function onSegmentReply(reply: SegmentReply) {
   replyWaiter = null;
   try {
     handleSegmentReply(reply);
+    if (reply.ok && !stopped && answeredTimestamp !== null) {
+      matteFrameTimestamp = answeredTimestamp;
+      matteArrivedAt = performance.now();
+    }
   } finally {
     waiter?.(reply.ok);
     // matteSync: everything held up to the answered frame now has the nearest matte there is.
@@ -422,9 +441,24 @@ function releaseHeld(release: (timestamp: number) => boolean, ownTimestamp: numb
     stats.heldFrames += 1;
     stats.heldMsTotal += now - arrivedAt;
     if (ownTimestamp !== null && frame.timestamp === ownTimestamp) stats.ownMatteFrames += 1;
+    if (dropIfStale(frame)) continue;
     const out = renderSafely(frame, true);
     if (out) void emit(out);
   }
+}
+
+/**
+ * True (and the frame closed) when the newest matte is from more than twice the segmentation
+ * interval away from this frame in camera time — see the header.
+ */
+function dropIfStale(frame: VideoFrame): boolean {
+  if (!compositor.hasMatteHistory || matteFrameTimestamp === null) return false;
+  if (performance.now() - matteArrivedAt > STALE_GIVE_UP_MS) return false;
+  const maxAgeMs = (2 * 1000) / Math.max(1, settings.segmentationFps);
+  if (Math.abs(frame.timestamp - matteFrameTimestamp) / 1000 <= maxAgeMs) return false;
+  frame.close();
+  stats.staleDropped += 1;
+  return true;
 }
 
 /** Closes held frames without sending them (the pipeline is stopping). */
@@ -479,6 +513,9 @@ async function pump(source: ReadableStreamDefaultReader<VideoFrame>) {
         continue;
       }
     }
+    // Ask for a fresh matte before judging this frame: a dropped frame must still get one going.
+    if (!hasOwnMatte) requestMatte(frame);
+    if (dropIfStale(frame)) continue;
     const out = renderSafely(frame, hasOwnMatte);
     if (out) await emit(out);
   }
@@ -496,8 +533,10 @@ function switchSource(source: CompositorSource) {
   }
   previous?.cancel().catch(() => {});
   previousTrack?.stop();
-  // Frames from the previous camera still waiting for a matte go out with the latest one.
+  // Frames from the previous camera still waiting for a matte go out with the latest one, and a
+  // new camera's timestamps aren't comparable with the old one's mattes.
   releaseHeld(() => true, null);
+  matteFrameTimestamp = null;
   lastOutputAt = null;
   void pump(reader);
 }

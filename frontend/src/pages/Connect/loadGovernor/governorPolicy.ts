@@ -13,6 +13,8 @@
  * Ladder, one step at a time:
  *   0. own screen share 1440p -> 1080p (only while sharing a screen taller than 1080p: 1440p is
  *      the bonus for small text, so it goes first)
+ *   0b. background segmentation 20/s -> 10/s (seg-half; camera level 0 with the effect on — the
+ *      cheapest step there is: same model, same quality setting, half the inferences).
  *   1. background effect 'high' -> 'balanced'. The other way is automatic too, for anyone on
  *      'balanced' however they got there (stored choice, first-run detection, the effect's own
  *      slow-frame fallback): after bgRestoreAfterMs calm with every other step back, 'high' is
@@ -117,7 +119,7 @@ export interface LoadSample {
   /** Longest gap between camera frames leaving the background effect, ms (worker pipeline only). Telemetry only. */
   bgMaxGapMs?: number;
   /** Background matte timing (backgroundCompositor.worker: matteSync / photo mode). Telemetry only. */
-  bgMatte?: { delayMs: number; ownPct?: number; forcedOut: number };
+  bgMatte?: { delayMs?: number; ownPct?: number; forcedOut: number; staleDropped: number };
   /** Segmentation rate and timing (worker pipeline). Telemetry only. */
   bgSegment?: { perSec: number; roundTripMs?: number; workMs?: number };
   bgFps?: number;
@@ -295,6 +297,13 @@ export const GOVERNOR_THRESHOLDS = {
    * from switching windows, while staying fine for minutes at a time hidden or shown.
    */
   visibilitySwitchGraceMs: 10_000,
+  /**
+   * ...but at most this much grace within any switchGraceWindowMs: switching every few seconds
+   * otherwise kept it on for good, and on 2026-11-19 a 70s call ran with the background effect
+   * under 15fps 29% of the time without the governor stepping down once.
+   */
+  switchGraceBudgetMs: 10_000,
+  switchGraceWindowMs: 30_000,
   /** Calm this long, with every other step undone, before trying the background on 'high' again. */
   bgRestoreAfterMs: 300_000,
   /** Overloaded (for a background reason) within this long of that = this machine can't hold 'high'. */
@@ -398,6 +407,10 @@ export interface GovernorState {
   lastWasShareSwitch?: boolean;
   /** Photo mode (step 8). */
   photo: boolean;
+  /** Background segmentation at half rate (step 0b). */
+  segHalf: boolean;
+  /** Samples the switch grace held off, with their length, over the last switchGraceWindowMs. */
+  graceLog: { t: number; ms: number }[];
   /** When the background was last put back on 'high' (the restore trial), or null. */
   bgRestoredAt: number | null;
   /** The restore trial failed: 'high' is too much for this machine, for the rest of the call. */
@@ -418,6 +431,8 @@ export function initialGovernorState(now: number): GovernorState {
     share720: false,
     share1080: false,
     photo: false,
+    segHalf: false,
+    graceLog: [],
     bgRestoredAt: null,
     bgRestoreBlocked: false,
     overloadedSince: null,
@@ -436,7 +451,8 @@ export type GovernorAction =
   | { kind: 'share-vp8' }
   | { kind: 'share-720'; direction: 'down' | 'up' }
   | { kind: 'share-1080'; direction: 'down' | 'up' }
-  | { kind: 'photo'; direction: 'down' | 'up' };
+  | { kind: 'photo'; direction: 'down' | 'up' }
+  | { kind: 'seg-half'; direction: 'down' | 'up' };
 
 /** What the governor needs to know about the call, beyond the sample. */
 export interface GovernorContext {
@@ -454,6 +470,9 @@ export interface GovernorContext {
   shareCodec?: 'av1' | 'vp8' | 'h264' | null;
   /** Height the own share is captured at right now (for step 0: only worth it above 1080p). */
   shareHeight?: number;
+  /** The background effect is running on the worker pipeline at the camera's rate, so halving
+   *  its segmentation (step 0b) would change something. Unset = no. */
+  segHalfAvailable?: boolean;
 }
 
 export interface GovernorStep {
@@ -486,12 +505,17 @@ export function stepGovernor(
     state.recoverBackoff = 1;
   }
 
-  // Right after the window went to or from the background: wait it out unless the audio broke.
+  // Right after the window went to or from the background: wait it out unless the audio broke —
+  // within a budget, so switching back and forth all the time doesn't switch the governor off.
+  state.graceLog = state.graceLog.filter((g) => now - g.t < T.switchGraceWindowMs);
+  const graceSpent = state.graceLog.reduce((sum, g) => sum + g.ms, 0);
   const switchGrace =
     verdict.pressure === 'overloaded' &&
     sample.sinceVisibilityChangeMs !== undefined &&
     sample.sinceVisibilityChangeMs < T.visibilitySwitchGraceMs &&
+    graceSpent < T.switchGraceBudgetMs &&
     !verdict.reasons.some((r) => r === 'audio-underrun' || r === 'audio-passthrough');
+  if (switchGrace) state.graceLog = [...state.graceLog, { t: now, ms: sample.intervalMs }];
   const pressure = switchGrace ? 'neutral' : verdict.pressure;
 
   if (pressure === 'overloaded') {
@@ -581,6 +605,9 @@ function nextStepDown(state: GovernorState, ctx: GovernorContext, reasons: strin
   if (ctx.shareCodec && ctx.shareCodec !== 'av1' && !state.share1080 && !state.share720 && (ctx.shareHeight ?? 0) > 1080 * 1.05) {
     return { kind: 'share-1080', direction: 'down' };
   }
+  if (ctx.segHalfAvailable && ctx.cameraOn && state.video === 0 && !state.segHalf) {
+    return { kind: 'seg-half', direction: 'down' };
+  }
   if (ctx.bgQuality === 'high' && !state.bgDowngraded) return { kind: 'bg-balanced' };
   const relief = ctx.recvRelief ?? { 1: false, 2: false };
   if (state.recv < 1 && relief[1]) return { kind: 'recv', level: 1, direction: 'down' };
@@ -599,7 +626,7 @@ function nextStepDown(state: GovernorState, ctx: GovernorContext, reasons: strin
 
 /**
  * Undo the most recent step still in effect: the ladder in reverse (share 720p, photo, receive 5, 4,
- * 3, camera 2, receive 2, camera 1, receive 1, share 1080p). The share's switch to VP8 isn't undone
+ * 3, camera 2, receive 2, camera 1, receive 1, segmentation 20/s, share 1080p). The share's switch to VP8 isn't undone
  * mid-share — each undo would be another republish the viewers see. The background's 'high' has
  * its own, slower path (see stepGovernor).
  */
@@ -614,6 +641,7 @@ function nextStepUp(state: GovernorState): GovernorAction | null {
   if (state.recv === 2) return { kind: 'recv', level: 1, direction: 'up' };
   if (cameraSteps && state.video === 1) return { kind: 'video', level: 0, direction: 'up' };
   if (state.recv === 1) return { kind: 'recv', level: 0, direction: 'up' };
+  if (state.segHalf) return { kind: 'seg-half', direction: 'up' };
   if (state.share1080) return { kind: 'share-1080', direction: 'up' };
   return null;
 }
@@ -626,5 +654,6 @@ function applyToState(state: GovernorState, action: GovernorAction) {
   else if (action.kind === 'share-vp8') state.shareVp8 = true;
   else if (action.kind === 'share-720') state.share720 = action.direction === 'down';
   else if (action.kind === 'share-1080') state.share1080 = action.direction === 'down';
+  else if (action.kind === 'seg-half') state.segHalf = action.direction === 'down';
   else state.photo = action.direction === 'down';
 }
