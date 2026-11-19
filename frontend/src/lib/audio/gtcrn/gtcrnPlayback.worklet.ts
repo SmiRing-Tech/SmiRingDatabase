@@ -63,9 +63,13 @@ export interface GtcrnPlaybackStats {
   drainedSamples: number;
   queuedMs: number;
   priming: boolean;
+  /** Since the previous stats: the least audio queued while playing (the margin left before an
+   *  underrun), and the longest silence an underrun caused (until the cushion refilled), ms. */
+  minQueuedMs: number | null;
+  longestGapMs: number;
 }
 
-const STATS_INTERVAL_MS = 3000;
+const STATS_INTERVAL_MS = 1000;
 /** A render quantum quieter than this (RMS, about -40dBFS) counts as a pause in speech. */
 const QUIET_RMS = 0.01;
 
@@ -84,6 +88,12 @@ class GtcrnPlaybackProcessor extends AudioWorkletProcessor {
   private input: MessagePort | null = null;
 
   private underrunCount = 0;
+  /** Lowest `available` while playing since the last stats; Infinity = none. */
+  private minAvailable = Infinity;
+  /** Silence from the current underrun until the cushion refills, and the longest since the last stats. */
+  private gapSamples = 0;
+  private inGap = false;
+  private longestGapSamples = 0;
   private droppedSamples = 0;
   private drainedSamples = 0;
   private samplesSinceStats = 0;
@@ -117,10 +127,18 @@ class GtcrnPlaybackProcessor extends AudioWorkletProcessor {
     const out = outputs[0]?.[0];
     if (!out) return !this.stopped;
 
-    if (this.priming && this.available >= this.primeSamples) this.priming = false;
+    if (this.priming && this.available >= this.primeSamples) {
+      this.priming = false;
+      if (this.inGap) {
+        this.longestGapSamples = Math.max(this.longestGapSamples, this.gapSamples);
+        this.inGap = false;
+        this.gapSamples = 0;
+      }
+    }
 
     if (this.priming) {
       out.fill(0);
+      if (this.inGap) this.gapSamples += out.length;
     } else {
       // Running long and the next quantum is a pause: skip it, play the one after.
       if (this.available - out.length > this.drainAboveSamples && this.isQuiet(out.length)) {
@@ -129,9 +147,12 @@ class GtcrnPlaybackProcessor extends AudioWorkletProcessor {
       }
       const take = Math.min(out.length, this.available);
       this.read(out, take);
+      this.minAvailable = Math.min(this.minAvailable, this.available);
       if (take < out.length) {
         out.fill(0, take);
         this.underrunCount++;
+        this.inGap = true;
+        this.gapSamples = out.length - take;
         // Refill the cushion rather than limping along from empty: the input for the window
         // that starved us is gone either way, so the extra silence costs nothing that wasn't
         // already lost, and it restores the margin that absorbs the next stall. Without this,
@@ -150,8 +171,13 @@ class GtcrnPlaybackProcessor extends AudioWorkletProcessor {
         drainedSamples: this.drainedSamples,
         queuedMs: (this.available / sampleRate) * 1000,
         priming: this.priming,
+        minQueuedMs: Number.isFinite(this.minAvailable) ? (this.minAvailable / sampleRate) * 1000 : null,
+        // A gap still going counts too, so a long one shows up while it lasts.
+        longestGapMs: (Math.max(this.longestGapSamples, this.inGap ? this.gapSamples : 0) / sampleRate) * 1000,
       };
       this.port.postMessage(stats);
+      this.minAvailable = Infinity;
+      this.longestGapSamples = 0;
     }
 
     return !this.stopped;

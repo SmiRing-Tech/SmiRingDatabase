@@ -66,6 +66,8 @@ const CAPTURE_CHUNK = 1024;
  * one-for-one in mouth-to-ear latency (and, via GTCRN_PIPELINE_LATENCY_MS below, in how far
  * video is delayed to keep lips in sync), so it's a straight continuity-vs-latency dial. */
 const PRIME_MS = 128;
+/** How far back health()'s stall numbers look. */
+const STALL_HISTORY_MS = 3000;
 /** Ceiling on queued audio, so a producer that ever runs ahead doesn't leave the extra delay in
  * place for the rest of the call. Generous — it should only ever bite after a long stall. */
 const MAX_QUEUE_MS = 400;
@@ -203,6 +205,14 @@ export class GtcrnNoiseCancelTrack {
   private healthChunks = 0;
   private healthInactiveChunks = 0;
   private healthActive = true;
+  /**
+   * Stalls, for health(): per chunk, how long since the worker got the previous capture chunk (64ms
+   * when it keeps up — longer means the worker thread itself wasn't running) and its inference
+   * time; per playback report, the least audio queued and the longest silence an underrun caused.
+   * Pruned to STALL_HISTORY_MS.
+   */
+  private stallHistory: { t: number; gap: number; inf: number }[] = [];
+  private playbackHistory: { t: number; minQ: number | null; silence: number }[] = [];
   /** Per-chunk loudness in/out of the model, dBFS, for levelWindow(). Pruned to LEVEL_HISTORY_MS. */
   private levelHistory: { t: number; inDb: number; outDb: number }[] = [];
 
@@ -285,6 +295,7 @@ export class GtcrnNoiseCancelTrack {
     });
     this.playback.port.onmessage = (event: MessageEvent<GtcrnPlaybackStats>) => {
       this.playbackStats = event.data;
+      this.recordPlayback(event.data);
       emitLoadSignal({ kind: 'audio-playback', underrunCount: event.data.underrunCount });
     };
     this.destination = this.ctx.createMediaStreamDestination();
@@ -339,6 +350,7 @@ export class GtcrnNoiseCancelTrack {
       this.diagBacklogMax = Math.max(this.diagBacklogMax, msg.backlog);
       this.diagInactiveChunks += msg.inactiveChunks;
       this.captureGapMaxMs = Math.max(this.captureGapMaxMs, msg.captureGapMs);
+      this.recordStall(msg.captureGapMs, msg.passthrough ? 0 : msg.inferenceMs);
       this.diagCaptureGapMaxMs = Math.max(this.diagCaptureGapMaxMs, msg.captureGapMs);
       if (msg.passthrough) {
         this.diagPassthroughChunks++;
@@ -426,6 +438,38 @@ export class GtcrnNoiseCancelTrack {
     }
   }
 
+  private recordStall(gap: number, inf: number) {
+    const now = performance.now();
+    this.stallHistory.push({ t: now, gap, inf });
+    while (this.stallHistory.length && now - this.stallHistory[0].t > STALL_HISTORY_MS) this.stallHistory.shift();
+  }
+
+  private recordPlayback(stats: GtcrnPlaybackStats) {
+    const now = performance.now();
+    this.playbackHistory.push({ t: now, minQ: stats.minQueuedMs, silence: stats.longestGapMs });
+    while (this.playbackHistory.length && now - this.playbackHistory[0].t > STALL_HISTORY_MS) this.playbackHistory.shift();
+  }
+
+  /** Worst stall numbers over the last `ms` (see stallHistory). */
+  private stallWindow(ms: number) {
+    const since = performance.now() - ms;
+    let gap = 0;
+    let inf = 0;
+    for (const s of this.stallHistory) {
+      if (s.t < since) continue;
+      gap = Math.max(gap, s.gap);
+      inf = Math.max(inf, s.inf);
+    }
+    let minQ: number | null = null;
+    let silence = 0;
+    for (const p of this.playbackHistory) {
+      if (p.t < since) continue;
+      if (p.minQ !== null) minQ = minQ === null ? p.minQ : Math.min(minQ, p.minQ);
+      silence = Math.max(silence, p.silence);
+    }
+    return { gap, inf, minQ, silence };
+  }
+
   private recordLevels(inputRms: number, outputRms: number) {
     const now = performance.now();
     this.levelHistory.push({ t: now, inDb: rmsToDb(inputRms), outDb: rmsToDb(outputRms) });
@@ -487,6 +531,14 @@ export class GtcrnNoiseCancelTrack {
       byp: this.bypass ? 1 : 0,
       // Over the telemetry sample interval (2s).
       w: this.levelWindow(2000),
+      // Stalls over the same 2s: longest gap between capture chunks reaching the worker (64 = on
+      // time), slowest inference, least audio queued while playing, longest silence an underrun
+      // caused, ms. The last two size the playback cushion (PRIME_MS).
+      s: (() => {
+        const w = this.stallWindow(2000);
+        const r = (v: number) => Math.round(v);
+        return { gap: r(w.gap), inf: r(w.inf), qmin: w.minQ === null ? undefined : r(w.minQ), sil: r(w.silence) || undefined };
+      })(),
     };
   }
 
