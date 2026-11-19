@@ -666,7 +666,14 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       costMsTotal: stats.compositeMsTotal + stats.segmenterWorkMsTotal,
       expectedFps: this.expectedFps(),
       maxGapMs: stats.maxGapMs,
-      syncWaitMs: stats.syncFrames ? stats.syncWaitMsTotal / stats.syncFrames : undefined,
+      // matteSync: how long frames were held for their matte; photo mode: how long it waited.
+      matteDelayMs: stats.heldFrames
+        ? stats.heldMsTotal / stats.heldFrames
+        : stats.syncFrames
+          ? stats.syncWaitMsTotal / stats.syncFrames
+          : undefined,
+      ownMattePct: stats.heldFrames ? (stats.ownMatteFrames / stats.heldFrames) * 100 : undefined,
+      forcedOut: stats.forcedOut || undefined,
     });
     this.history.push(stats);
     if (this.history.length > PERF_FAST_WINDOW_S) this.history.shift();
@@ -792,6 +799,10 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       segmenterWorkMsAvg: avg(d.segmenterWorkMsTotal, d.segmentations),
       maskLatencyMsAvg: avg(d.maskLatencyMsTotal, d.segmentations),
       droppedFrames: d.droppedFrames || undefined,
+      heldFrames: d.heldFrames || undefined,
+      heldMsAvg: avg(d.heldMsTotal, d.heldFrames),
+      ownMatteFrames: d.ownMatteFrames || undefined,
+      forcedOut: d.forcedOut || undefined,
       syncFrames: d.syncFrames || undefined,
       syncWaitMsAvg: avg(d.syncWaitMsTotal, d.syncFrames),
       syncTimeouts: d.syncTimeouts || undefined,
@@ -814,6 +825,10 @@ function emptyTotals(): Omit<CompositorStats, 'intervalMs'> {
     maskLatencyMsTotal: 0,
     droppedFrames: 0,
     maxGapMs: 0,
+    heldFrames: 0,
+    heldMsTotal: 0,
+    ownMatteFrames: 0,
+    forcedOut: 0,
     syncFrames: 0,
     syncWaitMsTotal: 0,
     syncTimeouts: 0,
@@ -832,6 +847,10 @@ function addTotals(into: Omit<CompositorStats, 'intervalMs'>, stats: CompositorS
   into.maskLatencyMsTotal += stats.maskLatencyMsTotal;
   into.droppedFrames += stats.droppedFrames;
   into.maxGapMs = Math.max(into.maxGapMs, stats.maxGapMs);
+  into.heldFrames += stats.heldFrames;
+  into.heldMsTotal += stats.heldMsTotal;
+  into.ownMatteFrames += stats.ownMatteFrames;
+  into.forcedOut += stats.forcedOut;
   into.syncFrames += stats.syncFrames;
   into.syncWaitMsTotal += stats.syncWaitMsTotal;
   into.syncTimeouts += stats.syncTimeouts;

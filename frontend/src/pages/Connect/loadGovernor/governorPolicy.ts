@@ -112,8 +112,8 @@ export interface LoadSample {
   frames?: { fps: number; maxGapMs: number };
   /** Longest gap between camera frames leaving the background effect, ms (worker pipeline only). Telemetry only. */
   bgMaxGapMs?: number;
-  /** Average wait for a frame's own matte (matteSync / photo mode). Telemetry only. */
-  bgSyncWaitMs?: number;
+  /** Background matte timing (backgroundCompositor.worker: matteSync / photo mode). Telemetry only. */
+  bgMatte?: { delayMs: number; ownPct?: number; forcedOut: number };
   bgFps?: number;
   bgExpectedFps?: number;
   /** Background effect cost per frame (all its threads), ms. */

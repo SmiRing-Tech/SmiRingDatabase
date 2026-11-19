@@ -13,14 +13,21 @@
  *    one is requested only once the previous request has been answered — a slow segmenter lowers
  *    the segmentation rate, not the frame rate. The matte is always from an earlier frame, which
  *    shows as the cut-out trailing a sudden movement.
- *  - matteSync: each frame waits for its own matte (up to SYNC_TIMEOUT_MS, then falls back to the
- *    latest). Used when segmentation runs at the camera's own rate anyway (governor level 0, 98.5%
- *    of camera time in the 2026-11 telemetry), so it costs latency, not extra inferences. A
- *    segmenter slower than the camera lowers the output frame rate instead — which the governor
- *    then sees as overload and steps down, turning this off.
+ *  - matteSync (governor level 0, 98.5% of camera time in the 2026-11 telemetry): segmentation
+ *    is requested exactly as in 'latest', never waited for, but each frame is *held* (at most
+ *    MAX_HELD_FRAMES / MAX_HOLD_MS) until a matte from its own time arrives, then composited with
+ *    it and sent. The frame whose segmentation was requested gets its own matte; frames that came
+ *    while that request was out get the next matte to arrive, the nearest one in time. Same work
+ *    as 'latest', the pipeline keeps flowing, and the output is delayed by roughly one
+ *    segmentation. Held too long (a slow segmenter) -> sent with the latest matte, as 'latest'.
+ *    If the effect still can't keep up, the governor's first step is the background to
+ *    'balanced' (governorPolicy step 1); this mode is only turned off at camera level 1, later.
+ *    (The first version made each frame wait for its own matte before reading the next one: work
+ *    and waiting no longer overlapped, the frame rate fell below the camera's, and on 2026-11-19
+ *    the background went to 'balanced' within moments of joining.)
  * photoIntervalMs > 0 (the governor's photo mode): only one frame per interval is processed at
  * all — the rest are dropped before upload or segmentation — and that frame waits for its own
- * matte.
+ * matte (at one frame a second, waiting costs nothing).
  */
 import {
   BackgroundCompositor,
@@ -100,7 +107,13 @@ export interface CompositorStats {
   droppedFrames: number;
   /** Longest gap between two frames handed to the sender in this interval, ms (receivers see it as a stall). */
   maxGapMs: number;
-  /** Frames that waited for their own matte, the time spent waiting, and waits that gave up. */
+  /** matteSync: frames held for a matte, the time they were held, how many got the matte of their
+   *  own frame, and how many had to go out with the latest one (held too long). */
+  heldFrames: number;
+  heldMsTotal: number;
+  ownMatteFrames: number;
+  forcedOut: number;
+  /** Photo mode: frames that waited for their own matte, the time spent waiting, and waits that gave up. */
   syncFrames: number;
   syncWaitMsTotal: number;
   syncTimeouts: number;
@@ -127,8 +140,12 @@ const REQUIRED_STABLE_FRAMES = 5;
 const STATS_INTERVAL_MS = 1000;
 /** This many frames in a row failing to render means the pipeline is broken, not unlucky. */
 const MAX_CONSECUTIVE_FAILURES = 30;
-/** How long a frame waits for its own matte before going out with the latest one. */
+/** Photo mode: how long a frame waits for its own matte before going out with the latest one. */
 const SYNC_TIMEOUT_MS = 120;
+/** matteSync: at most this many camera frames held (the camera's own buffer pool is small)... */
+const MAX_HELD_FRAMES = 3;
+/** ...or held this long, before the oldest goes out with the latest matte. */
+const MAX_HOLD_MS = 150;
 
 const post = (message: CompositorResponse) => self.postMessage(message);
 
@@ -162,13 +179,23 @@ const emptyStats = (): CompositorStats => ({
   maskLatencyMsTotal: 0,
   droppedFrames: 0,
   maxGapMs: 0,
+  heldFrames: 0,
+  heldMsTotal: 0,
+  ownMatteFrames: 0,
+  forcedOut: 0,
   syncFrames: 0,
   syncWaitMsTotal: 0,
   syncTimeouts: 0,
   photoSkipped: 0,
 });
-/** Resolves the frame waiting for its own matte (matteSync / photo mode), if any. */
+/** Resolves the frame waiting for its own matte (photo mode), if any. */
 let replyWaiter: ((answered: boolean) => void) | null = null;
+/** matteSync: frames waiting for a matte from their own time, oldest first. */
+const held: { frame: VideoFrame; arrivedAt: number }[] = [];
+/** Timestamp of the frame whose segmentation is out right now. */
+let inFlightTimestamp: number | null = null;
+/** Every output goes through this chain, so frames leave in order whoever sends them. */
+let outputChain: Promise<void> = Promise.resolve();
 let stats = emptyStats();
 /** When the last output frame was written; reset with each new source so a camera switch isn't a "gap". */
 let lastOutputAt: number | null = null;
@@ -216,6 +243,7 @@ function requestMatte(frame: VideoFrame) {
   if (!segmentationDue(now)) return;
   lastSegmentationAt = now;
   requestInFlight = true;
+  inFlightTimestamp = frame.timestamp;
   const copy = frame.clone();
   const message: SegmentRequest = { frame: copy, sentAt: now };
   segmenterPort.postMessage(message, [copy]);
@@ -251,6 +279,7 @@ async function matteForThisFrame(frame: VideoFrame): Promise<boolean> {
   if (!segmenterPort || stopped) return false;
   lastSegmentationAt = performance.now();
   requestInFlight = true;
+  inFlightTimestamp = frame.timestamp;
   const copy = frame.clone();
   const message: SegmentRequest = { frame: copy, sentAt: lastSegmentationAt };
   segmenterPort.postMessage(message, [copy]);
@@ -263,12 +292,19 @@ async function matteForThisFrame(frame: VideoFrame): Promise<boolean> {
 
 function onSegmentReply(reply: SegmentReply) {
   requestInFlight = false;
+  const answeredTimestamp = inFlightTimestamp;
+  inFlightTimestamp = null;
   const waiter = replyWaiter;
   replyWaiter = null;
   try {
     handleSegmentReply(reply);
   } finally {
     waiter?.(reply.ok);
+    // matteSync: everything held up to the answered frame now has the nearest matte there is.
+    // A failed segmentation releases everything with the latest one.
+    if (held.length) {
+      releaseHeld((ts) => !reply.ok || answeredTimestamp === null || ts <= answeredTimestamp, answeredTimestamp);
+    }
   }
 }
 
@@ -298,6 +334,8 @@ function attachSegmenter(port: MessagePort) {
   segmenterPort?.close();
   segmenterPort = port;
   requestInFlight = false;
+  inFlightTimestamp = null;
+  releaseHeld(() => true, null);
   // A frame waiting on the old segmenter goes out with the latest matte.
   const waiter = replyWaiter;
   replyWaiter = null;
@@ -334,6 +372,66 @@ function renderFrame(frame: VideoFrame, hasOwnMatte = false): VideoFrame | null 
   return out;
 }
 
+/** Renders one frame (closing it); null when it failed and must not go out. */
+function renderSafely(frame: VideoFrame, hasOwnMatte: boolean): VideoFrame | null {
+  try {
+    const out = renderFrame(frame, hasOwnMatte);
+    consecutiveFailures = 0;
+    return out;
+  } catch (err) {
+    // Dropped, never passed through raw: the raw frame shows the room the effect is hiding.
+    // The receiver just holds the previous frame.
+    console.error('[bg-compositor] frame failed:', err);
+    stats.droppedFrames += 1;
+    consecutiveFailures += 1;
+    if (consecutiveFailures === MAX_CONSECUTIVE_FAILURES) fatal(`${MAX_CONSECUTIVE_FAILURES} frames in a row failed: ${String(err)}`);
+    return null;
+  } finally {
+    frame.close();
+  }
+}
+
+/** Queues an output frame behind any earlier ones; resolves once it's written. */
+function emit(out: VideoFrame): Promise<void> {
+  outputChain = outputChain.then(async () => {
+    if (stopped) {
+      out.close();
+      return;
+    }
+    try {
+      await writer!.write(out);
+      const at = performance.now();
+      if (lastOutputAt !== null) stats.maxGapMs = Math.max(stats.maxGapMs, at - lastOutputAt);
+      lastOutputAt = at;
+    } catch (err) {
+      out.close();
+      if (!stopped) fatal(`output closed: ${String(err)}`);
+    }
+  });
+  return outputChain;
+}
+
+/**
+ * matteSync: sends the held frames that `release` picks (a prefix, oldest first), composited with
+ * whatever matte is current. `ownTimestamp`: the frame that matte was made from, if any.
+ */
+function releaseHeld(release: (timestamp: number) => boolean, ownTimestamp: number | null) {
+  const now = performance.now();
+  while (held.length && release(held[0].frame.timestamp)) {
+    const { frame, arrivedAt } = held.shift()!;
+    stats.heldFrames += 1;
+    stats.heldMsTotal += now - arrivedAt;
+    if (ownTimestamp !== null && frame.timestamp === ownTimestamp) stats.ownMatteFrames += 1;
+    const out = renderSafely(frame, true);
+    if (out) void emit(out);
+  }
+}
+
+/** Closes held frames without sending them (the pipeline is stopping). */
+function dropHeld() {
+  for (const { frame } of held.splice(0)) frame.close();
+}
+
 /** Pulls frames from one source until it ends or is replaced. */
 async function pump(source: ReadableStreamDefaultReader<VideoFrame>) {
   while (!stopped && reader === source) {
@@ -355,39 +453,34 @@ async function pump(source: ReadableStreamDefaultReader<VideoFrame>) {
       stats.photoSkipped += 1;
       continue;
     }
+
+    // matteSync: hold the frame until a matte from its own time arrives (see the header).
+    const holding = settings.matteSync && settings.photoIntervalMs === 0 && compositor.hasMatteHistory && !!segmenterPort;
+    if (!holding && held.length) releaseHeld(() => true, null);
+    if (holding) {
+      requestMatte(frame);
+      const now = performance.now();
+      held.push({ frame, arrivedAt: now });
+      while (held.length > MAX_HELD_FRAMES || (held.length && now - held[0].arrivedAt > MAX_HOLD_MS)) {
+        stats.forcedOut += 1;
+        const oldest = held[0].frame.timestamp;
+        releaseHeld((ts) => ts === oldest, null);
+      }
+      // Backpressure: don't read further ahead than the output can take.
+      await outputChain;
+      continue;
+    }
+
     let hasOwnMatte = false;
-    if ((settings.matteSync || settings.photoIntervalMs > 0) && compositor.hasMatteHistory) {
+    if (settings.photoIntervalMs > 0 && compositor.hasMatteHistory) {
       hasOwnMatte = await matteForThisFrame(frame);
       if (stopped || reader !== source) {
         frame.close();
         continue;
       }
     }
-    let out: VideoFrame | null = null;
-    try {
-      out = renderFrame(frame, hasOwnMatte);
-      consecutiveFailures = 0;
-    } catch (err) {
-      // Dropped, never passed through raw: the raw frame shows the room the effect is hiding.
-      // The receiver just holds the previous frame.
-      console.error('[bg-compositor] frame failed:', err);
-      stats.droppedFrames += 1;
-      consecutiveFailures += 1;
-      if (consecutiveFailures === MAX_CONSECUTIVE_FAILURES) fatal(`${MAX_CONSECUTIVE_FAILURES} frames in a row failed: ${String(err)}`);
-    } finally {
-      frame.close();
-    }
-    if (!out) continue;
-    try {
-      await writer!.write(out);
-      const at = performance.now();
-      if (lastOutputAt !== null) stats.maxGapMs = Math.max(stats.maxGapMs, at - lastOutputAt);
-      lastOutputAt = at;
-    } catch (err) {
-      out.close();
-      if (!stopped) fatal(`output closed: ${String(err)}`);
-      return;
-    }
+    const out = renderSafely(frame, hasOwnMatte);
+    if (out) await emit(out);
   }
 }
 
@@ -403,6 +496,8 @@ function switchSource(source: CompositorSource) {
   }
   previous?.cancel().catch(() => {});
   previousTrack?.stop();
+  // Frames from the previous camera still waiting for a matte go out with the latest one.
+  releaseHeld(() => true, null);
   lastOutputAt = null;
   void pump(reader);
 }
@@ -449,6 +544,7 @@ function init(request: Extract<CompositorRequest, { type: 'init' }>) {
 
 async function stop() {
   stopped = true;
+  dropHeld();
   if (statsTimer !== undefined) clearInterval(statsTimer);
   segmenterPort?.close();
   await reader?.cancel().catch(() => {});
@@ -492,6 +588,8 @@ self.onmessage = (event: MessageEvent<CompositorRequest>) => {
         break;
       case 'settings':
         settings = { ...settings, ...message.settings };
+        // Leaving matteSync (or entering photo mode): nothing should stay held.
+        if (!settings.matteSync || settings.photoIntervalMs > 0) releaseHeld(() => true, null);
         break;
       case 'setImage':
         compositor.setImage(message.image, message.image ? message.image.width / Math.max(1, message.image.height) : 1);

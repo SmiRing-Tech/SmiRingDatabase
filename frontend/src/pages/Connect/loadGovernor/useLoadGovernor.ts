@@ -129,7 +129,9 @@ function createSignalTotals() {
     bgExpectedFps: 0,
     bgReports: 0,
     bgMaxGapMs: undefined as number | undefined,
-    bgSyncWaitMs: undefined as number | undefined,
+    bgMatteDelayMs: undefined as number | undefined,
+    bgOwnMattePct: undefined as number | undefined,
+    bgForcedOut: 0,
   };
 }
 
@@ -380,7 +382,11 @@ export function useLoadGovernor({
         totals.bgExpectedFps = signal.expectedFps;
         totals.bgReports += 1;
         if (signal.maxGapMs !== undefined) totals.bgMaxGapMs = Math.max(totals.bgMaxGapMs ?? 0, signal.maxGapMs);
-        if (signal.syncWaitMs !== undefined) totals.bgSyncWaitMs = Math.max(totals.bgSyncWaitMs ?? 0, signal.syncWaitMs);
+        if (signal.matteDelayMs !== undefined) totals.bgMatteDelayMs = Math.max(totals.bgMatteDelayMs ?? 0, signal.matteDelayMs);
+        if (signal.ownMattePct !== undefined) {
+          totals.bgOwnMattePct = Math.min(totals.bgOwnMattePct ?? 100, signal.ownMattePct);
+        }
+        totals.bgForcedOut += signal.forcedOut ?? 0;
       }
     });
 
@@ -769,7 +775,9 @@ export function useLoadGovernor({
             : undefined,
           frames: rafFrames > 1 ? { fps: rafFrames / seconds, maxGapMs: rafMaxGap } : undefined,
           bgMaxGapMs: localParticipant.isCameraEnabled ? t.bgMaxGapMs : undefined,
-          bgSyncWaitMs: localParticipant.isCameraEnabled ? t.bgSyncWaitMs : undefined,
+          bgMatte: localParticipant.isCameraEnabled && t.bgMatteDelayMs !== undefined
+            ? { delayMs: t.bgMatteDelayMs, ownPct: t.bgOwnMattePct, forcedOut: t.bgForcedOut }
+            : undefined,
           bgFps: t.bgSeconds > 0 ? t.bgFrames / t.bgSeconds : undefined,
           bgExpectedFps: t.bgExpectedFps || undefined,
           bgCostMs: t.bgFrames > 0 ? t.bgCostMs / t.bgFrames : undefined,
@@ -949,8 +957,12 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
     rafx: r0(s.frames?.maxGapMs),
     // Longest gap between camera frames leaving the background effect, ms.
     bgg: r0(s.bgMaxGapMs),
-    // Average wait for a frame's own matte (matteSync / photo mode), worst second in the window.
-    bgw: r1(s.bgSyncWaitMs),
+    // Background matte timing (matteSync: frames held for their own matte; photo mode: the wait),
+    // worst second in the window: avg delay ms, % of frames with their own frame's matte (lowest
+    // second), frames sent with the latest matte because they were held too long.
+    bgw: r1(s.bgMatte?.delayMs),
+    bgo: r0(s.bgMatte?.ownPct),
+    bgx: s.bgMatte?.forcedOut || undefined,
     // Per received video: [peer#, 'c'amera|'s'hare, fps, freezes, frozen ms, height]. Peer# -> who: 'peer' entries.
     rs: s.recv?.perStream?.length
       ? s.recv.perStream.map((p) => [peerIndex(p.identity), p.source === 'camera' ? 'c' : 's', r0(p.fps), p.freezes, r0(p.freezeMs), p.height])
