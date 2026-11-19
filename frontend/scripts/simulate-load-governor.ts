@@ -57,8 +57,12 @@ function recvReliefFor(receiving: Receiving, state: GovernorState, receivingShar
   if (receiving === 'none') return { 1: false, 2: false, 3: receivingShare && state.recv < 3 };
   return {
     1: state.recv < 1,
+    // 2 caps large tiles at 360p; 3 takes small ones to 5fps (and a received share to half rate).
     2: state.recv < 2 && (receiving === 'mixed' || state.recv < 1),
-    3: receivingShare && state.recv < 3,
+    3: state.recv < 3,
+    // Desktop senders always have a smaller simulcast layer to cap down to.
+    4: state.recv < 4,
+    5: receiving === 'mixed' && state.recv < 5,
   };
 }
 

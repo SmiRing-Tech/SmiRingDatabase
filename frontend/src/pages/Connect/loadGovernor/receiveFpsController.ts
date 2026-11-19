@@ -1,9 +1,10 @@
-import { RemoteVideoTrack, Track, type RemoteTrackPublication } from 'livekit-client';
+import { RemoteVideoTrack, Track, VideoQuality, type RemoteTrackPublication } from 'livekit-client';
 import type { ReceiveControl, ReceiveLevel } from './governorPolicy';
 
 /**
  * The governor's receiving steps: asks the SFU for fewer frames of other people's cameras
- * (RemoteTrackPublication.setVideoFPS), so this device decodes less. Only used on a device the
+ * (RemoteTrackPublication.setVideoFPS) and for smaller simulcast layers of them
+ * (setVideoQuality), so this device decodes less. Only used on a device the
  * governor has judged overloaded; level 0 is "everything at full rate", same as without it.
  *
  * How it works: a camera publishing VP8 with temporal layers (L1T3 — every PC Chrome, and Android
@@ -18,12 +19,22 @@ import type { ReceiveControl, ReceiveLevel } from './governorPolicy';
  * full rate with the request at 1 has no temporal layers (iPhone/Safari senders, H.264) and is left
  * alone.
  *
- * Targets per level:
- *   0: everything full
- *   1: cameras shown small -> 10fps, shown large -> full
- *   2: cameras shown small -> 5fps,  shown large -> 10fps
- *   3: as 2, plus screen shares at half rate (SHARE_TARGET). Only ever their frame rate: a share's
- *      resolution is what keeps its text legible, and AV1 shares have no smaller layer anyway.
+ * Per level (small / large camera tiles; shares only ever lose frame rate, from 3 on):
+ *   0: full / full
+ *   1: 10fps / full
+ *   2: 10fps / 360p
+ *   3: 5fps / 360p 10fps, plus screen shares at half rate (SHARE_TARGET)
+ *   4: 5fps 180p / 180p 10fps
+ *   5: 5fps 180p / 180p 5fps
+ * Why this order (telemetry 2026-10..11): adaptiveStream already delivers 66% of received cameras
+ * at 180p — small tiles — and at 180p a frame's fixed cost dominates (0.5ms vs 0.8ms at 360p), so
+ * frame rate is the lever there. A large tile at 720p costs 2.8ms a frame; capping it at 360p cuts
+ * that ~70% and keeps it smooth, where 10fps would visibly stutter. So large tiles lose resolution
+ * before frame rate.
+ * A share's resolution is never touched: it's what keeps its text legible, and AV1 shares have no
+ * smaller layer anyway. setVideoQuality is a ceiling — adaptiveStream still picks a smaller layer
+ * for a smaller tile. A sender with no lower layer (phones publish a single 360p layer) is left as
+ * it is.
  * "Large" is what's on screen right now: any attached <video> (the PiP window's included) at
  * least LARGE_TILE_PX tall.
  */
@@ -38,9 +49,28 @@ const TOO_LOW = 0.6;
 const TARGETS: Record<ReceiveLevel, { small: number | null; large: number | null }> = {
   0: { small: null, large: null },
   1: { small: 10, large: null },
-  2: { small: 5, large: 10 },
+  2: { small: 10, large: null },
   3: { small: 5, large: 10 },
+  4: { small: 5, large: 10 },
+  5: { small: 5, large: 5 },
 };
+interface Cap {
+  quality: VideoQuality;
+  /** Height of the layer that quality maps to on a desktop simulcast sender. */
+  height: number;
+}
+const CAP_360: Cap = { quality: VideoQuality.MEDIUM, height: 360 };
+const CAP_180: Cap = { quality: VideoQuality.LOW, height: 180 };
+const CAPS: Record<ReceiveLevel, { small: Cap | null; large: Cap | null }> = {
+  0: { small: null, large: null },
+  1: { small: null, large: null },
+  2: { small: null, large: CAP_360 },
+  3: { small: null, large: CAP_360 },
+  4: { small: CAP_180, large: CAP_180 },
+  5: { small: CAP_180, large: CAP_180 },
+};
+/** Received taller than the cap × this counts as not capped yet. */
+const CAP_SLACK = 1.15;
 /** Half of a share's 15fps (lib/video/screenShare.ts). */
 const SHARE_TARGET = 7.5;
 /**
@@ -63,12 +93,18 @@ interface StreamState {
   fps: number;
   large: boolean;
   share: boolean;
+  /** Height of the frames being decoded right now. */
+  height: number;
+  /** The quality ceiling this controller set; null = none (the default, HIGH). */
+  capped: VideoQuality | null;
 }
 
 /** A remote camera or screen share and how many of its frames were decoded per second. */
 export interface CameraFps {
   publication: RemoteTrackPublication;
   decodedFps: number;
+  /** frameHeight of what's being decoded. */
+  height: number;
 }
 
 export class ReceiveFpsController {
@@ -87,6 +123,7 @@ export class ReceiveFpsController {
       if (level === 0) stream.noLayers = false;
       stream.settle = 0;
       this.control(stream);
+      this.controlResolution(stream);
     }
   }
 
@@ -96,7 +133,7 @@ export class ReceiveFpsController {
    */
   update(cameras: CameraFps[]) {
     const seen = new Set<string>();
-    for (const { publication, decodedFps } of cameras) {
+    for (const { publication, decodedFps, height } of cameras) {
       seen.add(publication.trackSid);
       let stream = this.streams.get(publication.trackSid);
       if (!stream || stream.publication !== publication) {
@@ -109,18 +146,28 @@ export class ReceiveFpsController {
           fps: 0,
           large: false,
           share: publication.source === Track.Source.ScreenShare,
+          height: 0,
+          capped: null,
         };
         this.streams.set(publication.trackSid, stream);
       }
       stream.fps = decodedFps;
+      stream.height = height;
       stream.large = shownHeight(publication) >= LARGE_TILE_PX;
       this.control(stream);
+      this.controlResolution(stream);
     }
     for (const sid of this.streams.keys()) if (!seen.has(sid)) this.streams.delete(sid);
   }
 
   /** Would going to `level` slow anything down right now? (For the governor's ladder.) */
   wouldRelieve(level: ReceiveLevel): boolean {
+    for (const stream of this.streams.values()) {
+      if (stream.share || stream.fps < 1) continue;
+      const cap = capFor(level, stream.large);
+      const current = capFor(this.level, stream.large);
+      if (cap && (!current || cap.height < current.height) && canCapTo(stream, cap)) return true;
+    }
     for (const stream of this.streams.values()) {
       if (stream.noLayers) continue;
       // A share relieves whenever one is being received: its busy moments are what cost, and a
@@ -139,17 +186,20 @@ export class ReceiveFpsController {
   stats(): ReceiveControl {
     let throttled = 0;
     let noLayers = 0;
+    let capped = 0;
     for (const stream of this.streams.values()) {
+      if (stream.capped !== null) capped += 1;
       if (stream.noLayers) noLayers += 1;
       else if (stream.active && stream.request !== null && stream.request < FULL_REQUEST) throttled += 1;
     }
-    return { throttled, noLayers };
+    return { throttled, noLayers, capped };
   }
 
   /** Everything back to full (the call is ending or the governor stopped). */
   dispose() {
     for (const stream of this.streams.values()) {
       if (stream.request !== null && stream.request !== FULL_REQUEST) stream.publication.setVideoFPS(FULL_REQUEST);
+      if (stream.capped !== null) stream.publication.setVideoQuality(VideoQuality.HIGH);
     }
     this.streams.clear();
   }
@@ -182,12 +232,34 @@ export class ReceiveFpsController {
     }
   }
 
+  /** A resolution ceiling on cameras, by level and how large each is shown. Shares never. */
+  private controlResolution(stream: StreamState) {
+    const want = stream.share ? null : (capFor(this.level, stream.large)?.quality ?? null);
+    if (want === stream.capped) return;
+    stream.capped = want;
+    // HIGH is LiveKit's default; setting it back clears the ceiling (adaptiveStream still applies).
+    stream.publication.setVideoQuality(want ?? VideoQuality.HIGH);
+  }
+
   private request(stream: StreamState, fps: number) {
     stream.request = fps;
     // One sample for the SFU to switch layers, then a full window measured at the new rate.
     stream.settle = 1;
     stream.publication.setVideoFPS(fps);
   }
+}
+
+function capFor(level: ReceiveLevel, large: boolean): Cap | null {
+  return large ? CAPS[level].large : CAPS[level].small;
+}
+
+/** Would this ceiling bring the camera down to a smaller layer the sender actually has? */
+function canCapTo(stream: StreamState, cap: Cap) {
+  if (stream.height <= cap.height * CAP_SLACK) return false;
+  const layers = stream.publication.trackInfo?.layers ?? [];
+  // Without layer info, assume a desktop simulcast sender; the cap is harmless if it has none.
+  if (layers.length === 0) return true;
+  return layers.some((l) => l.height > 0 && l.height <= cap.height * CAP_SLACK && l.height < stream.height);
 }
 
 function targetFor(level: ReceiveLevel, large: boolean, share = false) {

@@ -14,7 +14,7 @@ import { r2, BUCKET_NAME } from '../lib/r2';
  *   npx tsx src/scripts/connectTelemetry.ts get <YYYY-MM-DD> <セッション> … ../temp/connect-telemetry/ に保存
  *
  * summary の見方: 段階(lv)は「b=背景を標準に落とした / 数字=カメラの段階0-2 / r1,r2=受信の段階
- * (他の人のカメラのコマ数を下げている。r3は受け取る画面共有も半分のコマ数) / v=自分の画面共有をVP8に切り替えた /
+ * (他の人のカメラを軽くしている。r1=小さく表示の人を10fps / r2=大きく表示の人を360p / r3=小さく5fps・大きく10fps・受け取る画面共有も半分のコマ数 / r4=全員180p / r5=大きく表示の人も5fps) / v=自分の画面共有をVP8に切り替えた /
  * s=自分の画面共有を720pに下げた / x=カメラOFF」。
  * 「重い」理由(reasons)は governorPolicy.ts の classify() が付けたもの。
  * React再描画は通話画面の再描画にかかった画面スレッドの時間(lib/renderMeter.ts)。

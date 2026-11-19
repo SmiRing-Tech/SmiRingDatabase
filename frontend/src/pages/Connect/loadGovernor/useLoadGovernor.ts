@@ -38,7 +38,7 @@ import { currentShareCodec, setShareFloor, switchShareToVp8 } from '../../../lib
  *   localStorage.setItem('smiring.debug.loadGovernor', 'observe')  // judge and record, never act
  *   localStorage.setItem('smiring.debug.loadGovernor', 'off')      // nothing at all
  *   localStorage.setItem('smiring.debug.loadPanel', '1')           // live readout on screen
- *   localStorage.setItem('smiring.debug.recvLevel', '1')           // force receive level 1, 2 or 3
+ *   localStorage.setItem('smiring.debug.recvLevel', '1')           // force receive level 1-5
  *                                                                  // (to see/test it; load ignored)
  *   localStorage.setItem('smiring.debug.forceShareStep', '1')      // 10s into a share: AV1 -> VP8
  *                                                                  // ('2': then 720p too), load ignored
@@ -83,7 +83,7 @@ const FORCED_SHARE_STEP_AFTER_MS = 10_000;
 /** Receive level forced by the debug flag, or null. */
 function forcedReceiveLevel(): ReceiveLevel | null {
   const value = readFlag('smiring.debug.recvLevel');
-  return value === '1' ? 1 : value === '2' ? 2 : value === '3' ? 3 : null;
+  return value === '1' ? 1 : value === '2' ? 2 : value === '3' ? 3 : value === '4' ? 4 : value === '5' ? 5 : null;
 }
 
 function idealNumber(value: ConstrainULong | ConstrainDouble | undefined, fallback: number): number {
@@ -221,7 +221,9 @@ export function useLoadGovernor({
             : { segmentationFps: profile.segmentationFps, segmentationScheduler: profile.segmentationScheduler },
         );
         syncCameraProfile(action.level, true);
-        if (action.direction === 'down') {
+        // Only the second step is worth saying: 540p/15fps (level 1) is hardly visible to anyone,
+        // 360p/10fps (level 2) is.
+        if (action.direction === 'down' && action.level === 2) {
           onNoticeRef.current('パソコンの負荷が高いため、カメラの画質を下げています（負荷が下がると自動で戻ります）。');
         }
         return;
@@ -461,7 +463,15 @@ export function useLoadGovernor({
           }
           let cpu: number | undefined;
           let bandwidth: number | undefined;
-          if (durations && prev && total > prev.total) {
+          // A sender that encoded nothing this window (camera off: the track is muted, not
+          // unpublished) isn't limited by anything. Safari has no qualityLimitationDurations and
+          // keeps reporting the last qualityLimitationReason it had — 'cpu' — for as long as the
+          // camera stays off: on 2026-11-15 that read as "encoder overloaded" for a whole
+          // 55-minute call with the camera off the entire time.
+          const encodedThisWindow = prev ? now.frames - prev.frames : 0;
+          if (encodedThisWindow <= 0) {
+            // Leave cpu/bandwidth undefined: no evidence either way.
+          } else if (durations && prev && total > prev.total) {
             cpu = (now.cpu - prev.cpu) / (total - prev.total);
             bandwidth = (now.bandwidth - prev.bandwidth) / (total - prev.total);
           } else if (!durations && typeof stat.qualityLimitationReason === 'string') {
@@ -532,7 +542,11 @@ export function useLoadGovernor({
             lastInbound.set(stat.id, now);
             const fresh = !prev || now.decoded < prev.decoded;
             if (publication.source === Track.Source.Camera || publication.source === Track.Source.ScreenShare) {
-              cameras.push({ publication, decodedFps: fresh ? 0 : (now.decoded - prev.decoded) / seconds });
+              cameras.push({
+                publication,
+                decodedFps: fresh ? 0 : (now.decoded - prev.decoded) / seconds,
+                height: stat.frameHeight ?? 0,
+              });
               result.perStream!.push({
                 identity: participant.identity,
                 source: publication.source === Track.Source.Camera ? 'camera' : 'share',
@@ -721,6 +735,8 @@ export function useLoadGovernor({
           1: recvController.wouldRelieve(1),
           2: recvController.wouldRelieve(2),
           3: recvController.wouldRelieve(3),
+          4: recvController.wouldRelieve(4),
+          5: recvController.wouldRelieve(5),
         };
         const shareCodec = currentShareCodec(localParticipant);
         const ctx =
@@ -873,6 +889,8 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
     // Receiving steps: cameras asked for fewer frames, cameras found without temporal layers.
     rthr: s.recvControl?.throttled || undefined,
     rnl: s.recvControl?.noLayers || undefined,
+    // Cameras under receive 4's resolution ceiling.
+    rcap: s.recvControl?.capped || undefined,
     // React re-rendering the call screen: passes/s, ms/s, slowest pass ms.
     rr: s.render?.perSec ? r1(s.render.perSec) : undefined,
     rms: s.render?.perSec ? r1(s.render.msPerSec) : undefined,

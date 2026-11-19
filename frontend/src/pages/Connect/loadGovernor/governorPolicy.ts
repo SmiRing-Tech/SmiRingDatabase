@@ -13,12 +13,17 @@
  * Ladder, one step at a time:
  *   1. background effect 'high' -> 'balanced' (not restored automatically)
  *   2. receive 1: other people's cameras shown small arrive at 10fps (receiveFpsController.ts)
- *   3. camera 540p / 15fps, segmentation 10/s
- *   4. receive 2: small ones at 5fps, ones shown large at 10fps
+ *   3. camera 540p / 15fps, segmentation 10/s (no notice: hardly visible)
+ *   4. receive 2: ones shown large capped at 360p (frame rate kept — a large tile at 10fps visibly
+ *      stutters, and 720p -> 360p cuts its decode ~70%)
  *   5. camera 360p / 10fps, segmentation 5/s (the floor: segmentation never under half the
  *      camera's frame rate)
- *   6. receive 3: a screen share being received arrives at half its frame rate (its resolution —
- *      the legibility of its text — is never touched)
+ *   6. receive 3: small ones at 5fps, large ones at 10fps, and a screen share being received at half
+ *      its frame rate (its resolution — the legibility of its text — is never touched)
+ *   6b. receive 4: every camera capped at 180p
+ *   6c. receive 5: large ones at 5fps too
+ *      (2b/6b/6c added 2026-11-19: frame rate alone left a slow machine in a 10-person call decoding
+ *      seven 720p streams and overloaded for the whole call. Details in receiveFpsController.ts.)
  *   7. own screen share AV1 -> VP8 1080p (lib/video/screenShare.ts; a republish, one-way for the
  *      rest of that share, and remembered so the next share starts on VP8)
  *   8. camera off, with a dialog saying why (the person can turn it back on; it then resumes at 5)
@@ -36,7 +41,7 @@
  */
 
 export type VideoLevel = 0 | 1 | 2;
-export type ReceiveLevel = 0 | 1 | 2 | 3;
+export type ReceiveLevel = 0 | 1 | 2 | 3 | 4 | 5;
 
 export interface VideoProfile {
   width: number;
@@ -186,6 +191,8 @@ export interface ReceiveControl {
   throttled: number;
   /** Remote cameras found to have no temporal layers (nothing to slow down). */
   noLayers: number;
+  /** Remote cameras asked for a lower resolution layer (receive 4). */
+  capped?: number;
 }
 
 /**
@@ -396,7 +403,7 @@ export interface GovernorContext {
    * Whether going to each receive level from here would actually slow something down (some
    * remote camera that would get a lower target and has temporal layers). Unset = no.
    */
-  recvRelief?: { 1: boolean; 2: boolean; 3?: boolean };
+  recvRelief?: { 1: boolean; 2: boolean; 3?: boolean; 4?: boolean; 5?: boolean };
   /** The codec of this person's own screen share, or null/undefined when not sharing. */
   shareCodec?: 'av1' | 'vp8' | 'h264' | null;
 }
@@ -508,6 +515,8 @@ function nextStepDown(
   if (state.recv < 2 && relief[2]) return { kind: 'recv', level: 2, direction: 'down' };
   if (ctx.cameraOn && state.video < 2) return { kind: 'video', level: 2, direction: 'down' };
   if (state.recv < 3 && relief[3]) return { kind: 'recv', level: 3, direction: 'down' };
+  if (state.recv < 4 && relief[4]) return { kind: 'recv', level: 4, direction: 'down' };
+  if (state.recv < 5 && relief[5]) return { kind: 'recv', level: 5, direction: 'down' };
   if (ctx.shareCodec === 'av1' && !state.shareVp8) return { kind: 'share-vp8' };
   if (ctx.cameraOn && cameraOffAllowed) return { kind: 'camera-off', withBackground: ctx.bgQuality !== null };
   if (ctx.shareCodec && ctx.shareCodec !== 'av1' && !state.share720) return { kind: 'share-720', direction: 'down' };
@@ -515,13 +524,15 @@ function nextStepDown(
 }
 
 /**
- * Undo the most recent step still in effect: the ladder in reverse (share 720p, receive 3, camera
+ * Undo the most recent step still in effect: the ladder in reverse (share 720p, receive 5, 4, 3, camera
  * 2, receive 2, camera 1, receive 1). The share's switch to VP8 isn't undone mid-share — each
  * undo would be another republish the viewers see.
  */
 function nextStepUp(state: GovernorState): GovernorAction | null {
   const cameraSteps = !state.cameraOffByGovernor;
   if (state.share720) return { kind: 'share-720', direction: 'up' };
+  if (state.recv === 5) return { kind: 'recv', level: 4, direction: 'up' };
+  if (state.recv === 4) return { kind: 'recv', level: 3, direction: 'up' };
   if (state.recv === 3) return { kind: 'recv', level: 2, direction: 'up' };
   if (cameraSteps && state.video === 2) return { kind: 'video', level: 1, direction: 'up' };
   if (state.recv === 2) return { kind: 'recv', level: 1, direction: 'up' };
