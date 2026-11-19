@@ -8,10 +8,19 @@
  *    worker builds MediaStreamTrackProcessor and VideoTrackGenerator itself (worker-only APIs)
  *    and transfers the generator's track back.
  *
- * The matte comes from a segmenter worker attached over a MessagePort. This worker never waits
- * for it: every frame is composited with the latest matte, and a new one is requested only once
- * the previous request has been answered — so a slow segmenter lowers the segmentation rate, not
- * the frame rate, and swapping segmenters (attachSegmenter) never pauses the output.
+ * The matte comes from a segmenter worker attached over a MessagePort. Two ways to use it:
+ *  - latest (the default): never wait. Every frame is composited with the latest matte, and a new
+ *    one is requested only once the previous request has been answered — a slow segmenter lowers
+ *    the segmentation rate, not the frame rate. The matte is always from an earlier frame, which
+ *    shows as the cut-out trailing a sudden movement.
+ *  - matteSync: each frame waits for its own matte (up to SYNC_TIMEOUT_MS, then falls back to the
+ *    latest). Used when segmentation runs at the camera's own rate anyway (governor level 0, 98.5%
+ *    of camera time in the 2026-11 telemetry), so it costs latency, not extra inferences. A
+ *    segmenter slower than the camera lowers the output frame rate instead — which the governor
+ *    then sees as overload and steps down, turning this off.
+ * photoIntervalMs > 0 (the governor's photo mode): only one frame per interval is processed at
+ * all — the rest are dropped before upload or segmentation — and that frame waits for its own
+ * matte.
  */
 import {
   BackgroundCompositor,
@@ -35,6 +44,10 @@ export interface CompositorSettings {
   /** Overrides the segmenter's own mask polarity (the invertMask debugging escape hatch). */
   invertOverride: number | null;
   measureGpuSync: boolean;
+  /** Composite each frame with its own matte (see the header). */
+  matteSync: boolean;
+  /** Photo mode: process and send one frame per this many ms; 0 = every frame. */
+  photoIntervalMs: number;
 }
 
 /** Where frames come from and go to; see the header. */
@@ -87,6 +100,12 @@ export interface CompositorStats {
   droppedFrames: number;
   /** Longest gap between two frames handed to the sender in this interval, ms (receivers see it as a stall). */
   maxGapMs: number;
+  /** Frames that waited for their own matte, the time spent waiting, and waits that gave up. */
+  syncFrames: number;
+  syncWaitMsTotal: number;
+  syncTimeouts: number;
+  /** Frames dropped unprocessed by photo mode. */
+  photoSkipped: number;
 }
 
 export type CompositorResponse =
@@ -108,6 +127,8 @@ const REQUIRED_STABLE_FRAMES = 5;
 const STATS_INTERVAL_MS = 1000;
 /** This many frames in a row failing to render means the pipeline is broken, not unlucky. */
 const MAX_CONSECUTIVE_FAILURES = 30;
+/** How long a frame waits for its own matte before going out with the latest one. */
+const SYNC_TIMEOUT_MS = 120;
 
 const post = (message: CompositorResponse) => self.postMessage(message);
 
@@ -141,7 +162,13 @@ const emptyStats = (): CompositorStats => ({
   maskLatencyMsTotal: 0,
   droppedFrames: 0,
   maxGapMs: 0,
+  syncFrames: 0,
+  syncWaitMsTotal: 0,
+  syncTimeouts: 0,
+  photoSkipped: 0,
 });
+/** Resolves the frame waiting for its own matte (matteSync / photo mode), if any. */
+let replyWaiter: ((answered: boolean) => void) | null = null;
 let stats = emptyStats();
 /** When the last output frame was written; reset with each new source so a camera switch isn't a "gap". */
 let lastOutputAt: number | null = null;
@@ -156,12 +183,14 @@ function fatal(message: string) {
 
 function matteOptions(invert: number, quality: SegmentationQuality) {
   return {
+    // Photo mode's frames are a second or more apart: blending in the previous one's matte would
+    // leave a ghost of where the person was.
     invert: settings.invertOverride ?? invert,
     // The segmenter's mask is already drawn at the model's own size, so no maskGridHeight here.
     style: MATTE_STYLE[quality],
     matteLo: settings.matteLo,
     matteHi: settings.matteHi,
-    temporalSmoothing: settings.temporalSmoothing,
+    temporalSmoothing: settings.photoIntervalMs > 0 ? 0 : settings.temporalSmoothing,
     edgeFeather: settings.edgeFeather,
   };
 }
@@ -192,8 +221,58 @@ function requestMatte(frame: VideoFrame) {
   segmenterPort.postMessage(message, [copy]);
 }
 
+/** Waits until the request in flight is answered (true) or `ms` passes (false). */
+function waitForReply(ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (replyWaiter === done) replyWaiter = null;
+      resolve(false);
+    }, ms);
+    const done = (answered: boolean) => {
+      clearTimeout(timer);
+      resolve(answered);
+    };
+    replyWaiter = done;
+  });
+}
+
+/**
+ * Segments this very frame and composes its matte before the frame is rendered. Returns false
+ * when it couldn't (no segmenter, or too slow): the frame then goes out with the latest matte.
+ */
+async function matteForThisFrame(frame: VideoFrame): Promise<boolean> {
+  if (!segmenterPort) return false;
+  const started = performance.now();
+  // A request from before (the latest-matte path) must land first; its matte is older anyway.
+  if (requestInFlight && !(await waitForReply(SYNC_TIMEOUT_MS))) {
+    stats.syncTimeouts += 1;
+    return false;
+  }
+  if (!segmenterPort || stopped) return false;
+  lastSegmentationAt = performance.now();
+  requestInFlight = true;
+  const copy = frame.clone();
+  const message: SegmentRequest = { frame: copy, sentAt: lastSegmentationAt };
+  segmenterPort.postMessage(message, [copy]);
+  const answered = await waitForReply(SYNC_TIMEOUT_MS);
+  stats.syncFrames += 1;
+  stats.syncWaitMsTotal += performance.now() - started;
+  if (!answered) stats.syncTimeouts += 1;
+  return answered;
+}
+
 function onSegmentReply(reply: SegmentReply) {
   requestInFlight = false;
+  const waiter = replyWaiter;
+  replyWaiter = null;
+  try {
+    handleSegmentReply(reply);
+  } finally {
+    waiter?.(reply.ok);
+  }
+}
+
+function handleSegmentReply(reply: SegmentReply) {
   if (!reply.ok) return;
   if (stopped) {
     reply.mask.close();
@@ -219,15 +298,22 @@ function attachSegmenter(port: MessagePort) {
   segmenterPort?.close();
   segmenterPort = port;
   requestInFlight = false;
+  // A frame waiting on the old segmenter goes out with the latest matte.
+  const waiter = replyWaiter;
+  replyWaiter = null;
+  waiter?.(false);
   port.onmessage = (event: MessageEvent<SegmentReply>) => onSegmentReply(event.data);
 }
 
-/** Renders one frame; returns the output frame, or null when it must not go out. */
-function renderFrame(frame: VideoFrame): VideoFrame | null {
+/**
+ * Renders one frame; returns the output frame, or null when it must not go out. `hasOwnMatte`:
+ * this frame's matte was already composed (matteSync / photo mode), so don't ask for another.
+ */
+function renderFrame(frame: VideoFrame, hasOwnMatte = false): VideoFrame | null {
   const t0 = performance.now();
   compositor.resize(frame.displayWidth, frame.displayHeight);
   compositor.uploadFrame(frame);
-  requestMatte(frame);
+  if (!hasOwnMatte) requestMatte(frame);
   compositor.render({ mode: settings.mode, blurRadius: settings.blurRadius, target: settings.target });
 
   // Same readiness rule as the main-thread processor: a few frames on a warmed-up matte, and the
@@ -263,9 +349,23 @@ async function pump(source: ReadableStreamDefaultReader<VideoFrame>) {
       frame.close();
       continue;
     }
+    // Photo mode: drop everything between the frames that go out, before any work is done on it.
+    if (settings.photoIntervalMs > 0 && lastOutputAt !== null && performance.now() - lastOutputAt < settings.photoIntervalMs) {
+      frame.close();
+      stats.photoSkipped += 1;
+      continue;
+    }
+    let hasOwnMatte = false;
+    if ((settings.matteSync || settings.photoIntervalMs > 0) && compositor.hasMatteHistory) {
+      hasOwnMatte = await matteForThisFrame(frame);
+      if (stopped || reader !== source) {
+        frame.close();
+        continue;
+      }
+    }
     let out: VideoFrame | null = null;
     try {
-      out = renderFrame(frame);
+      out = renderFrame(frame, hasOwnMatte);
       consecutiveFailures = 0;
     } catch (err) {
       // Dropped, never passed through raw: the raw frame shows the room the effect is hiding.

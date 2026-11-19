@@ -1,56 +1,5 @@
-import { VideoOff } from 'lucide-react';
-import type { CameraOffNotice, GovernorMode } from './useLoadGovernor';
+import type { GovernorMode } from './useLoadGovernor';
 import type { GovernorStep, LoadSample } from './governorPolicy';
-
-/** Shown when the governor had to switch the camera off; says why and what can be done. */
-export function CameraOffDialog({
-  notice,
-  onClose,
-  onTurnOffBackground,
-}: {
-  notice: CameraOffNotice;
-  onClose: () => void;
-  /** Background effect users: switch it off (the camera can then come back on lighter). */
-  onTurnOffBackground: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 px-4">
-      <div className="w-full max-w-sm rounded-2xl border border-gray-700 bg-gray-900 p-5 text-white shadow-2xl space-y-3">
-        <div className="flex items-center gap-2">
-          <VideoOff className="w-5 h-5 text-rose-400" />
-          <h2 className="font-bold">カメラをOFFにしました</h2>
-        </div>
-        {notice.withBackground ? (
-          <p className="text-sm text-gray-300 leading-relaxed">
-            パソコンの負荷が高く、音声が途切れるおそれがあったため、カメラをOFFにしました。
-            カメラをONにするには、背景エフェクトをOFFにする必要があります。
-          </p>
-        ) : (
-          <p className="text-sm text-gray-300 leading-relaxed">
-            パソコンの負荷が高く、音声が途切れるおそれがあったため、カメラをOFFにしました。
-            カメラボタンからONに戻せますが、負荷が高いままだと再びOFFになることがあります。
-          </p>
-        )}
-        <div className="flex flex-wrap justify-end gap-2 pt-1">
-          {notice.withBackground && (
-            <button
-              onClick={() => {
-                onTurnOffBackground();
-                onClose();
-              }}
-              className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-sm font-semibold"
-            >
-              背景エフェクトをOFFにする
-            </button>
-          )}
-          <button onClick={onClose} className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-sm font-bold">
-            OK
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /** Live readout for calibration (localStorage smiring.debug.loadPanel = '1'). */
 export function LoadGovernorPanel({
@@ -79,7 +28,7 @@ export function LoadGovernorPanel({
         {st
           ? `${st.bgDowngraded ? 'bg↓ ' : ''}video${st.video} recv${forcedRecv ?? st.recv}${forcedRecv != null ? '(強制)' : ''}${
               st.shareVp8 ? ' share→VP8' : ''
-            }${st.share720 ? ' share720p' : ''}${st.cameraOffByGovernor ? ' camOFF' : ''}`
+            }${st.share1080 ? ' share1080p' : ''}${st.share720 ? ' share720p' : ''}${st.photo ? ' photo' : ''}`
           : '-'}
       </div>
       <div className={pressureColor}>

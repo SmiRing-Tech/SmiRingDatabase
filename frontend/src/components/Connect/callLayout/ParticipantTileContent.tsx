@@ -13,7 +13,8 @@ import {
   type TrackReferenceOrPlaceholder,
 } from '@livekit/components-react';
 import { Track } from 'livekit-client';
-import { MoreHorizontal, Pin, PinOff, ShieldCheck, User } from 'lucide-react';
+import { AlertCircle, MoreHorizontal, Pin, PinOff, ShieldCheck, User } from 'lucide-react';
+import { useCameraPhoto } from '../../../lib/cameraPhotoSignal';
 import { CustomDropdown, type DropdownOption } from '../../ui/CustomDropdown';
 import ClampedVideoTrack, { type FitBox, type ZoomTransform } from './ClampedVideoTrack';
 import { tileId } from './tileIdentity';
@@ -133,6 +134,9 @@ export function ParticipantTileContent({
       : 'w-20 h-20 sm:w-24 sm:h-24 md:w-28 md:h-28';
 
   const reactions = useParticipantReactions(participant?.identity);
+  // The load governor's photo mode (lib/cameraPhotoSignal): the camera sends a still every second
+  // or more. A small mark rather than a caption, so the face stays visible.
+  const inPhotoMode = useCameraPhoto(participant?.identity, !!participant?.isLocal) && !isScreenShare;
 
   // '...' CustomDropdown menu for participant actions
   const isLocalParticipant = !!participant?.isLocal;
@@ -182,12 +186,26 @@ export function ParticipantTileContent({
     });
   }
 
+  const showPhotoBadge = inPhotoMode && showVideo;
   const menuDropdown =
-    menuOptions.length > 0 || showProfileButton ? (
+    menuOptions.length > 0 || showProfileButton || showPhotoBadge ? (
       <div
         className="absolute top-2 right-2 z-20 flex items-center gap-1.5 pointer-events-auto"
         onClick={(e) => e.stopPropagation()}
       >
+        {showPhotoBadge && (
+          <span
+            title={
+              participant?.isLocal
+                ? 'パソコンの負荷を下げるため、あなたのカメラ映像を1〜数秒ごとの静止画にしています（負荷が下がると自動で戻ります）'
+                : 'パソコンの負荷を下げるため、この人のカメラ映像は1〜数秒ごとの静止画になっています'
+            }
+            aria-label="カメラ映像を静止画にしています"
+            className="p-1 rounded-lg bg-amber-500/90 text-white shadow-sm cursor-help"
+          >
+            <AlertCircle className="w-3 h-3" />
+          </span>
+        )}
         {isPinned && (
           <span
             title="ピン留め中"

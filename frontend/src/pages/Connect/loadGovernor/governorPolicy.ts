@@ -11,7 +11,15 @@
  * pressure like anything else.
  *
  * Ladder, one step at a time:
- *   1. background effect 'high' -> 'balanced' (not restored automatically)
+ *   0. own screen share 1440p -> 1080p (only while sharing a screen taller than 1080p: 1440p is
+ *      the bonus for small text, so it goes first)
+ *   1. background effect 'high' -> 'balanced'. The other way is automatic too, for anyone on
+ *      'balanced' however they got there (stored choice, first-run detection, the effect's own
+ *      slow-frame fallback): after bgRestoreAfterMs calm with every other step back, 'high' is
+ *      tried; heavy again within bgRestoreTrialMs (for a reason the background can cause) means
+ *      this machine can't hold it, and it stays 'balanced' for the call. Desktop and the worker
+ *      pipeline only, and not when the person picked 'balanced' themselves during this call
+ *      (bgUpgradable).
  *   2. receive 1: other people's cameras shown small arrive at 10fps (receiveFpsController.ts)
  *   3. camera 540p / 15fps, segmentation 10/s (no notice: hardly visible)
  *   4. receive 2: ones shown large capped at 360p (frame rate kept — a large tile at 10fps visibly
@@ -26,7 +34,11 @@
  *      seven 720p streams and overloaded for the whole call. Details in receiveFpsController.ts.)
  *   7. own screen share AV1 -> VP8 1080p (lib/video/screenShare.ts; a republish, one-way for the
  *      rest of that share, and remembered so the next share starts on VP8)
- *   8. camera off, with a dialog saying why (the person can turn it back on; it then resumes at 5)
+ *   8. photo mode: the camera keeps running but sends one still frame every PHOTO interval (more
+ *      seconds apart while still overloaded), each composited with its own matte; others see the
+ *      last frame with a small badge. Replaced "camera off" on 2026-11-19: with the camera's
+ *      encoding and background effect down to one frame a second or less, turning it off
+ *      wouldn't take away any load that matters. Comes back automatically like the others.
  *   9. own screen share VP8 at 720p, the floor for a share (decided 2026-10-15)
  * Steps 7 and 9 only apply while sharing; screen share outranks the camera, so the camera goes
  * first except for that 720p floor, which is worse than losing one's camera — unless the AV1
@@ -35,7 +47,7 @@
  * change what everyone sees of them. A step that would change nothing is skipped: the camera
  * steps while the camera is off, the receiving steps when nothing received could be slowed down
  * (no cameras, or only senders without temporal layers — iPhones, Safari, H.264).
- * Steps 2-6 and 9 come back automatically after a calm stretch, most recent first, with backoff if
+ * Steps 0 and 2-9 come back automatically after a calm stretch, most recent first, with backoff if
  * they relapse. No notice for the receiving steps: they only affect this person's own view.
  * (Moving noise cancellation to the server slots in before 8 once it exists.)
  */
@@ -100,6 +112,8 @@ export interface LoadSample {
   frames?: { fps: number; maxGapMs: number };
   /** Longest gap between camera frames leaving the background effect, ms (worker pipeline only). Telemetry only. */
   bgMaxGapMs?: number;
+  /** Average wait for a frame's own matte (matteSync / photo mode). Telemetry only. */
+  bgSyncWaitMs?: number;
   bgFps?: number;
   bgExpectedFps?: number;
   /** Background effect cost per frame (all its threads), ms. */
@@ -267,9 +281,14 @@ export const GOVERNOR_THRESHOLDS = {
   maxRecoverBackoff: 8,
   /** A recovery that held this long resets the backoff. */
   backoffResetMs: 300_000,
-  /** After the person turns the camera back on themselves, don't switch it off again for this long. */
-  cameraResumeGraceMs: 60_000,
+  /** Calm this long, with every other step undone, before trying the background on 'high' again. */
+  bgRestoreAfterMs: 300_000,
+  /** Overloaded (for a background reason) within this long of that = this machine can't hold 'high'. */
+  bgRestoreTrialMs: 60_000,
 } as const;
+
+/** Reasons the background effect itself can be behind (see the 'high' restore trial). */
+const BG_REASONS = ['bg-fps', 'bg-cost', 'main-lag', 'long-tasks'];
 
 export type GovernorThresholds = { [K in keyof typeof GOVERNOR_THRESHOLDS]: number };
 
@@ -357,16 +376,21 @@ export interface GovernorState {
   shareVp8: boolean;
   /** This share is capped at 720p (step 9). Cleared when the share ends. */
   share720: boolean;
+  /** This share is capped at 1080p instead of 1440p (step 0). Cleared when the share ends. */
+  share1080: boolean;
   /** The last step down was step 7 (see the settle rule in stepGovernor). */
   lastWasShareSwitch?: boolean;
-  cameraOffByGovernor: boolean;
+  /** Photo mode (step 8). */
+  photo: boolean;
+  /** When the background was last put back on 'high' (the restore trial), or null. */
+  bgRestoredAt: number | null;
+  /** The restore trial failed: 'high' is too much for this machine, for the rest of the call. */
+  bgRestoreBlocked: boolean;
   overloadedSince: number | null;
   calmSince: number | null;
   lastChangeAt: number;
   lastRecoveryAt: number | null;
   recoverBackoff: number;
-  /** When the person turned the camera back on after the governor switched it off. */
-  cameraResumedAt: number | null;
 }
 
 export function initialGovernorState(now: number): GovernorState {
@@ -376,28 +400,34 @@ export function initialGovernorState(now: number): GovernorState {
     recv: 0,
     shareVp8: false,
     share720: false,
-    cameraOffByGovernor: false,
+    share1080: false,
+    photo: false,
+    bgRestoredAt: null,
+    bgRestoreBlocked: false,
     overloadedSince: null,
     calmSince: null,
     lastChangeAt: now,
     lastRecoveryAt: null,
     recoverBackoff: 1,
-    cameraResumedAt: null,
   };
 }
 
 export type GovernorAction =
   | { kind: 'bg-balanced' }
+  | { kind: 'bg-high' }
   | { kind: 'video'; level: VideoLevel; direction: 'down' | 'up' }
   | { kind: 'recv'; level: ReceiveLevel; direction: 'down' | 'up' }
   | { kind: 'share-vp8' }
   | { kind: 'share-720'; direction: 'down' | 'up' }
-  | { kind: 'camera-off'; withBackground: boolean };
+  | { kind: 'share-1080'; direction: 'down' | 'up' }
+  | { kind: 'photo'; direction: 'down' | 'up' };
 
 /** What the governor needs to know about the call, beyond the sample. */
 export interface GovernorContext {
   /** The background effect's model, or null when the effect is off. */
   bgQuality: 'high' | 'balanced' | null;
+  /** Whether 'balanced' may be tried on 'high' (see step 1). Unset = no. */
+  bgUpgradable?: boolean;
   cameraOn: boolean;
   /**
    * Whether going to each receive level from here would actually slow something down (some
@@ -406,6 +436,8 @@ export interface GovernorContext {
   recvRelief?: { 1: boolean; 2: boolean; 3?: boolean; 4?: boolean; 5?: boolean };
   /** The codec of this person's own screen share, or null/undefined when not sharing. */
   shareCodec?: 'av1' | 'vp8' | 'h264' | null;
+  /** Height the own share is captured at right now (for step 0: only worth it above 1080p). */
+  shareHeight?: number;
 }
 
 export interface GovernorStep {
@@ -429,17 +461,7 @@ export function stepGovernor(
   if (!ctx.shareCodec) {
     state.shareVp8 = false;
     state.share720 = false;
-  }
-
-  // The person turned the camera back on after the governor switched it off: resume at the
-  // lightest video level rather than from the top.
-  if (state.cameraOffByGovernor && ctx.cameraOn) {
-    state.cameraOffByGovernor = false;
-    state.video = 2;
-    state.cameraResumedAt = now;
-    state.lastChangeAt = now;
-    state.overloadedSince = null;
-    state.calmSince = null;
+    state.share1080 = false;
   }
 
   if (state.lastRecoveryAt !== null && now - state.lastRecoveryAt >= T.backoffResetMs) {
@@ -465,9 +487,19 @@ export function stepGovernor(
     // keyframe and ramps up — so it always gets the full settle, even when the audio is urgent.
     const settle = verdict.audioUrgent && !state.lastWasShareSwitch ? T.settleAudioMs : T.settleMs;
     if (now - state.overloadedSince >= escalateAfter && sinceChange >= settle) {
-      const cameraOffAllowed = state.cameraResumedAt === null || now - state.cameraResumedAt >= T.cameraResumeGraceMs;
-      const action = nextStepDown(state, ctx, cameraOffAllowed, verdict.reasons);
+      const action = nextStepDown(state, ctx, verdict.reasons);
       if (action) {
+        if (action.kind === 'bg-balanced') {
+          // The restore trial: heavy again soon after going back to 'high', for a reason the
+          // background can cause -> this machine can't hold it. Later than that, or for another
+          // reason, may just be a passing load: wait for calm and try again.
+          const trialFailed =
+            state.bgRestoredAt !== null &&
+            now - state.bgRestoredAt < T.bgRestoreTrialMs &&
+            verdict.reasons.some((r) => BG_REASONS.includes(r));
+          if (trialFailed) state.bgRestoreBlocked = true;
+          state.bgRestoredAt = null;
+        }
         if (state.lastRecoveryAt !== null && now - state.lastRecoveryAt < T.relapseWindowMs) {
           state.recoverBackoff = Math.min(T.maxRecoverBackoff, state.recoverBackoff * 2);
         }
@@ -495,18 +527,34 @@ export function stepGovernor(
     return { state, verdict, action };
   }
 
+  // Everything else is back: try the background on 'high' after a long calm.
+  if (
+    !undo &&
+    ctx.bgUpgradable &&
+    !state.bgRestoreBlocked &&
+    ctx.bgQuality === 'balanced' &&
+    state.calmSince !== null &&
+    sinceChange >= T.settleMs &&
+    now - state.calmSince >= T.bgRestoreAfterMs
+  ) {
+    const action: GovernorAction = { kind: 'bg-high' };
+    applyToState(state, action);
+    state.bgRestoredAt = now;
+    state.lastChangeAt = now;
+    state.calmSince = null;
+    return { state, verdict, action };
+  }
+
   return { state, verdict };
 }
 
 /** The first step of the ladder not taken yet that would change something. */
-function nextStepDown(
-  state: GovernorState,
-  ctx: GovernorContext,
-  cameraOffAllowed: boolean,
-  reasons: string[] = [],
-): GovernorAction | null {
+function nextStepDown(state: GovernorState, ctx: GovernorContext, reasons: string[] = []): GovernorAction | null {
   // The AV1 share itself is what's heavy: switch it first — the camera steps wouldn't touch the cause.
   if (reasons.includes('share-encode') && ctx.shareCodec === 'av1' && !state.shareVp8) return { kind: 'share-vp8' };
+  if (ctx.shareCodec && ctx.shareCodec !== 'av1' && !state.share1080 && !state.share720 && (ctx.shareHeight ?? 0) > 1080 * 1.05) {
+    return { kind: 'share-1080', direction: 'down' };
+  }
   if (ctx.bgQuality === 'high' && !state.bgDowngraded) return { kind: 'bg-balanced' };
   const relief = ctx.recvRelief ?? { 1: false, 2: false };
   if (state.recv < 1 && relief[1]) return { kind: 'recv', level: 1, direction: 'down' };
@@ -518,19 +566,21 @@ function nextStepDown(
   if (state.recv < 4 && relief[4]) return { kind: 'recv', level: 4, direction: 'down' };
   if (state.recv < 5 && relief[5]) return { kind: 'recv', level: 5, direction: 'down' };
   if (ctx.shareCodec === 'av1' && !state.shareVp8) return { kind: 'share-vp8' };
-  if (ctx.cameraOn && cameraOffAllowed) return { kind: 'camera-off', withBackground: ctx.bgQuality !== null };
+  if (ctx.cameraOn && !state.photo) return { kind: 'photo', direction: 'down' };
   if (ctx.shareCodec && ctx.shareCodec !== 'av1' && !state.share720) return { kind: 'share-720', direction: 'down' };
   return null;
 }
 
 /**
- * Undo the most recent step still in effect: the ladder in reverse (share 720p, receive 5, 4, 3, camera
- * 2, receive 2, camera 1, receive 1). The share's switch to VP8 isn't undone mid-share — each
- * undo would be another republish the viewers see.
+ * Undo the most recent step still in effect: the ladder in reverse (share 720p, photo, receive 5, 4,
+ * 3, camera 2, receive 2, camera 1, receive 1, share 1080p). The share's switch to VP8 isn't undone
+ * mid-share — each undo would be another republish the viewers see. The background's 'high' has
+ * its own, slower path (see stepGovernor).
  */
 function nextStepUp(state: GovernorState): GovernorAction | null {
-  const cameraSteps = !state.cameraOffByGovernor;
+  const cameraSteps = !state.photo;
   if (state.share720) return { kind: 'share-720', direction: 'up' };
+  if (state.photo) return { kind: 'photo', direction: 'up' };
   if (state.recv === 5) return { kind: 'recv', level: 4, direction: 'up' };
   if (state.recv === 4) return { kind: 'recv', level: 3, direction: 'up' };
   if (state.recv === 3) return { kind: 'recv', level: 2, direction: 'up' };
@@ -538,14 +588,17 @@ function nextStepUp(state: GovernorState): GovernorAction | null {
   if (state.recv === 2) return { kind: 'recv', level: 1, direction: 'up' };
   if (cameraSteps && state.video === 1) return { kind: 'video', level: 0, direction: 'up' };
   if (state.recv === 1) return { kind: 'recv', level: 0, direction: 'up' };
+  if (state.share1080) return { kind: 'share-1080', direction: 'up' };
   return null;
 }
 
 function applyToState(state: GovernorState, action: GovernorAction) {
   if (action.kind === 'bg-balanced') state.bgDowngraded = true;
+  else if (action.kind === 'bg-high') state.bgDowngraded = false;
   else if (action.kind === 'video') state.video = action.level;
   else if (action.kind === 'recv') state.recv = action.level;
   else if (action.kind === 'share-vp8') state.shareVp8 = true;
   else if (action.kind === 'share-720') state.share720 = action.direction === 'down';
-  else state.cameraOffByGovernor = true;
+  else if (action.kind === 'share-1080') state.share1080 = action.direction === 'down';
+  else state.photo = action.direction === 'down';
 }

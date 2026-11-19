@@ -104,6 +104,7 @@ import {
   type AudioPipelineHealth,
 } from '../../lib/audio/audioPipelineHealth';
 import { flushPrejoinMicEvents, startMicWatchdog, type MicWatchdogStatus } from '../../lib/audio/micWatchdog';
+import { startCameraPhotoReceiver } from '../../lib/cameraPhotoSignal';
 import {
   DiagnosticsDialog,
   DiagnosticsMenuItem,
@@ -112,7 +113,7 @@ import {
 } from './ConnectDiagnostics';
 import { useDiagnosticsController } from './useDiagnosticsController';
 import { useLoadGovernor } from './loadGovernor/useLoadGovernor';
-import { CameraOffDialog, LoadGovernorPanel } from './loadGovernor/LoadGovernorUI';
+import { LoadGovernorPanel } from './loadGovernor/LoadGovernorUI';
 import { playSpeakerTestTone, useMicLevel } from '../../components/Connect/audioTest';
 import { codecPublishOptions, readVideoCodecPreference } from '../../lib/videoCodecPreference';
 import { isShareSwitching, shareCaptureOptions, shareCodecFor, sharePublishOptions } from '../../lib/video/screenShare';
@@ -2609,14 +2610,12 @@ function CustomVideoConference({
 
   // Lightens the camera side when this machine can't keep up (loadGovernor/governorPolicy.ts),
   // and records what it measured to the always-on telemetry.
-  const syncRecordingAfterGovernor = useRecordingSync();
   const [governorNotice, setGovernorNotice] = useState('');
   const dismissGovernorNotice = useCallback(() => setGovernorNotice(''), []);
   const governor = useLoadGovernor({
     background: mediaEnhancements.background,
     roomId: miniRooms.currentRoomId,
     onNotice: setGovernorNotice,
-    onCameraTurnedOff: syncRecordingAfterGovernor,
   });
 
   useEffect(() => {
@@ -2917,13 +2916,6 @@ function CustomVideoConference({
         />
       ) : (
         governorNotice && <NoiseCancelNotice message={governorNotice} onDismiss={dismissGovernorNotice} />
-      )}
-      {governor.cameraOffNotice && (
-        <CameraOffDialog
-          notice={governor.cameraOffNotice}
-          onClose={governor.dismissCameraOffNotice}
-          onTurnOffBackground={() => void mediaEnhancements.background.commit({ mode: 'off' })}
-        />
       )}
       {governor.showPanel && <LoadGovernorPanel mode={governor.mode} step={governor.lastStep} forcedRecv={governor.forcedRecv} />}
 
@@ -3227,6 +3219,8 @@ function CallRoomInner({
   const room = useRoomContext();
   // 既定が連係カメラの iPhone/iPad になっても、明示的に選んでいなければ iPhone/iPad 以外を使う
   useContinuityDeviceGuard(room);
+  // Who is in the load governor's photo mode, for the badge on their tile (lib/cameraPhotoSignal).
+  useEffect(() => startCameraPhotoReceiver(room), [room]);
 
   const survey = useConnectSurvey({ mainRoomId: roomId, currentRoomId: miniRooms.currentRoomId });
   const [showSurveyPanel, setShowSurveyPanel] = useState(false);
@@ -4104,11 +4098,9 @@ export default function CallRoomPage({
         // stutter — the actual amount of degradation is unchanged, only which axis absorbs it.
         degradationPreference: 'maintain-framerate',
         screenShareEncoding: {
-          // 4 Mbps over a 1080p-capped capture is a little over twice the bits per pixel the
-          // old 6 Mbps had to spread across a native Retina surface, so this is a quality
-          // increase and a bandwidth cut at once (see the resolution note in
-          // `useScreenShareToggle`).
-          maxBitrate: 4_000_000,
+          // Kept equal to lib/video/screenShare's VP8_ENCODING (which is what a share actually
+          // publishes with): 6 Mbps for the 1440p cap since 2026-11-19 (4 Mbps at 1080p before).
+          maxBitrate: 6_000_000,
           maxFramerate: 15,
           priority: 'high',
         },

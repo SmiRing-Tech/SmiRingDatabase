@@ -15,6 +15,7 @@ import {
   type BackgroundProcessor,
 } from '../../lib/video/backgroundProcessor';
 import { BlankFrameProcessor } from '../../lib/video/BlankFrameProcessor';
+import { WorkerBackgroundProcessor } from '../../lib/video/WorkerBackgroundProcessor';
 import { diagEvent, diagState } from '../../lib/connectDiagnostics';
 import {
   useBackgroundLibrary,
@@ -22,6 +23,7 @@ import {
   writeStoredChoice,
   detectSegmentationQuality,
   detectSegmentationFps,
+  isMobileDevice,
   qualityWithinLoadDeadline,
   HIGH_MODEL_FALLBACK_MESSAGE,
   type BackgroundMode,
@@ -61,6 +63,13 @@ export function useBackgroundEffect(isGuest = false) {
   const reapplyRef = useRef<(() => Promise<unknown>) | undefined>(undefined);
   // Segmentation rate set by the load governor (null = the device default); see setPerformanceProfile.
   const perfProfileRef = useRef<PerformanceProfile | null>(null);
+  // Matte timing and the governor's photo mode, carried over to any processor built later.
+  // matteSync follows the governor's camera level: on only while segmentation runs at the camera's
+  // own rate (level 0), where it costs latency rather than extra inferences.
+  const frameModeRef = useRef({ matteSync: true, photoIntervalMs: 0 });
+  // The person switched to 'balanced' themselves during this call: the governor leaves it there
+  // until they pick 'high' again. Not stored — the next call is fully automatic again.
+  const pinnedBalancedRef = useRef(false);
 
   const supported = useMemo(() => supportsMediapipeBackground(), []);
   const stored = useMemo(() => readStoredChoice(isGuest), [isGuest]);
@@ -250,6 +259,8 @@ export function useBackgroundEffect(isGuest = false) {
         matteHi: 0.75,
         segmentationFps: perfProfileRef.current?.segmentationFps ?? detectSegmentationFps(),
         segmentationScheduler: perfProfileRef.current?.segmentationScheduler ?? 'interval',
+        matteSync: frameModeRef.current.matteSync,
+        photoIntervalMs: frameModeRef.current.photoIntervalMs,
         // Every processor reports when it's too heavy (see handlePerfSlow for what happens
         // next). Read the quality at call time: the worker processor changes it in place.
         // No onSustainedFastFrames: automatic upgrades are off, see handlePerfSlow.
@@ -366,6 +377,7 @@ export function useBackgroundEffect(isGuest = false) {
       // A person choosing 'high' again gets a fresh shot at the automatic fallback —
       // otherwise one auto-swap early in a call would silently suppress it for good.
       if (!opts?.auto && nextQuality === 'high') autoDowngradedRef.current = false;
+      if (!opts?.auto) pinnedBalancedRef.current = nextQuality === 'balanced';
       setBusy(true);
       setError('');
       try {
@@ -401,12 +413,30 @@ export function useBackgroundEffect(isGuest = false) {
   const setPerformanceProfile = useCallback(
     (profile: PerformanceProfile | null) => {
       perfProfileRef.current = profile;
+      frameModeRef.current = { ...frameModeRef.current, matteSync: profile === null };
       const processor = getCameraTrack()?.getProcessor();
       if (!isBackgroundProcessor(processor)) return;
       processor.updateOptions({
         segmentationFps: profile?.segmentationFps ?? detectSegmentationFps(),
         segmentationScheduler: profile?.segmentationScheduler ?? 'interval',
       });
+      if (processor instanceof WorkerBackgroundProcessor) processor.setFrameMode({ matteSync: profile === null });
+    },
+    [getCameraTrack],
+  );
+
+  /**
+   * The governor's photo mode: one frame per `intervalMs` (0 = off) out of the background effect.
+   * Returns true when the running effect does it (the worker pipeline); false when the caller has
+   * to throttle the camera some other way (effect off, or the main-thread fallback).
+   */
+  const setPhotoInterval = useCallback(
+    (intervalMs: number): boolean => {
+      frameModeRef.current = { ...frameModeRef.current, photoIntervalMs: intervalMs };
+      const processor = getCameraTrack()?.getProcessor();
+      if (!(processor instanceof WorkerBackgroundProcessor) || !processor.supportsFrameMode) return false;
+      processor.setFrameMode({ photoIntervalMs: intervalMs });
+      return true;
     },
     [getCameraTrack],
   );
@@ -432,6 +462,26 @@ export function useBackgroundEffect(isGuest = false) {
     commit,
     setQuality,
     setPerformanceProfile,
+    setPhotoInterval,
+    /**
+     * Whether the governor may try 'high' (its step-1 restore trial): a desktop, the worker
+     * pipeline (it swaps the model in place — the main-thread one rebuilds, and an automatic
+     * upgrade there was the "video goes black every ~20s" loop), and not a 'balanced' the person
+     * picked themselves during this call.
+     */
+    /**
+     * Stores 'high' as this device's choice once the governor's restore trial held, so the next
+     * call starts there instead of spending its first calm minutes on 'balanced'.
+     */
+    rememberAutoHigh: () => {
+      if (mode === 'off' || pinnedBalancedRef.current) return;
+      writeStoredChoice({ mode, imageId, quality: 'high' });
+    },
+    canAutoUpgradeQuality: () => {
+      if (isMobileDevice() || pinnedBalancedRef.current) return false;
+      const processor = getCameraTrack()?.getProcessor();
+      return isBackgroundProcessor(processor) && canSwapQualityInPlace(processor);
+    },
     handleUpload,
     handleDelete,
     imageUrlFor,

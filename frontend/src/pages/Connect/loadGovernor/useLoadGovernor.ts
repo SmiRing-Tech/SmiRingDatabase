@@ -17,6 +17,7 @@ import {
   type GovernorAction,
   type GovernorState,
   type GovernorStep,
+  GOVERNOR_THRESHOLDS,
   type LoadSample,
   type NetStats,
   type ReceiveLevel,
@@ -27,7 +28,8 @@ import {
 } from './governorPolicy';
 import { ReceiveFpsController, type CameraFps } from './receiveFpsController';
 import { keepTemporalLayers } from './temporalLayers';
-import { currentShareCodec, setShareFloor, switchShareToVp8 } from '../../../lib/video/screenShare';
+import { currentShareCodec, currentShareHeight, setShareCap, switchShareToVp8 } from '../../../lib/video/screenShare';
+import { setLocalCameraPhoto } from '../../../lib/cameraPhotoSignal';
 
 /**
  * Watches how the machine is coping during a call and lightens the camera side when it isn't
@@ -57,6 +59,9 @@ const LAG_TICK_MS = 100;
 const AUDIO_CHUNK_MS = 64;
 /** Don't re-apply camera constraints more often than this when the camera won't take them. */
 const REAPPLY_MIN_MS = 10_000;
+/** Photo mode (governorPolicy step 8): one frame this often, or this much less often while still overloaded. */
+const PHOTO_INTERVAL_MS = 1_000;
+const PHOTO_SLOW_INTERVAL_MS = 4_000;
 
 export type GovernorMode = 'active' | 'observe' | 'off';
 
@@ -124,40 +129,32 @@ function createSignalTotals() {
     bgExpectedFps: 0,
     bgReports: 0,
     bgMaxGapMs: undefined as number | undefined,
+    bgSyncWaitMs: undefined as number | undefined,
   };
-}
-
-export interface CameraOffNotice {
-  withBackground: boolean;
 }
 
 export function useLoadGovernor({
   background,
   roomId,
   onNotice,
-  onCameraTurnedOff,
 }: {
   background: BackgroundEffectState;
   /** The room telemetry is filed under (the current room — a guest's token only covers that one). */
   roomId: string;
   onNotice: (message: string) => void;
-  onCameraTurnedOff?: () => void;
 }) {
   const { localParticipant } = useLocalParticipant();
   const room = useRoomContext();
   const [mode] = useState(governorMode);
   const [showPanel] = useState(() => readFlag('smiring.debug.loadPanel') === '1');
   const [lastStep, setLastStep] = useState<(GovernorStep & { sample: LoadSample }) | null>(null);
-  const [cameraOffNotice, setCameraOffNotice] = useState<CameraOffNotice | null>(null);
 
   // Latest values for the sampling loop, which runs outside React's render cycle.
   const backgroundRef = useRef(background);
   const onNoticeRef = useRef(onNotice);
-  const onCameraTurnedOffRef = useRef(onCameraTurnedOff);
   useEffect(() => {
     backgroundRef.current = background;
     onNoticeRef.current = onNotice;
-    onCameraTurnedOffRef.current = onCameraTurnedOff;
   });
 
   const stateRef = useRef<GovernorState>(initialGovernorState(performance.now()));
@@ -200,9 +197,84 @@ export function useLoadGovernor({
     [cameraTrack],
   );
 
+  /**
+   * Photo mode as applied: the interval in effect (0 = off), the processor it was applied to, and —
+   * when the camera has no worker background pipeline to drop frames in — the sender's frame rate
+   * caps it replaced, to put back.
+   */
+  const photoRef = useRef<{ intervalMs: number; processor: unknown; savedFps: (number | undefined)[] | null }>({
+    intervalMs: 0,
+    processor: undefined,
+    savedFps: null,
+  });
+
+  /** Caps (or, with null, restores) the camera sender's frame rate: photo mode without the worker pipeline. */
+  const setCameraSenderFps = useCallback(
+    async (fps: number | null) => {
+      const sender = cameraTrack()?.sender;
+      if (!sender) return;
+      const params = sender.getParameters();
+      if (!params.encodings?.length) return;
+      const photo = photoRef.current;
+      if (fps !== null) {
+        photo.savedFps ??= params.encodings.map((e) => e.maxFramerate);
+        for (const e of params.encodings) e.maxFramerate = fps;
+      } else {
+        if (!photo.savedFps) return;
+        params.encodings.forEach((e, i) => {
+          const saved = photo.savedFps?.[i];
+          if (saved === undefined) delete e.maxFramerate;
+          else e.maxFramerate = saved;
+        });
+        photo.savedFps = null;
+      }
+      await sender.setParameters(params).catch((err) => console.warn('[governor] could not set the camera frame rate:', err));
+    },
+    [cameraTrack],
+  );
+
+  /** Applies photo mode's interval (0 = off) to the camera, and tells the others. Idempotent. */
+  const applyPhoto = useCallback(
+    async (intervalMs: number) => {
+      const photo = photoRef.current;
+      const processor = cameraTrack()?.getProcessor();
+      if (photo.intervalMs === intervalMs && photo.processor === processor) return;
+      photo.intervalMs = intervalMs;
+      photo.processor = processor;
+      const viaEffect = backgroundRef.current.setPhotoInterval(intervalMs);
+      // No worker pipeline to drop frames in (effect off, or the main-thread fallback): have the
+      // encoder send fewer instead. The camera still captures and, with the main-thread effect,
+      // processes every frame, so this saves the encoding only.
+      await setCameraSenderFps(intervalMs > 0 && !viaEffect ? 1000 / intervalMs : null);
+      setLocalCameraPhoto(room, intervalMs > 0);
+    },
+    [cameraTrack, setCameraSenderFps, room],
+  );
+
   const applyAction = useCallback(
     async (action: GovernorAction) => {
       const bg = backgroundRef.current;
+      if (action.kind === 'bg-high') {
+        // The restore trial (governorPolicy step 1); no notice — it's only ever back to normal.
+        await bg.setQuality('high', { auto: true });
+        return;
+      }
+      if (action.kind === 'share-1080') {
+        // 1440p is the bonus for small text; no notice either way.
+        await setShareCap(localParticipant, action.direction === 'down' ? '1080' : 'max').catch((err) =>
+          console.warn('[governor] could not change the screen share size:', err),
+        );
+        return;
+      }
+      if (action.kind === 'photo') {
+        await applyPhoto(action.direction === 'down' ? PHOTO_INTERVAL_MS : 0);
+        if (action.direction === 'down') {
+          onNoticeRef.current(
+            'パソコンの負荷が高いため、カメラ映像を1〜数秒ごとの静止画にしています（負荷が下がると自動で戻ります）。',
+          );
+        }
+        return;
+      }
       if (action.kind === 'bg-balanced') {
         const ok = await bg.setQuality('balanced', { auto: true });
         if (ok) onNoticeRef.current('パソコンの負荷が高いため、背景エフェクトを標準画質に切り替えました。');
@@ -237,19 +309,16 @@ export function useLoadGovernor({
         return;
       }
       if (action.kind === 'share-720') {
-        await setShareFloor(localParticipant, action.direction === 'down').catch((err) =>
+        const up = stateRef.current.share1080 ? '1080' : 'max';
+        await setShareCap(localParticipant, action.direction === 'down' ? '720' : up).catch((err) =>
           console.warn('[governor] could not change the screen share size:', err),
         );
         if (action.direction === 'down') {
           onNoticeRef.current('パソコンの負荷が高いため、画面共有の画質を下げています（負荷が下がると自動で戻ります）。');
         }
-        return;
       }
-      await localParticipant.setCameraEnabled(false);
-      onCameraTurnedOffRef.current?.();
-      setCameraOffNotice({ withBackground: action.withBackground });
     },
-    [localParticipant, syncCameraProfile, forcedRecv],
+    [localParticipant, syncCameraProfile, forcedRecv, applyPhoto],
   );
 
   // Camera track replaced or its processor changed: forget what was applied, so the next sample
@@ -311,6 +380,7 @@ export function useLoadGovernor({
         totals.bgExpectedFps = signal.expectedFps;
         totals.bgReports += 1;
         if (signal.maxGapMs !== undefined) totals.bgMaxGapMs = Math.max(totals.bgMaxGapMs ?? 0, signal.maxGapMs);
+        if (signal.syncWaitMs !== undefined) totals.bgSyncWaitMs = Math.max(totals.bgSyncWaitMs ?? 0, signal.syncWaitMs);
       }
     });
 
@@ -658,6 +728,7 @@ export function useLoadGovernor({
 
     let lastSampleAt = performance.now();
     let running = false;
+    let rememberedRestoreAt: number | null = null;
     const forceShare = forcedShareStep();
     let sharingSince: number | null = null;
     takeRenderMeter(); // drop whatever was counted before this call's first window
@@ -698,6 +769,7 @@ export function useLoadGovernor({
             : undefined,
           frames: rafFrames > 1 ? { fps: rafFrames / seconds, maxGapMs: rafMaxGap } : undefined,
           bgMaxGapMs: localParticipant.isCameraEnabled ? t.bgMaxGapMs : undefined,
+          bgSyncWaitMs: localParticipant.isCameraEnabled ? t.bgSyncWaitMs : undefined,
           bgFps: t.bgSeconds > 0 ? t.bgFrames / t.bgSeconds : undefined,
           bgExpectedFps: t.bgExpectedFps || undefined,
           bgCostMs: t.bgFrames > 0 ? t.bgCostMs / t.bgFrames : undefined,
@@ -739,18 +811,49 @@ export function useLoadGovernor({
           5: recvController.wouldRelieve(5),
         };
         const shareCodec = currentShareCodec(localParticipant);
+        const shareHeight = currentShareHeight(localParticipant);
         const ctx =
           mode === 'active'
-            ? { bgQuality: actualQuality, cameraOn: sample.cameraOn, recvRelief, shareCodec }
+            ? {
+                bgQuality: actualQuality,
+                bgUpgradable: bg.canAutoUpgradeQuality(),
+                cameraOn: sample.cameraOn,
+                recvRelief,
+                shareCodec,
+                shareHeight,
+              }
             : {
                 bgQuality: actualQuality === 'high' && state.bgDowngraded ? ('balanced' as const) : actualQuality,
-                cameraOn: sample.cameraOn && !state.cameraOffByGovernor,
+                bgUpgradable: bg.canAutoUpgradeQuality(),
+                cameraOn: sample.cameraOn,
                 recvRelief,
                 shareCodec: shareCodec === 'av1' && state.shareVp8 ? ('vp8' as const) : shareCodec,
+                shareHeight: state.share1080 || state.share720 ? Math.min(shareHeight, 1080) : shareHeight,
               };
         const step = stepGovernor(state, sample, ctx);
         stateRef.current = step.state;
-        if (mode === 'active') syncCameraProfile(step.state.video);
+        // The background's restore trial held (still 'high' a trial window later): remember it for
+        // the next call on this device.
+        const restoredAt = step.state.bgRestoredAt;
+        if (
+          mode === 'active' &&
+          restoredAt !== null &&
+          restoredAt !== rememberedRestoreAt &&
+          now - restoredAt >= GOVERNOR_THRESHOLDS.bgRestoreTrialMs &&
+          actualQuality === 'high'
+        ) {
+          rememberedRestoreAt = restoredAt;
+          bg.rememberAutoHigh();
+          recordTelemetry('bg-high-remembered', {});
+        }
+        if (mode === 'active') {
+          syncCameraProfile(step.state.video);
+          // Photo mode: one still a second, or one every few while still overloaded. Re-applied
+          // when the camera's processor changes (a rebuilt effect starts without it).
+          if (step.state.photo && sample.cameraOn) {
+            await applyPhoto(step.verdict.pressure === 'overloaded' ? PHOTO_SLOW_INTERVAL_MS : PHOTO_INTERVAL_MS);
+          }
+        }
 
         // `ah`: outgoing mic pipeline health (lib/audio/audioPipelineHealth) — stage, AudioContext
         // states and signal level at each tap, to locate "mic is ON but nobody hears me".
@@ -807,14 +910,13 @@ export function useLoadGovernor({
       cancelAnimationFrame(rafId);
       document.removeEventListener('visibilitychange', onVisibility);
       unsubscribe();
+      setLocalCameraPhoto(room, false);
       recordTelemetry('governor-stop', {});
       stopTelemetry();
     };
-  }, [mode, roomId, room, localParticipant, applyAction, syncCameraProfile, showPanel, forcedRecv, cameraTrack]);
+  }, [mode, roomId, room, localParticipant, applyAction, applyPhoto, syncCameraProfile, showPanel, forcedRecv, cameraTrack]);
 
-  const dismissCameraOffNotice = useCallback(() => setCameraOffNotice(null), []);
-
-  return { mode, showPanel, lastStep, cameraOffNotice, dismissCameraOffNotice, forcedRecv };
+  return { mode, showPanel, lastStep, forcedRecv };
 }
 
 /** One telemetry line per sample: short keys, rounded numbers (it's every 2s for the whole call). */
@@ -827,9 +929,9 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
   return {
     p: step.verdict.pressure,
     r: step.verdict.reasons.length ? step.verdict.reasons : undefined,
-    lv: `${st.bgDowngraded ? 'b' : ''}${st.video}${st.recv ? `r${st.recv}` : ''}${st.shareVp8 ? 'v' : ''}${st.share720 ? 's' : ''}${
-      st.cameraOffByGovernor ? 'x' : ''
-    }`,
+    lv: `${st.bgDowngraded ? 'b' : ''}${st.video}${st.recv ? `r${st.recv}` : ''}${st.shareVp8 ? 'v' : ''}${st.share1080 ? 'h' : ''}${
+      st.share720 ? 's' : ''
+    }${st.photo ? 'p' : ''}`,
     vis: s.visible ? undefined : 0,
     cam: s.cameraOn ? 1 : 0,
     sh: s.sharing ? 1 : undefined,
@@ -847,6 +949,8 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
     rafx: r0(s.frames?.maxGapMs),
     // Longest gap between camera frames leaving the background effect, ms.
     bgg: r0(s.bgMaxGapMs),
+    // Average wait for a frame's own matte (matteSync / photo mode), worst second in the window.
+    bgw: r1(s.bgSyncWaitMs),
     // Per received video: [peer#, 'c'amera|'s'hare, fps, freezes, frozen ms, height]. Peer# -> who: 'peer' entries.
     rs: s.recv?.perStream?.length
       ? s.recv.perStream.map((p) => [peerIndex(p.identity), p.source === 'camera' ? 'c' : 's', r0(p.fps), p.freezes, r0(p.freezeMs), p.height])

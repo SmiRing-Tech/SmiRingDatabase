@@ -11,7 +11,8 @@ import {
 /**
  * How Connect shares a screen.
  *
- * Default: VP8, capture capped at 1080p, at most 15fps, degradationPreference 'maintain-resolution'
+ * Default: VP8, capture capped at 1440p (since 2026-11-19; 1080p before — shares are often small
+ * text, and 1440p is what keeps it readable), at most 15fps, degradationPreference 'maintain-resolution'
  * (a squeezed uplink or CPU drops frames, never pixels — the 2026-10-15 meeting's share shrank to
  * 180p before that), with the usual 720p/5fps simulcast layer for small tiles.
  *
@@ -26,19 +27,24 @@ import {
  *  - Viewers that can't decode AV1 get VP8 alongside, only while one is in the room
  *    (BackupCodecPolicy.SIMULCAST); LiveKit's default would switch everyone to VP8.
  *  - Fallback, as load governor steps (pages/Connect/loadGovernor/governorPolicy.ts):
- *    S1 AV1 -> VP8 1080p (a republish; first when the share's own encoder is the overload),
+ *    S0 VP8 1440p -> 1080p (the first step while sharing a screen taller than 1080p);
+ *    S1 AV1 -> VP8 (a republish; first when the share's own encoder is the overload),
  *    remembered for VP8_MEMORY_DAYS; S2 VP8 at 720p, the floor.
  */
 
 /** Capture cap: fit within this, never upscale. */
 const SHARE_MAX = { width: 2560, height: 1600 };
 const SHARE_FPS = 15;
-const VP8_MAX = { width: 1920, height: 1080 };
+const VP8_MAX = { width: 2560, height: 1440 };
+const VP8_1080 = { width: 1920, height: 1080 };
 const VP8_FLOOR = { width: 1280, height: 720 };
 
 const AV1_ENCODING = { maxBitrate: 3_000_000, maxFramerate: SHARE_FPS, priority: 'high' as const };
-/** Same as publishDefaults.screenShareEncoding (CallRoomPage roomOptions). */
-const VP8_ENCODING = { maxBitrate: 4_000_000, maxFramerate: SHARE_FPS, priority: 'high' as const };
+/**
+ * Same as publishDefaults.screenShareEncoding (CallRoomPage roomOptions). 6Mbps for 1440p (was 4 at
+ * 1080p); a still screen of text settles far below it, only scrolling reaches it.
+ */
+const VP8_ENCODING = { maxBitrate: 6_000_000, maxFramerate: SHARE_FPS, priority: 'high' as const };
 
 const VP8_MEMORY_KEY = 'smiring.share.vp8Until';
 const VP8_MEMORY_DAYS = 14;
@@ -132,7 +138,7 @@ export function isShareSwitching() {
   return switching;
 }
 
-/** S1: republish the running share as VP8 at 1080p, keeping the captured track (no picker). */
+/** S1: republish the running share as VP8 (1440p cap), keeping the captured track (no picker). */
 export async function switchShareToVp8(localParticipant: LocalParticipant): Promise<boolean> {
   const track = screenTrack(localParticipant);
   if (!track || track.mediaStreamTrack.readyState !== 'live') return false;
@@ -148,9 +154,17 @@ export async function switchShareToVp8(localParticipant: LocalParticipant): Prom
   }
 }
 
-/** S2 and its undo: VP8 share capped at 720p, or back to 1080p. */
-export async function setShareFloor(localParticipant: LocalParticipant, floor: boolean): Promise<void> {
+/** S0 / S2 and their undo: the VP8 share's capture cap. */
+export async function setShareCap(localParticipant: LocalParticipant, cap: 'max' | '1080' | '720'): Promise<void> {
   const track = screenTrack(localParticipant);
   if (!track || track.mediaStreamTrack.readyState !== 'live') return;
-  await track.mediaStreamTrack.applyConstraints(captureConstraints(floor ? VP8_FLOOR : VP8_MAX));
+  const size = cap === '720' ? VP8_FLOOR : cap === '1080' ? VP8_1080 : VP8_MAX;
+  await track.mediaStreamTrack.applyConstraints(captureConstraints(size));
+}
+
+/** Height the own share is captured at right now, or 0 when not sharing. */
+export function currentShareHeight(localParticipant: LocalParticipant): number {
+  const track = screenTrack(localParticipant);
+  if (!track || track.mediaStreamTrack.readyState !== 'live') return 0;
+  return track.mediaStreamTrack.getSettings().height ?? 0;
 }

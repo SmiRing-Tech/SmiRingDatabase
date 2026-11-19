@@ -23,6 +23,8 @@ export type LoadSignal =
       expectedFps: number;
       /** Longest gap between output frames, ms (worker pipeline only). */
       maxGapMs?: number;
+      /** Average wait for a frame's own matte, ms (matteSync / photo mode; worker pipeline only). */
+      syncWaitMs?: number;
     };
 
 type Listener = (signal: LoadSignal) => void;

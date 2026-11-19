@@ -53,6 +53,10 @@ export type WorkerBackgroundOptions = MediapipeBackgroundOptions & {
    * main-thread processor — this path stays off for the rest of the page.
    */
   onPipelineFailure?: (reason: string) => void;
+  /** Composite each frame with its own matte (backgroundCompositor.worker's header). */
+  matteSync?: boolean;
+  /** Photo mode: one frame per this many ms; 0 = off. */
+  photoIntervalMs?: number;
 };
 
 /** Generous: on a slow machine a model load plus first inference took 4-7s on the main thread. */
@@ -333,6 +337,8 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       segmentationScheduler: o.segmentationScheduler,
       invertOverride: o.invertMask === undefined ? null : o.invertMask ? 1 : 0,
       measureGpuSync: o.measureGpuSync,
+      matteSync: o.matteSync ?? false,
+      photoIntervalMs: o.photoIntervalMs ?? 0,
     };
   }
 
@@ -529,6 +535,24 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
     this.fallback?.setCallbacks(callbacks);
   }
 
+  /**
+   * Matte timing and photo mode (see backgroundCompositor.worker's header). Worker pipeline only:
+   * the main-thread fallback keeps compositing every frame with the latest matte.
+   */
+  setFrameMode(mode: { matteSync?: boolean; photoIntervalMs?: number }) {
+    if (this.fallback) return;
+    this.options = { ...this.options, ...mode };
+    this.postToCompositor({
+      type: 'settings',
+      settings: { matteSync: this.options.matteSync ?? false, photoIntervalMs: this.options.photoIntervalMs ?? 0 },
+    });
+  }
+
+  /** True when setFrameMode does anything (the worker pipeline is running, not the fallback). */
+  get supportsFrameMode() {
+    return !this.fallback;
+  }
+
   /** Live-updates the numeric knobs, like MediapipeBackgroundProcessor.updateOptions. */
   updateOptions(options: Parameters<MediapipeBackgroundProcessor['updateOptions']>[0]) {
     if (this.fallback) {
@@ -642,6 +666,7 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       costMsTotal: stats.compositeMsTotal + stats.segmenterWorkMsTotal,
       expectedFps: this.expectedFps(),
       maxGapMs: stats.maxGapMs,
+      syncWaitMs: stats.syncFrames ? stats.syncWaitMsTotal / stats.syncFrames : undefined,
     });
     this.history.push(stats);
     if (this.history.length > PERF_FAST_WINDOW_S) this.history.shift();
@@ -685,8 +710,10 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
     }
   }
 
-  /** The camera's own frame rate — what "keeping up" means. */
+  /** The camera's own frame rate — what "keeping up" means. In photo mode, the photo rate. */
   private expectedFps(): number {
+    const photo = this.options.photoIntervalMs ?? 0;
+    if (photo > 0) return 1000 / photo;
     const rate = this.sourceTrack?.getSettings().frameRate;
     return Math.min(rate && rate > 0 ? rate : 20, 30);
   }
@@ -765,6 +792,10 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       segmenterWorkMsAvg: avg(d.segmenterWorkMsTotal, d.segmentations),
       maskLatencyMsAvg: avg(d.maskLatencyMsTotal, d.segmentations),
       droppedFrames: d.droppedFrames || undefined,
+      syncFrames: d.syncFrames || undefined,
+      syncWaitMsAvg: avg(d.syncWaitMsTotal, d.syncFrames),
+      syncTimeouts: d.syncTimeouts || undefined,
+      photoSkipped: d.photoSkipped || undefined,
     };
     this.diag = { ...emptyTotals(), seconds: 0 };
     return data;
@@ -783,6 +814,10 @@ function emptyTotals(): Omit<CompositorStats, 'intervalMs'> {
     maskLatencyMsTotal: 0,
     droppedFrames: 0,
     maxGapMs: 0,
+    syncFrames: 0,
+    syncWaitMsTotal: 0,
+    syncTimeouts: 0,
+    photoSkipped: 0,
   };
 }
 
@@ -797,4 +832,8 @@ function addTotals(into: Omit<CompositorStats, 'intervalMs'>, stats: CompositorS
   into.maskLatencyMsTotal += stats.maskLatencyMsTotal;
   into.droppedFrames += stats.droppedFrames;
   into.maxGapMs = Math.max(into.maxGapMs, stats.maxGapMs);
+  into.syncFrames += stats.syncFrames;
+  into.syncWaitMsTotal += stats.syncWaitMsTotal;
+  into.syncTimeouts += stats.syncTimeouts;
+  into.photoSkipped += stats.photoSkipped;
 }

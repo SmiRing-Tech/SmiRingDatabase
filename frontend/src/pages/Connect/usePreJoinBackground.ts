@@ -221,6 +221,9 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
         matteLo: 0.3,
         matteHi: 0.75,
         segmentationFps: detectSegmentationFps(),
+        // Each frame with its own matte, as in the call at governor level 0 (this processor is
+        // carried into the call as is).
+        matteSync: true,
         // Only 'high' has anywhere lighter to fall back to, and only 'balanced' has
         // anywhere heavier to try. Checked at call time: the worker processor changes
         // quality in place, so the same processor can be either over its life.
@@ -426,6 +429,9 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
     setQuality,
     // The load governor only runs in the call; nothing lowers the segmentation rate here.
     setPerformanceProfile: () => {},
+    setPhotoInterval: () => false,
+    canAutoUpgradeQuality: () => false,
+    rememberAutoHigh: () => {},
     handleUpload,
     handleDelete,
     imageUrlFor,
