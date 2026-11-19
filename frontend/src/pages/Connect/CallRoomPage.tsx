@@ -96,10 +96,14 @@ import { diagEvent, diagState, registerDiagProbe } from '../../lib/connectDiagno
 import { toggleMicrophone } from '../../lib/toggleMicrophone';
 import {
   createLevelTap,
+  readAudioPipelineHealth,
+  requestAudioPipelineRebuild,
   setAudioPipelineHealthProvider,
+  setAudioPipelineRebuilder,
   trackStateTag,
   type AudioPipelineHealth,
 } from '../../lib/audio/audioPipelineHealth';
+import { flushPrejoinMicEvents, startMicWatchdog, type MicWatchdogStatus } from '../../lib/audio/micWatchdog';
 import {
   DiagnosticsDialog,
   DiagnosticsMenuItem,
@@ -424,6 +428,18 @@ function useVadAutoGate(
     };
   }, [localParticipant]);
 
+  // The mic watchdog (lib/audio/micWatchdog) asks for a full rebuild when the raw mic has sound
+  // but this pipeline doesn't pass it on — the same thing toggling noise cancellation used to fix
+  // by accident.
+  useEffect(
+    () =>
+      setAudioPipelineRebuilder((reason) => {
+        diagEvent('mic-pipeline-rebuild', { reason });
+        setTrackEpoch((n) => n + 1);
+      }),
+    [],
+  );
+
   useEffect(() => {
     if (!enabled && !noiseCancelEnabled && !VOICE_FINISH_ENABLED) return;
 
@@ -740,7 +756,21 @@ function useVadAutoGate(
         reassertSenderTrack(track);
       };
       const onTrackProcessorUpdate = onUpstreamChange('TrackProcessorUpdate');
-      const onRestarted = onUpstreamChange('Restarted');
+      const reattachOnRestart = onUpstreamChange('Restarted');
+      // A restart swaps in a brand-new capture track. The gate's own input follows it through
+      // reattachUpstream, but GTCRN and the VAD each hold a clone of the *old* track taken at
+      // creation, and reattachUpstream can't see that (GTCRN's output track id doesn't change).
+      // Telemetry showed exactly this: GTCRN's source clone 'ended', input at digital silence,
+      // for 3 minutes (fixed by toggling noise cancel) and for a whole 65-minute call. Rebuild.
+      const onRestarted = () => {
+        if (noiseCancelTrack || vadTrack) {
+          vadLog('track restarted: rebuilding pipeline onto the new capture track');
+          diagEvent('mic-pipeline-rebuild', { reason: 'track-restarted' });
+          setTrackEpoch((n) => n + 1);
+          return;
+        }
+        reattachOnRestart();
+      };
       const onUnmuted = onUpstreamChange('Unmuted');
       track.on(TrackEvent.TrackProcessorUpdate, onTrackProcessorUpdate);
       track.on(TrackEvent.Restarted, onRestarted);
@@ -1225,8 +1255,82 @@ function DropdownPortal({
  * apply/sync effect here: the two booleans below just flow straight into that hook's params,
  * and it owns the entire lifecycle reactively.
  */
+/**
+ * What the mic watchdog sees as broken in useVadAutoGate's pipeline, given that the raw mic itself
+ * has sound right now. null when it's fine or still being built.
+ */
+function micPipelineProblem(): string | null {
+  const h = readAudioPipelineHealth();
+  if (!h || h.err) return null;
+  if (h.st !== 'gate-installed' && h.st !== 'vad-ready') return null;
+  const nc = h.nc as Record<string, unknown> | undefined;
+  if (nc) {
+    if (String(nc.src).startsWith('ended')) return 'nc-source-ended';
+    // GTCRN's input tap sits on its source clone, before anything mute-related, so it should
+    // carry the same sound the raw mic does.
+    if (nc.ctx === 'running' && nc.in === -999) return 'nc-input-silent';
+    return null;
+  }
+  if (String(h.gsrc ?? '').startsWith('ended')) return 'gate-source-ended';
+  if (h.g === 'running' && h.gin === -999) return 'gate-input-silent';
+  return null;
+}
+
+/**
+ * Runs lib/audio/micWatchdog on the published mic for the whole call (including while muted), so
+ * "mic is on but nobody hears me" gets fixed before the person notices.
+ */
+function useMicWatchdog(onStatus: (status: MicWatchdogStatus) => void) {
+  const { localParticipant } = useLocalParticipant();
+  const [micTrack, setMicTrack] = useState<LocalAudioTrack | null>(null);
+  const onStatusRef = useRef(onStatus);
+  useEffect(() => {
+    onStatusRef.current = onStatus;
+  }, [onStatus]);
+
+  useEffect(() => {
+    const sync = () =>
+      setMicTrack(
+        (localParticipant.getTrackPublication(Track.Source.Microphone)?.track as LocalAudioTrack | undefined) ?? null,
+      );
+    sync();
+    localParticipant.on(ParticipantEvent.LocalTrackPublished, sync);
+    localParticipant.on(ParticipantEvent.LocalTrackUnpublished, sync);
+    return () => {
+      localParticipant.off(ParticipantEvent.LocalTrackPublished, sync);
+      localParticipant.off(ParticipantEvent.LocalTrackUnpublished, sync);
+    };
+  }, [localParticipant]);
+
+  useEffect(() => {
+    if (!micTrack) return;
+    flushPrejoinMicEvents(diagEvent);
+    return startMicWatchdog(micTrack, {
+      phase: 'call',
+      checkPipeline: micPipelineProblem,
+      rebuildPipeline: requestAudioPipelineRebuild,
+      onStatus: (s) => onStatusRef.current(s),
+      log: diagEvent,
+    });
+  }, [micTrack]);
+}
+
 function useMediaEnhancementsState(isGuest: boolean) {
   const background = useBackgroundEffect(isGuest);
+  // Shown when the mic watchdog couldn't bring the mic back on its own.
+  const [micNotice, setMicNotice] = useState('');
+  const dismissMicNotice = useCallback(() => setMicNotice(''), []);
+  useMicWatchdog(
+    useCallback((status: MicWatchdogStatus) => {
+      if (status === 'failed') {
+        setMicNotice(
+          'マイクから音が届いていません。OSのマイク設定（許可・入力音量）を確認するか、マイク設定から別のマイクを選んでください。',
+        );
+      } else if (status === 'ok') {
+        setMicNotice('');
+      }
+    }, []),
+  );
   const [autoGateEnabled, setAutoGateEnabled] = useState(false);
   const [vadSensitivity, setVadSensitivity] = useState(VAD_POSITIVE_SPEECH_THRESHOLD);
   const [noiseCancelEnabled, setNoiseCancelEnabled] = useState(true);
@@ -1265,6 +1369,8 @@ function useMediaEnhancementsState(isGuest: boolean) {
     setNoiseCancelEnabled,
     noiseCancelNotice,
     dismissNoiseCancelNotice,
+    micNotice,
+    dismissMicNotice,
   };
 }
 
@@ -2802,7 +2908,9 @@ function CustomVideoConference({
       )}
       <DiagnosticsResultDialog controller={diagnostics} />
 
-      {mediaEnhancements.noiseCancelNotice ? (
+      {mediaEnhancements.micNotice ? (
+        <NoiseCancelNotice message={mediaEnhancements.micNotice} onDismiss={mediaEnhancements.dismissMicNotice} />
+      ) : mediaEnhancements.noiseCancelNotice ? (
         <NoiseCancelNotice
           message={mediaEnhancements.noiseCancelNotice}
           onDismiss={mediaEnhancements.dismissNoiseCancelNotice}

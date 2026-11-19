@@ -33,6 +33,21 @@ export function readAudioPipelineHealth(): AudioPipelineHealth | undefined {
   }
 }
 
+let rebuilder: ((reason: string) => void) | null = null;
+
+/** Installs the current pipeline's "tear down and build again". Returns an unregister for this one only. */
+export function setAudioPipelineRebuilder(r: (reason: string) => void): () => void {
+  rebuilder = r;
+  return () => {
+    if (rebuilder === r) rebuilder = null;
+  };
+}
+
+/** Asks the outgoing mic pipeline to rebuild itself (lib/audio/micWatchdog). No-op without one. */
+export function requestAudioPipelineRebuild(reason: string): void {
+  rebuilder?.(reason);
+}
+
 /** Peak level an AnalyserNode currently holds, dBFS rounded to 1dB. Exact digital silence is
  *  reported as -999, distinct from a real (however quiet) mic noise floor. */
 export function analyserPeakDb(analyser: AnalyserNode, buf: Float32Array<ArrayBuffer>): number {

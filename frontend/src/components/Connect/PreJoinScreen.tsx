@@ -6,6 +6,7 @@ import { usePreJoinBackground } from '../../pages/Connect/usePreJoinBackground';
 import { warmupGtcrnModel } from '../../lib/audio/gtcrn/GtcrnNoiseCancelTrack';
 import { AUDIO_CAPTURE_CONSTRAINTS, VIDEO_CAPTURE_CONSTRAINTS } from './captureConstraints';
 import { useMicLevel, playSpeakerTestTone } from './audioTest';
+import { bufferPrejoinMicEvent, startMicWatchdog, type MicWatchdogStatus } from '../../lib/audio/micWatchdog';
 import {
   isContinuityDevice,
   markDeviceExplicitlyChosen,
@@ -238,6 +239,20 @@ export default function PreJoinScreen({
   }, [isBackgroundReady]);
 
   const micLevel = useMicLevel(audioTrack);
+
+  // Catches a mic that delivers nothing (exact digital silence) or whose track ended, and
+  // re-acquires it here, before joining — works with the mic toggled off too (see micWatchdog).
+  // Stops on submit: the call runs its own watchdog on the same track.
+  const [micStatus, setMicStatus] = useState<MicWatchdogStatus>('ok');
+  useEffect(() => {
+    if (!audioTrack) return;
+    setMicStatus('ok');
+    return startMicWatchdog(audioTrack, {
+      phase: 'prejoin',
+      onStatus: setMicStatus,
+      log: bufferPrejoinMicEvent,
+    });
+  }, [audioTrack]);
   const [testingSpeaker, setTestingSpeaker] = useState(false);
   const handleTestSpeaker = useCallback(async () => {
     setTestingSpeaker(true);
@@ -519,6 +534,14 @@ export default function PreJoinScreen({
                     style={{ width: `${Math.round(micLevel * 100)}%` }}
                   />
                 </div>
+                {micStatus === 'healing' && (
+                  <p className="text-[11px] font-semibold text-slate-500">マイクを再接続しています...</p>
+                )}
+                {micStatus === 'failed' && (
+                  <p className="text-[11px] font-semibold text-amber-600">
+                    マイクから音が届いていません。OSのマイク設定（許可・入力音量）を確認するか、別のマイクを選んでください。
+                  </p>
+                )}
               </div>
             )}
           </div>
