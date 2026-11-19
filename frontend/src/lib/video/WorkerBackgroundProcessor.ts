@@ -59,6 +59,21 @@ export type WorkerBackgroundOptions = MediapipeBackgroundOptions & {
   photoIntervalMs?: number;
 };
 
+/**
+ * The window going to or from the background costs a few seconds of real but passing load (the
+ * browser and OS redrawing). The slow-frame checks ignore that stretch, like the load governor's
+ * switch grace: on 2026-11-19 this effect switched itself to 'balanced' on a 10-core Mac from
+ * nothing but a window switch.
+ */
+const VISIBILITY_SWITCH_GRACE_MS = 10_000;
+let lastVisibilityChangeAt = -Infinity;
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    lastVisibilityChangeAt = performance.now();
+  });
+}
+const inVisibilitySwitchGrace = () => performance.now() - lastVisibilityChangeAt < VISIBILITY_SWITCH_GRACE_MS;
+
 /** Generous: on a slow machine a model load plus first inference took 4-7s on the main thread. */
 const INIT_TIMEOUT_MS = 20_000;
 
@@ -674,7 +689,15 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
           : undefined,
       ownMattePct: stats.heldFrames ? (stats.ownMatteFrames / stats.heldFrames) * 100 : undefined,
       forcedOut: stats.forcedOut || undefined,
+      segmentations: stats.segmentations,
+      segmentRoundTripMs: stats.segmentations ? stats.maskLatencyMsTotal / stats.segmentations : undefined,
+      segmenterWorkMs: stats.segmentations ? stats.segmenterWorkMsTotal / stats.segmentations : undefined,
     });
+    if (inVisibilitySwitchGrace()) {
+      // A window switch: these seconds say nothing about whether the effect keeps up.
+      this.history = [];
+      return;
+    }
     this.history.push(stats);
     if (this.history.length > PERF_FAST_WINDOW_S) this.history.shift();
     if (this.readyResolved) this.checkFrameCost();
@@ -749,6 +772,7 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       !this.stopped &&
       !this.slowCallbackFired &&
       !inGrace &&
+      !inVisibilitySwitchGrace() &&
       document.visibilityState === 'visible' &&
       track?.readyState === 'live' &&
       track.enabled &&

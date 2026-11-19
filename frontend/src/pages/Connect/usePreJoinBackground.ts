@@ -16,6 +16,7 @@ import {
   writeStoredChoice,
   detectSegmentationQuality,
   detectSegmentationFps,
+  defaultSegmentationScheduler,
   isMobileDevice,
   qualityWithinLoadDeadline,
   HIGH_MODEL_FALLBACK_MESSAGE,
@@ -221,6 +222,7 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
         matteLo: 0.3,
         matteHi: 0.75,
         segmentationFps: detectSegmentationFps(),
+        segmentationScheduler: defaultSegmentationScheduler(),
         // Each frame with its own matte, as in the call at governor level 0 (this processor is
         // carried into the call as is).
         matteSync: true,

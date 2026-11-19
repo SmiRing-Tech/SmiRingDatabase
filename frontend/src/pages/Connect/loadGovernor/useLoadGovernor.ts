@@ -132,6 +132,9 @@ function createSignalTotals() {
     bgMatteDelayMs: undefined as number | undefined,
     bgOwnMattePct: undefined as number | undefined,
     bgForcedOut: 0,
+    bgSegmentations: 0,
+    bgSegRoundTripMax: undefined as number | undefined,
+    bgSegWorkMax: undefined as number | undefined,
   };
 }
 
@@ -387,6 +390,11 @@ export function useLoadGovernor({
           totals.bgOwnMattePct = Math.min(totals.bgOwnMattePct ?? 100, signal.ownMattePct);
         }
         totals.bgForcedOut += signal.forcedOut ?? 0;
+        totals.bgSegmentations += signal.segmentations ?? 0;
+        if (signal.segmentRoundTripMs !== undefined) {
+          totals.bgSegRoundTripMax = Math.max(totals.bgSegRoundTripMax ?? 0, signal.segmentRoundTripMs);
+        }
+        if (signal.segmenterWorkMs !== undefined) totals.bgSegWorkMax = Math.max(totals.bgSegWorkMax ?? 0, signal.segmenterWorkMs);
       }
     });
 
@@ -461,8 +469,21 @@ export function useLoadGovernor({
       rafId = requestAnimationFrame(onFrame);
     };
     rafId = requestAnimationFrame(onFrame);
+    // Switching the window to or from the background. Chrome runs a hidden tab's timers about
+    // once a second, so the lag timer reads ~900ms while hidden; without a reset, the first sample
+    // back on screen judged that as the page stalling (2026-11-19). The switch itself is also a
+    // few seconds of real but passing load (the browser and OS redrawing): see the governor's
+    // switch grace.
+    let lastVisibilityChangeAt: number | null = null;
+    let switchedThisWindow = false;
     const onVisibility = () => {
       rafLast = null; // the gap across a hidden stretch isn't a dropped frame
+      const now = performance.now();
+      lagMax = 0;
+      lastTick = now;
+      longTaskMs = 0;
+      lastVisibilityChangeAt = now;
+      switchedThisWindow = true;
     };
     document.addEventListener('visibilitychange', onVisibility);
 
@@ -765,6 +786,8 @@ export function useLoadGovernor({
           sharing: localParticipant.isScreenShareEnabled,
           encoderCpuFraction: sent?.encoderCpu,
           mainLagMaxMs: Math.max(0, lagMax),
+          visibilityChanged: switchedThisWindow || undefined,
+          sinceVisibilityChangeMs: lastVisibilityChangeAt === null ? undefined : now - lastVisibilityChangeAt,
           longTaskMsPerSec: longTaskMs / seconds,
           // The background processor keeps reporting (0 frames) while the camera is off; judging
           // that as "background can't keep up" pinned the receive step at r3 for whole calls.
@@ -778,6 +801,10 @@ export function useLoadGovernor({
           bgMatte: localParticipant.isCameraEnabled && t.bgMatteDelayMs !== undefined
             ? { delayMs: t.bgMatteDelayMs, ownPct: t.bgOwnMattePct, forcedOut: t.bgForcedOut }
             : undefined,
+          bgSegment:
+            localParticipant.isCameraEnabled && t.bgSeconds > 0 && t.bgSegmentations > 0
+              ? { perSec: t.bgSegmentations / t.bgSeconds, roundTripMs: t.bgSegRoundTripMax, workMs: t.bgSegWorkMax }
+              : undefined,
           bgFps: t.bgSeconds > 0 ? t.bgFrames / t.bgSeconds : undefined,
           bgExpectedFps: t.bgExpectedFps || undefined,
           bgCostMs: t.bgFrames > 0 ? t.bgCostMs / t.bgFrames : undefined,
@@ -802,6 +829,7 @@ export function useLoadGovernor({
         lastSampleAt = now;
         lagMax = 0;
         longTaskMs = 0;
+        switchedThisWindow = false;
         cpuPressureWorst = cpuPressureNow; // the observer only reports changes
         probe = { n: 0, workSum: 0, workMax: 0, lateMax: 0 };
         rafFrames = 0;
@@ -941,6 +969,10 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
       st.share720 ? 's' : ''
     }${st.photo ? 'p' : ''}`,
     vis: s.visible ? undefined : 0,
+    // The window went to or from the background during this sample / the governor held off
+    // stepping down because of a recent switch (governorPolicy switch grace).
+    vch: s.visibilityChanged ? 1 : undefined,
+    sg: step.switchGrace ? 1 : undefined,
     cam: s.cameraOn ? 1 : 0,
     sh: s.sharing ? 1 : undefined,
     enc: s.encoderCpuFraction === undefined ? undefined : Math.round(s.encoderCpuFraction * 100) / 100,
@@ -963,6 +995,11 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
     bgw: r1(s.bgMatte?.delayMs),
     bgo: r0(s.bgMatte?.ownPct),
     bgx: s.bgMatte?.forcedOut || undefined,
+    // Segmentation: per second, round trip (asked -> matte ready) and the segmenter's own time per
+    // segmentation, ms (worst second in the window).
+    bgs: r1(s.bgSegment?.perSec),
+    bgrt: r1(s.bgSegment?.roundTripMs),
+    bgsw: r1(s.bgSegment?.workMs),
     // Per received video: [peer#, 'c'amera|'s'hare, fps, freezes, frozen ms, height]. Peer# -> who: 'peer' entries.
     rs: s.recv?.perStream?.length
       ? s.recv.perStream.map((p) => [peerIndex(p.identity), p.source === 'camera' ? 'c' : 's', r0(p.fps), p.freezes, r0(p.freezeMs), p.height])

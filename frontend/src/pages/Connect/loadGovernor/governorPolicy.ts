@@ -97,6 +97,10 @@ export interface LoadSample {
   encoderCpuFraction?: number;
   /** Worst lateness of a 100ms main-thread timer in the window. */
   mainLagMaxMs: number;
+  /** The window went to or from the background during this sample. */
+  visibilityChanged?: boolean;
+  /** Time since the window last went to or from the background (undefined = never). */
+  sinceVisibilityChangeMs?: number;
   /** Long tasks on the main thread, ms per second (Chromium only; 0 elsewhere). */
   longTaskMsPerSec: number;
   /** The background effect is running on a live camera (it keeps reporting while the camera is off). */
@@ -114,6 +118,8 @@ export interface LoadSample {
   bgMaxGapMs?: number;
   /** Background matte timing (backgroundCompositor.worker: matteSync / photo mode). Telemetry only. */
   bgMatte?: { delayMs: number; ownPct?: number; forcedOut: number };
+  /** Segmentation rate and timing (worker pipeline). Telemetry only. */
+  bgSegment?: { perSec: number; roundTripMs?: number; workMs?: number };
   bgFps?: number;
   bgExpectedFps?: number;
   /** Background effect cost per frame (all its threads), ms. */
@@ -281,6 +287,14 @@ export const GOVERNOR_THRESHOLDS = {
   maxRecoverBackoff: 8,
   /** A recovery that held this long resets the backoff. */
   backoffResetMs: 300_000,
+  /**
+   * After the window goes to or from the background, don't step down for this long unless the
+   * audio actually breaks. The switch itself costs a few seconds of real but passing load (the
+   * browser and OS redrawing, CPU pressure 'serious', background frames stalling, the noise
+   * cancel briefly stressed): on 2026-11-19 a 10-core Mac went to 'balanced' and camera level 1
+   * from switching windows, while staying fine for minutes at a time hidden or shown.
+   */
+  visibilitySwitchGraceMs: 10_000,
   /** Calm this long, with every other step undone, before trying the background on 'high' again. */
   bgRestoreAfterMs: 300_000,
   /** Overloaded (for a background reason) within this long of that = this machine can't hold 'high'. */
@@ -326,9 +340,11 @@ export function classify(sample: LoadSample, T: GovernorThresholds = GOVERNOR_TH
     if (load >= T.shareEncodeCalmLoad || share.encodeMs >= T.shareEncodeCalmMs) calm = false;
   }
 
-  if (visible && sample.mainLagMaxMs >= T.mainLagOverloadMs) reasons.push('main-lag');
-  if (visible && sample.longTaskMsPerSec >= T.longTaskOverloadMsPerSec) reasons.push('long-tasks');
-  if (visible && (sample.mainLagMaxMs >= T.mainLagCalmMs || sample.longTaskMsPerSec >= T.longTaskCalmMsPerSec)) calm = false;
+  // Not across a switch to or from the background either: the timers ran throttled for part of it.
+  const steady = visible && !sample.visibilityChanged;
+  if (steady && sample.mainLagMaxMs >= T.mainLagOverloadMs) reasons.push('main-lag');
+  if (steady && sample.longTaskMsPerSec >= T.longTaskOverloadMsPerSec) reasons.push('long-tasks');
+  if (steady && (sample.mainLagMaxMs >= T.mainLagCalmMs || sample.longTaskMsPerSec >= T.longTaskCalmMsPerSec)) calm = false;
 
   if (visible && sample.bgActive && sample.bgFps !== undefined && sample.bgExpectedFps) {
     const ratio = sample.bgFps / sample.bgExpectedFps;
@@ -444,6 +460,8 @@ export interface GovernorStep {
   state: GovernorState;
   verdict: Verdict;
   action?: GovernorAction;
+  /** Overloaded, but not counted: within visibilitySwitchGraceMs of a window switch. */
+  switchGrace?: boolean;
 }
 
 /** Advances the governor by one sample. Returns at most one action. */
@@ -468,10 +486,18 @@ export function stepGovernor(
     state.recoverBackoff = 1;
   }
 
-  if (verdict.pressure === 'overloaded') {
+  // Right after the window went to or from the background: wait it out unless the audio broke.
+  const switchGrace =
+    verdict.pressure === 'overloaded' &&
+    sample.sinceVisibilityChangeMs !== undefined &&
+    sample.sinceVisibilityChangeMs < T.visibilitySwitchGraceMs &&
+    !verdict.reasons.some((r) => r === 'audio-underrun' || r === 'audio-passthrough');
+  const pressure = switchGrace ? 'neutral' : verdict.pressure;
+
+  if (pressure === 'overloaded') {
     state.overloadedSince ??= now;
     state.calmSince = null;
-  } else if (verdict.pressure === 'calm') {
+  } else if (pressure === 'calm') {
     state.calmSince ??= now;
     state.overloadedSince = null;
   } else {
@@ -545,7 +571,7 @@ export function stepGovernor(
     return { state, verdict, action };
   }
 
-  return { state, verdict };
+  return { state, verdict, switchGrace: switchGrace || undefined };
 }
 
 /** The first step of the ladder not taken yet that would change something. */

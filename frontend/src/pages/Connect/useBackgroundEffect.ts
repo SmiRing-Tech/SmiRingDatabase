@@ -23,6 +23,7 @@ import {
   writeStoredChoice,
   detectSegmentationQuality,
   detectSegmentationFps,
+  defaultSegmentationScheduler,
   isMobileDevice,
   qualityWithinLoadDeadline,
   HIGH_MODEL_FALLBACK_MESSAGE,
@@ -258,7 +259,7 @@ export function useBackgroundEffect(isGuest = false) {
         matteLo: 0.3,
         matteHi: 0.75,
         segmentationFps: perfProfileRef.current?.segmentationFps ?? detectSegmentationFps(),
-        segmentationScheduler: perfProfileRef.current?.segmentationScheduler ?? 'interval',
+        segmentationScheduler: perfProfileRef.current?.segmentationScheduler ?? defaultSegmentationScheduler(),
         matteSync: frameModeRef.current.matteSync,
         photoIntervalMs: frameModeRef.current.photoIntervalMs,
         // Every processor reports when it's too heavy (see handlePerfSlow for what happens
@@ -418,7 +419,7 @@ export function useBackgroundEffect(isGuest = false) {
       if (!isBackgroundProcessor(processor)) return;
       processor.updateOptions({
         segmentationFps: profile?.segmentationFps ?? detectSegmentationFps(),
-        segmentationScheduler: profile?.segmentationScheduler ?? 'interval',
+        segmentationScheduler: profile?.segmentationScheduler ?? defaultSegmentationScheduler(),
       });
       if (processor instanceof WorkerBackgroundProcessor) processor.setFrameMode({ matteSync: profile === null });
     },

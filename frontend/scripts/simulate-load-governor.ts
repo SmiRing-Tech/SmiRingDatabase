@@ -15,7 +15,7 @@ import {
 
 const SAMPLE_MS = 2000;
 
-type Load = 'calm' | 'busy' | 'encoder' | 'audio' | 'bg-heavy';
+type Load = 'calm' | 'busy' | 'encoder' | 'audio' | 'bg-heavy' | 'switch' | 'switch-broken';
 
 function sampleFor(t: number, load: Load, state: GovernorState): LoadSample {
   // Each step down relieves some pressure: two camera or receiving steps clear an "encoder"
@@ -44,6 +44,15 @@ function sampleFor(t: number, load: Load, state: GovernorState): LoadSample {
   if (load === 'encoder') base.encoderCpuFraction = relief >= 2 ? 0.05 : 0.9;
   // The background on 'high' is too much for this machine: its frames fall behind.
   if (load === 'bg-heavy') base.bgFps = 8;
+  // A window switch every 30s; the 10s after each are loaded (the browser and OS redrawing).
+  if (load === 'switch' || load === 'switch-broken') {
+    base.sinceVisibilityChangeMs = t % 30_000;
+    if (base.sinceVisibilityChangeMs < 10_000) {
+      base.audioStressedChunks = 31;
+      base.bgFps = 6;
+      if (load === 'switch-broken') base.audioUnderruns = 5;
+    }
+  }
   if (load === 'busy') {
     base.encoderCpuFraction = 0.7;
     base.mainLagMaxMs = 500;
@@ -187,3 +196,5 @@ run(
   1080,
   (_t, bg) => (bg === 'high' ? 'bg-heavy' : 'calm'),
 );
+run('window switched every 30s, each followed by 10s of load (must do nothing)', () => 'switch', 300_000, highBg);
+run('window switched every 30s and the audio really breaks each time (steps down)', () => 'switch-broken', 120_000, highBg);
