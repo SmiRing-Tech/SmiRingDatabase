@@ -64,6 +64,7 @@ import {
   type GtcrnSkipLevel,
   type OrtSessionLike,
   type OrtTensorLike,
+  GTCRN_STREAM_DELAY_SAMPLES,
 } from './GtcrnStreamProcessor';
 import { createLevelState, setLevel, updateLevel, type LevelState } from './gtcrnLevelController';
 
@@ -76,7 +77,7 @@ export type GtcrnWorkerRequest =
   /**
    * Begin a stream. Allocates that stream's own DSP state. Chunks arrive on `capturePort` (from
    * the capture worklet, as GtcrnCaptureChunk) and results go out on `playbackPort` (to the
-   * playback worklet, as { type: 'samples', samples }) — both transferred.
+   * playback worklet, as { type: 'samples', samples, startFrame }) — both transferred.
    */
   | { type: 'open'; streamId: number; capturePort: MessagePort; playbackPort: MessagePort; active: boolean }
   /** Whether the stream's audio is going anywhere; inactive chunks are dropped uninferred. */
@@ -240,16 +241,21 @@ function post(message: GtcrnWorkerResponse, transfer?: Transferable[]) {
   self.postMessage(message, { transfer: transfer ?? [] });
 }
 
-type Job = { streamId: number; samples: Float32Array };
+/** startFrame: the context frame of the chunk's first raw sample (tagged by the capture worklet). */
+type Job = { streamId: number; samples: Float32Array; startFrame: number };
 
 type ChunkInfo = Pick<
   Extract<GtcrnWorkerResponse, { type: 'chunk' }>,
   'inferenceMs' | 'level' | 'passthrough' | 'inputRms' | 'outputRms'
 >;
 
-/** Sends a finished chunk straight to the stream's playback worklet, and its numbers to the page. */
-function deliver(streamId: number, state: StreamState, samples: Float32Array, info: ChunkInfo) {
-  state.playbackPort.postMessage({ type: 'samples', samples }, [samples.buffer]);
+/**
+ * Sends a finished chunk straight to the stream's playback worklet, and its numbers to the page.
+ * `startFrame`: the raw frame its first sample corresponds to — the playback worklet plays it at
+ * that frame + its latency, or the raw mic in its place if it comes too late.
+ */
+function deliver(streamId: number, state: StreamState, samples: Float32Array, startFrame: number, info: ChunkInfo) {
+  state.playbackPort.postMessage({ type: 'samples', samples, startFrame }, [samples.buffer]);
   post({
     type: 'chunk',
     streamId,
@@ -264,7 +270,7 @@ function deliver(streamId: number, state: StreamState, samples: Float32Array, in
 }
 
 /** A chunk from a stream's capture worklet. */
-function onCapture(streamId: number, samples: Float32Array) {
+function onCapture(streamId: number, samples: Float32Array, startFrame: number) {
   const state = streams.get(streamId);
   if (!state) return;
   const now = performance.now();
@@ -277,7 +283,7 @@ function onCapture(streamId: number, samples: Float32Array) {
   }
   if (state.overloaded) {
     const loudness = rms(samples);
-    deliver(streamId, state, samples, {
+    deliver(streamId, state, samples, startFrame, {
       inferenceMs: 0,
       level: state.level,
       passthrough: true,
@@ -286,7 +292,7 @@ function onCapture(streamId: number, samples: Float32Array) {
     });
     return;
   }
-  queue.push({ streamId, samples });
+  queue.push({ streamId, samples, startFrame });
   void drain();
 }
 
@@ -316,7 +322,7 @@ async function enforceBacklogCap(job: Job, state: StreamState, now: number): Pro
     const index = queue.indexOf(stale);
     if (index !== -1) queue.splice(index, 1);
     const loudness = rms(stale.samples);
-    deliver(job.streamId, state, stale.samples, {
+    deliver(job.streamId, state, stale.samples, stale.startFrame, {
       inferenceMs: 0,
       level: state.level,
       passthrough: true,
@@ -375,7 +381,10 @@ async function drain(): Promise<void> {
         if (usable !== wanted) setLevel(state, usable, now);
         maybeLoadLighterModels(wanted, backlog, now);
 
-        deliver(job.streamId, state, enhanced, {
+        // Output trails input by GTCRN's analysis delay: it covers the raw frames ending that much
+        // before the end of this chunk.
+        const outStart = current.startFrame + current.samples.length - GTCRN_STREAM_DELAY_SAMPLES - enhanced.length;
+        deliver(job.streamId, state, enhanced, outStart, {
           inferenceMs,
           level,
           passthrough: false,
@@ -416,7 +425,8 @@ self.onmessage = (event: MessageEvent<GtcrnWorkerRequest>) => {
       };
       streams.set(msg.streamId, state);
       const streamId = msg.streamId;
-      msg.capturePort.onmessage = (event: MessageEvent<{ samples: Float32Array }>) => onCapture(streamId, event.data.samples);
+      msg.capturePort.onmessage = (event: MessageEvent<{ samples: Float32Array; startFrame: number }>) =>
+        onCapture(streamId, event.data.samples, event.data.startFrame);
       // A failed creation is reported once here; every chunk that then queues behind it would
       // otherwise re-report the same failure on each drain iteration.
       state.processor.catch((e) => {

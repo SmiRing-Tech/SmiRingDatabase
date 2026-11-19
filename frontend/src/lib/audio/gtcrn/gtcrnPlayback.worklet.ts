@@ -1,21 +1,25 @@
 /**
  * Playback stage of the GTCRN noise-cancel pipeline.
  *
- * This used to be a ScriptProcessorNode, whose onaudioprocess callback runs on the main thread —
- * and that is what made operating the UI audible to everyone else on the call. When the main
- * thread stalls (the user switches tab or app and the OS deprioritises the renderer), the
- * callback doesn't fire at all, so it never even reaches its own "pad with silence" branch and
- * `underrunCount` stays flat. The audio render thread keeps pulling a buffer every quantum
- * regardless and replays whatever the node last held, so listeners hear the same chunk over and
- * over — the reported "が、が、が、が" stutter, which is a repeat artifact, not a dropout.
+ * Runs on the audio render thread (process() is called on time whatever the page or the
+ * inference worker are doing — it replaced a main-thread ScriptProcessorNode whose stalls were
+ * the "が、が、が" repeat stutter).
  *
- * process() runs on the render thread, so it keeps being called on time no matter what the main
- * thread is doing. A stall now only starves the queue: PRIME_MS of pre-buffered audio absorbs
- * short ones completely, and anything longer degrades to silence instead of to a repeat.
+ * Timeline playout with raw fill (2026-11-19). Every sample here is addressed by the context's
+ * frame number (`currentFrame`, shared by every worklet in this AudioContext):
+ *  - The raw mic is wired into this node too, and kept in a ring buffer by frame.
+ *  - Each processed chunk from the worker carries the frame of the raw audio it corresponds to
+ *    (tagged by the capture worklet, shifted by GTCRN's own analysis delay in the worker).
+ *  - Output for frame F plays at F + latency: the processed sample for that frame when it has
+ *    arrived, otherwise the *raw* sample of that same frame.
+ * So when the worker stalls — measured on 2026-11-19 at 200-1100ms on a Mac in Low Power Mode
+ * while switching desktops, far past any cushion worth its latency — listeners hear the room's
+ * noise for that moment instead of silence, the voice never breaks up, and the latency never
+ * changes (no re-priming, nothing to drain back down). Processed audio for a frame that has
+ * already been played is simply dropped. Coming back from raw, the two are crossfaded.
  *
- * Deliberately dependency-free. onnxruntime-web can't run in an AudioWorkletGlobalScope (see
- * GtcrnNoiseCancelTrack's header), but that only ever ruled out doing *inference* here — moving
- * the output stage over needs nothing but a ring buffer.
+ * Deliberately dependency-free: onnxruntime-web can't run in an AudioWorkletGlobalScope (see
+ * GtcrnNoiseCancelTrack's header) — this only needs ring buffers.
  */
 
 interface AudioWorkletProcessorLike {
@@ -30,22 +34,15 @@ declare function registerProcessor(
   processorCtor: new (options?: { processorOptions?: unknown }) => AudioWorkletProcessorLike,
 ): void;
 declare const sampleRate: number;
+declare const currentFrame: number;
 
 export interface GtcrnPlaybackOptions {
-  /** Audio held back before playback starts, and rebuilt after every underrun. This is the
-   * cushion that decides how long a main-thread stall can last while staying inaudible — and
-   * it is added directly to mouth-to-ear latency, so it's a straight trade. */
-  primeMs: number;
-  /** Ceiling on queued audio. Without it, a producer that ever runs ahead leaves the extra
-   * delay in place for the rest of the call. */
-  maxMs: number;
   /**
-   * Above this much queued audio, near-silent render quanta are skipped instead of played, so a
-   * queue that grew after a burst (a stall, then everything arriving at once) drifts back down to
-   * normal during the next pause in speech — instead of the extra delay staying for the rest of
-   * the call. Speech itself is never skipped. Omit to disable.
+   * Raw frame F plays at F + this. Has to cover one capture chunk accumulating, GTCRN's analysis
+   * delay and the worker's normal inference time; anything later than this plays raw instead.
+   * Added one-for-one to mouth-to-ear latency (and the video is delayed to match).
    */
-  drainAboveMs?: number;
+  latencyMs: number;
 }
 
 /** main -> worklet: take samples from this port (the inference worker's end) from now on. */
@@ -54,65 +51,95 @@ export interface GtcrnPlaybackConnect {
   port: MessagePort;
 }
 
-/** Worklet -> main. Counters are cumulative; `queuedMs` is a live gauge. */
+/** worker -> worklet: processed audio for raw frames startFrame .. startFrame + samples.length. */
+export interface GtcrnPlaybackSamples {
+  type: 'samples';
+  samples: Float32Array;
+  startFrame: number;
+}
+
+/** main -> worklet: whether the mic is live. Muted, the worker processes nothing and everything
+ *  plays raw (the gate downstream silences it) — that isn't counted as filling. */
+export interface GtcrnPlaybackActive {
+  type: 'active';
+  active: boolean;
+}
+
+/** Worklet -> main, every STATS_INTERVAL_MS. Counters are cumulative unless noted. */
 export interface GtcrnPlaybackStats {
   type: 'stats';
+  /** Stretches played from the raw mic because processed audio was late (mic live only). */
+  fillCount: number;
+  filledSamples: number;
+  /** Stretches of silence: neither processed nor raw audio for the frame (should stay 0). */
   underrunCount: number;
-  droppedSamples: number;
-  /** Near-silent samples skipped to bring the queue back down (see drainAboveMs). */
-  drainedSamples: number;
+  /** Processed samples that arrived after their frame had played (dropped). */
+  lateSamples: number;
+  /** How far processed audio reaches past what's playing now, ms (a live gauge). */
   queuedMs: number;
-  priming: boolean;
-  /** Since the previous stats: the least audio queued while playing (the margin left before an
-   *  underrun), and the longest silence an underrun caused (until the cushion refilled), ms. */
+  /** Playing raw right now. */
+  filling: boolean;
+  /** Since the previous stats: the least processed audio ahead while playing processed, and the
+   *  longest raw-filled stretch, ms. */
   minQueuedMs: number | null;
-  longestGapMs: number;
+  longestFillMs: number;
 }
 
 const STATS_INTERVAL_MS = 1000;
-/** A render quantum quieter than this (RMS, about -40dBFS) counts as a pause in speech. */
-const QUIET_RMS = 0.01;
+/** Ring buffers hold this long of audio — far more than latency + the longest stall to absorb. */
+const RING_SECONDS = 4;
+/** Raw -> processed crossfade, samples (4ms at 16kHz). Processed -> raw switches at once: there's
+ *  no processed audio left to fade out. */
+const CROSSFADE_SAMPLES = 64;
 
 class GtcrnPlaybackProcessor extends AudioWorkletProcessor {
-  private readonly ring: Float32Array;
+  private readonly latency: number;
   private readonly capacity: number;
-  private readonly primeSamples: number;
-  private readonly maxSamples: number;
-  private readonly drainAboveSamples: number;
+  /** Processed and raw audio by frame (index = frame % capacity), each with the frame it holds. */
+  private readonly proc: Float32Array;
+  private readonly procFrame: Float64Array;
+  private readonly raw: Float32Array;
+  private readonly rawFrame: Float64Array;
+  /** Highest frame of processed audio received so far, +1. */
+  private procEnd = 0;
+  /** 1 = processed, 0 = raw; ramps toward processed after a fill. */
+  private mix = 1;
 
-  private readIndex = 0;
-  private available = 0;
-  private priming = true;
+  private active = true;
   private stopped = false;
-
   private input: MessagePort | null = null;
 
+  private filling = false;
+  private fillRun = 0;
+  private longestFill = 0;
+  private fillCount = 0;
+  private filledSamples = 0;
+  private silent = false;
   private underrunCount = 0;
-  /** Lowest `available` while playing since the last stats; Infinity = none. */
-  private minAvailable = Infinity;
-  /** Silence from the current underrun until the cushion refills, and the longest since the last stats. */
-  private gapSamples = 0;
-  private inGap = false;
-  private longestGapSamples = 0;
-  private droppedSamples = 0;
-  private drainedSamples = 0;
+  private lateSamples = 0;
+  private minAhead = Infinity;
   private samplesSinceStats = 0;
 
   constructor(options?: { processorOptions?: unknown }) {
     super(options);
-    const { primeMs, maxMs, drainAboveMs } = options?.processorOptions as GtcrnPlaybackOptions;
-    this.primeSamples = Math.round((primeMs / 1000) * sampleRate);
-    this.maxSamples = Math.round((maxMs / 1000) * sampleRate);
-    this.drainAboveSamples = drainAboveMs ? Math.round((drainAboveMs / 1000) * sampleRate) : Infinity;
-    this.capacity = this.maxSamples + this.primeSamples + sampleRate;
-    this.ring = new Float32Array(this.capacity);
+    const { latencyMs } = options?.processorOptions as GtcrnPlaybackOptions;
+    this.latency = Math.round((latencyMs / 1000) * sampleRate);
+    this.capacity = Math.round(RING_SECONDS * sampleRate);
+    this.proc = new Float32Array(this.capacity);
+    this.procFrame = new Float64Array(this.capacity).fill(-1);
+    this.raw = new Float32Array(this.capacity);
+    this.rawFrame = new Float64Array(this.capacity).fill(-1);
 
-    // Samples arrive on a port from the inference worker (see GtcrnPlaybackConnect), or — for
-    // anything still wired the old way — on this node's own port from the page.
+    // Samples arrive on a port from the inference worker (see GtcrnPlaybackConnect).
     const onMessage = (event: MessageEvent) => {
-      const msg = event.data as { type: string; samples?: Float32Array; port?: MessagePort };
-      if (msg.type === 'samples' && msg.samples) this.write(msg.samples);
-      else if (msg.type === 'connect' && msg.port) {
+      const msg = event.data as
+        | GtcrnPlaybackSamples
+        | GtcrnPlaybackConnect
+        | GtcrnPlaybackActive
+        | { type: 'stop' };
+      if (msg.type === 'samples') this.write(msg.samples, msg.startFrame);
+      else if (msg.type === 'active') this.active = msg.active;
+      else if (msg.type === 'connect') {
         this.input = msg.port;
         msg.port.onmessage = onMessage;
       } else if (msg.type === 'stop') {
@@ -123,108 +150,107 @@ class GtcrnPlaybackProcessor extends AudioWorkletProcessor {
     this.port.onmessage = onMessage;
   }
 
-  process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
+  process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     const out = outputs[0]?.[0];
+    const rawIn = inputs[0]?.[0];
+    const base = currentFrame;
+
+    // Keep the raw mic by frame.
+    if (rawIn) {
+      for (let i = 0; i < rawIn.length; i++) {
+        const frame = base + i;
+        const at = frame % this.capacity;
+        this.raw[at] = rawIn[i];
+        this.rawFrame[at] = frame;
+      }
+    }
     if (!out) return !this.stopped;
 
-    if (this.priming && this.available >= this.primeSamples) {
-      this.priming = false;
-      if (this.inGap) {
-        this.longestGapSamples = Math.max(this.longestGapSamples, this.gapSamples);
-        this.inGap = false;
-        this.gapSamples = 0;
+    const playhead = base - this.latency;
+    for (let i = 0; i < out.length; i++) {
+      const frame = playhead + i;
+      if (frame < 0) {
+        out[i] = 0;
+        continue;
+      }
+      const at = frame % this.capacity;
+      const hasProc = this.procFrame[at] === frame;
+      const hasRaw = this.rawFrame[at] === frame;
+      if (hasProc) {
+        if (this.filling) this.endFill();
+        this.silent = false;
+        if (this.mix < 1 && hasRaw) {
+          this.mix = Math.min(1, this.mix + 1 / CROSSFADE_SAMPLES);
+          out[i] = this.mix * this.proc[at] + (1 - this.mix) * this.raw[at];
+        } else {
+          this.mix = 1;
+          out[i] = this.proc[at];
+        }
+      } else if (hasRaw) {
+        this.mix = 0;
+        this.silent = false;
+        out[i] = this.raw[at];
+        if (this.active) {
+          if (!this.filling) {
+            this.filling = true;
+            this.fillCount++;
+          }
+          this.fillRun++;
+          this.filledSamples++;
+        }
+      } else {
+        out[i] = 0;
+        if (!this.silent && this.active) this.underrunCount++;
+        this.silent = true;
       }
     }
 
-    if (this.priming) {
-      out.fill(0);
-      if (this.inGap) this.gapSamples += out.length;
-    } else {
-      // Running long and the next quantum is a pause: skip it, play the one after.
-      if (this.available - out.length > this.drainAboveSamples && this.isQuiet(out.length)) {
-        this.skip(out.length);
-        this.drainedSamples += out.length;
-      }
-      const take = Math.min(out.length, this.available);
-      this.read(out, take);
-      this.minAvailable = Math.min(this.minAvailable, this.available);
-      if (take < out.length) {
-        out.fill(0, take);
-        this.underrunCount++;
-        this.inGap = true;
-        this.gapSamples = out.length - take;
-        // Refill the cushion rather than limping along from empty: the input for the window
-        // that starved us is gone either way, so the extra silence costs nothing that wasn't
-        // already lost, and it restores the margin that absorbs the next stall. Without this,
-        // one long stall would leave the pipeline permanently running at zero margin.
-        this.priming = true;
-      }
-    }
+    const ahead = this.procEnd - (playhead + out.length);
+    if (!this.filling && this.active) this.minAhead = Math.min(this.minAhead, Math.max(0, ahead));
 
     this.samplesSinceStats += out.length;
     if (this.samplesSinceStats >= (STATS_INTERVAL_MS / 1000) * sampleRate) {
       this.samplesSinceStats = 0;
       const stats: GtcrnPlaybackStats = {
         type: 'stats',
+        fillCount: this.fillCount,
+        filledSamples: this.filledSamples,
         underrunCount: this.underrunCount,
-        droppedSamples: this.droppedSamples,
-        drainedSamples: this.drainedSamples,
-        queuedMs: (this.available / sampleRate) * 1000,
-        priming: this.priming,
-        minQueuedMs: Number.isFinite(this.minAvailable) ? (this.minAvailable / sampleRate) * 1000 : null,
-        // A gap still going counts too, so a long one shows up while it lasts.
-        longestGapMs: (Math.max(this.longestGapSamples, this.inGap ? this.gapSamples : 0) / sampleRate) * 1000,
+        lateSamples: this.lateSamples,
+        queuedMs: (Math.max(0, ahead) / sampleRate) * 1000,
+        filling: this.filling,
+        minQueuedMs: Number.isFinite(this.minAhead) ? (this.minAhead / sampleRate) * 1000 : null,
+        // A fill still going counts too, so a long one shows up while it lasts.
+        longestFillMs: (Math.max(this.longestFill, this.filling ? this.fillRun : 0) / sampleRate) * 1000,
       };
       this.port.postMessage(stats);
-      this.minAvailable = Infinity;
-      this.longestGapSamples = 0;
+      this.minAhead = Infinity;
+      this.longestFill = 0;
     }
 
     return !this.stopped;
   }
 
-  /** RMS of the next `count` queued samples, below QUIET_RMS. */
-  private isQuiet(count: number): boolean {
-    let sumSq = 0;
-    for (let i = 0; i < count; i++) {
-      const v = this.ring[(this.readIndex + i) % this.capacity];
-      sumSq += v * v;
-    }
-    return Math.sqrt(sumSq / count) < QUIET_RMS;
+  private endFill() {
+    this.filling = false;
+    this.longestFill = Math.max(this.longestFill, this.fillRun);
+    this.fillRun = 0;
   }
 
-  private skip(count: number): void {
-    this.readIndex = (this.readIndex + count) % this.capacity;
-    this.available -= count;
-  }
-
-  private read(out: Float32Array, count: number): void {
-    const firstRun = Math.min(count, this.capacity - this.readIndex);
-    out.set(this.ring.subarray(this.readIndex, this.readIndex + firstRun), 0);
-    if (firstRun < count) out.set(this.ring.subarray(0, count - firstRun), firstRun);
-    this.readIndex = (this.readIndex + count) % this.capacity;
-    this.available -= count;
-  }
-
-  private write(samples: Float32Array): void {
-    let data = samples;
-    if (data.length > this.maxSamples) {
-      this.droppedSamples += data.length - this.maxSamples;
-      data = data.subarray(data.length - this.maxSamples);
+  private write(samples: Float32Array, startFrame: number): void {
+    // Whatever has already played (or is playing in this quantum) is too late to use.
+    const playhead = currentFrame - this.latency;
+    for (let i = 0; i < samples.length; i++) {
+      const frame = startFrame + i;
+      if (frame < playhead) {
+        this.lateSamples++;
+        continue;
+      }
+      const at = frame % this.capacity;
+      this.proc[at] = samples[i];
+      this.procFrame[at] = frame;
     }
-
-    const overflow = this.available + data.length - this.maxSamples;
-    if (overflow > 0) {
-      this.readIndex = (this.readIndex + overflow) % this.capacity;
-      this.available -= overflow;
-      this.droppedSamples += overflow;
-    }
-
-    const writeIndex = (this.readIndex + this.available) % this.capacity;
-    const firstRun = Math.min(data.length, this.capacity - writeIndex);
-    this.ring.set(data.subarray(0, firstRun), writeIndex);
-    if (firstRun < data.length) this.ring.set(data.subarray(firstRun), 0);
-    this.available += data.length;
+    this.procEnd = Math.max(this.procEnd, startFrame + samples.length);
   }
 }
 

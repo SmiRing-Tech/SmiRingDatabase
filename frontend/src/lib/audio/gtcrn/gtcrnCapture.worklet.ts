@@ -30,6 +30,7 @@ declare function registerProcessor(
   name: string,
   processorCtor: new (options?: { processorOptions?: unknown }) => AudioWorkletProcessorLike,
 ): void;
+declare const currentFrame: number;
 
 export interface GtcrnCaptureOptions {
   /** Samples to accumulate before posting a chunk out. Sets this stage's added latency. */
@@ -46,12 +47,16 @@ export interface GtcrnCaptureConnect {
 export interface GtcrnCaptureChunk {
   type: 'chunk';
   samples: Float32Array;
+  /** The context frame its first sample was captured at — the playback worklet lines processed
+   *  audio up with the raw mic by it (see gtcrnPlayback.worklet's header). */
+  startFrame: number;
 }
 
 class GtcrnCaptureProcessor extends AudioWorkletProcessor {
   private readonly chunkSize: number;
   private buffer: Float32Array;
   private filled = 0;
+  private startFrame = 0;
   private stopped = false;
   /** Straight to the inference worker; see GtcrnCaptureConnect. */
   private out: MessagePort | null = null;
@@ -83,13 +88,14 @@ class GtcrnCaptureProcessor extends AudioWorkletProcessor {
 
     let offset = 0;
     while (offset < input.length) {
+      if (this.filled === 0) this.startFrame = currentFrame + offset;
       const take = Math.min(this.chunkSize - this.filled, input.length - offset);
       this.buffer.set(input.subarray(offset, offset + take), this.filled);
       this.filled += take;
       offset += take;
 
       if (this.filled === this.chunkSize) {
-        const chunk: GtcrnCaptureChunk = { type: 'chunk', samples: this.buffer };
+        const chunk: GtcrnCaptureChunk = { type: 'chunk', samples: this.buffer, startFrame: this.startFrame };
         // Transferred, not copied — a fresh buffer is allocated for the next chunk below, so
         // this processor never touches the one it just handed off.
         (this.out ?? this.port).postMessage(chunk, [this.buffer.buffer]);

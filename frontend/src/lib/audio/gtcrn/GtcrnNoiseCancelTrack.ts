@@ -3,7 +3,12 @@ import { emitLoadSignal } from '../../loadSignals';
 import { keepAudioContextResumed } from '../keepAudioContextResumed';
 import { registerDiagProbe } from '../../connectDiagnostics';
 import { createLevelTap, trackStateTag } from '../audioPipelineHealth';
-import type { GtcrnPlaybackConnect, GtcrnPlaybackOptions, GtcrnPlaybackStats } from './gtcrnPlayback.worklet';
+import type {
+  GtcrnPlaybackActive,
+  GtcrnPlaybackConnect,
+  GtcrnPlaybackOptions,
+  GtcrnPlaybackStats,
+} from './gtcrnPlayback.worklet';
 import type { GtcrnCaptureConnect, GtcrnCaptureOptions } from './gtcrnCapture.worklet';
 import type { GtcrnWorkerRequest, GtcrnWorkerResponse } from './gtcrnInference.worker';
 import playbackWorkletUrl from './gtcrnPlayback.worklet.ts?worker&url';
@@ -62,22 +67,17 @@ function rmsToDb(rms: number): number {
 // rest of a batch anyway.
 const CAPTURE_CHUNK = 1024;
 
-/** How long a stall the playback worklet can hide before listeners hear anything. Paid for
- * one-for-one in mouth-to-ear latency (and, via GTCRN_PIPELINE_LATENCY_MS below, in how far
- * video is delayed to keep lips in sync), so it's a straight continuity-vs-latency dial. */
+/** Slack on top of a capture chunk for GTCRN's analysis delay (16ms) and the worker's inference
+ * and message hops (a few ms). Processed audio later than this plays as the raw mic instead (see
+ * gtcrnPlayback.worklet), so it no longer has to hide stalls — those are filled — but it's what
+ * normal inference has to fit in. Kept at the old cushion's value: the latency is unchanged. */
 const PRIME_MS = 128;
 /** How far back health()'s stall numbers look. */
 const STALL_HISTORY_MS = 3000;
-/** Ceiling on queued audio, so a producer that ever runs ahead doesn't leave the extra delay in
- * place for the rest of the call. Generous — it should only ever bite after a long stall. */
-const MAX_QUEUE_MS = 400;
-/** Queued audio normally swings between PRIME_MS and one chunk more (chunks land 64ms at a time);
- * above that, the playback worklet trims pauses in speech until it's back (see drainAboveMs). */
-const DRAIN_ABOVE_MS = PRIME_MS + (CAPTURE_CHUNK / GTCRN_SAMPLE_RATE) * 1000;
 
-/** This stage's added latency: a full capture chunk has to accumulate before anything sees it,
- * then the playback worklet holds PRIME_MS more as its anti-stall cushion. Exported so callers
- * (the video delay pipeline, to keep lips in sync) can account for it instead of guessing. */
+/** This stage's added latency, fixed: a full capture chunk has to accumulate before anything sees
+ * it, plus PRIME_MS. Raw frame F plays at F + this. Exported so callers (the video delay pipeline,
+ * to keep lips in sync) can account for it instead of guessing. */
 export const GTCRN_PIPELINE_LATENCY_MS = (CAPTURE_CHUNK / GTCRN_SAMPLE_RATE) * 1000 + PRIME_MS;
 
 // ---------------------------------------------------------------- Shared inference worker
@@ -212,7 +212,7 @@ export class GtcrnNoiseCancelTrack {
    * Pruned to STALL_HISTORY_MS.
    */
   private stallHistory: { t: number; gap: number; inf: number }[] = [];
-  private playbackHistory: { t: number; minQ: number | null; silence: number }[] = [];
+  private playbackHistory: { t: number; minQ: number | null; silence: number }[] = [];  // silence = longest raw fill
   /** Per-chunk loudness in/out of the model, dBFS, for levelWindow(). Pruned to LEVEL_HISTORY_MS. */
   private levelHistory: { t: number; inDb: number; outDb: number }[] = [];
 
@@ -282,13 +282,10 @@ export class GtcrnNoiseCancelTrack {
     const sourceNode = this.ctx.createMediaStreamSource(new MediaStream([this.sourceClone]));
 
     // --- playback stage ---
-    const playbackOptions: GtcrnPlaybackOptions = {
-      primeMs: PRIME_MS,
-      maxMs: MAX_QUEUE_MS,
-      drainAboveMs: DRAIN_ABOVE_MS,
-    };
+    const playbackOptions: GtcrnPlaybackOptions = { latencyMs: GTCRN_PIPELINE_LATENCY_MS };
+    // Its input is the raw mic: what it plays for any moment processed audio arrives too late for.
     this.playback = new AudioWorkletNode(this.ctx, 'gtcrn-playback', {
-      numberOfInputs: 0,
+      numberOfInputs: 1,
       numberOfOutputs: 1,
       outputChannelCount: [1],
       processorOptions: playbackOptions,
@@ -300,6 +297,7 @@ export class GtcrnNoiseCancelTrack {
     };
     this.destination = this.ctx.createMediaStreamDestination();
     this.playback.connect(this.destination);
+    sourceNode.connect(this.playback);
 
     // --- capture stage ---
     const captureOptions: GtcrnCaptureOptions = { chunkSize: CAPTURE_CHUNK };
@@ -317,6 +315,7 @@ export class GtcrnNoiseCancelTrack {
     this.playback.port.postMessage({ type: 'connect', port: fromWorker.port1 } satisfies GtcrnPlaybackConnect, [fromWorker.port1]);
     let active = isActive();
     this.healthActive = active;
+    this.playback.port.postMessage({ type: 'active', active } satisfies GtcrnPlaybackActive);
     postToWorker(
       { type: 'open', streamId: this.streamId, capturePort: toWorker.port2, playbackPort: fromWorker.port2, active },
       [toWorker.port2, fromWorker.port2],
@@ -327,6 +326,7 @@ export class GtcrnNoiseCancelTrack {
       active = next;
       this.healthActive = next;
       postToWorker({ type: 'active', streamId: this.streamId, active });
+      this.playback.port.postMessage({ type: 'active', active } satisfies GtcrnPlaybackActive);
     }, ACTIVE_POLL_MS);
 
     // --- per-chunk numbers from the worker (diagnostics only; the audio went straight on) ---
@@ -400,10 +400,11 @@ export class GtcrnNoiseCancelTrack {
         captureGapMaxMs: Math.round(this.diagCaptureGapMaxMs),
         inactiveChunks: this.diagInactiveChunks,
         underruns: this.playbackStats?.underrunCount,
-        droppedSamples: this.playbackStats?.droppedSamples,
-        drainedMsTotal: this.playbackStats
-          ? Math.round((this.playbackStats.drainedSamples / GTCRN_SAMPLE_RATE) * 1000)
+        fills: this.playbackStats?.fillCount,
+        filledMsTotal: this.playbackStats
+          ? Math.round((this.playbackStats.filledSamples / GTCRN_SAMPLE_RATE) * 1000)
           : undefined,
+        lateSamples: this.playbackStats?.lateSamples,
         playbackQueuedMs: this.playbackStats ? Math.round(this.playbackStats.queuedMs) : undefined,
         ctxState: this.ctx.state,
       };
@@ -426,9 +427,9 @@ export class GtcrnNoiseCancelTrack {
           maxMs: this.inferenceTimeMaxMs.toFixed(2),
           captureGapMaxMs: this.captureGapMaxMs.toFixed(0),
           underrunCount: this.playbackStats?.underrunCount ?? 0,
-          droppedSamples: this.playbackStats?.droppedSamples ?? 0,
+          fills: this.playbackStats?.fillCount ?? 0,
           queuedMs: (this.playbackStats?.queuedMs ?? 0).toFixed(0),
-          priming: this.playbackStats?.priming ?? true,
+          filling: this.playbackStats?.filling ?? false,
           inputRms: this.lastInputRms.toFixed(4),
           outputRms: this.lastOutputRms.toFixed(4),
           ctxState: this.ctx.state,
@@ -446,7 +447,7 @@ export class GtcrnNoiseCancelTrack {
 
   private recordPlayback(stats: GtcrnPlaybackStats) {
     const now = performance.now();
-    this.playbackHistory.push({ t: now, minQ: stats.minQueuedMs, silence: stats.longestGapMs });
+    this.playbackHistory.push({ t: now, minQ: stats.minQueuedMs, silence: stats.longestFillMs });
     while (this.playbackHistory.length && now - this.playbackHistory[0].t > STALL_HISTORY_MS) this.playbackHistory.shift();
   }
 
@@ -525,19 +526,22 @@ export class GtcrnNoiseCancelTrack {
       act: this.healthActive ? 1 : 0,
       ch: this.healthChunks,
       ina: this.healthInactiveChunks,
-      prm: this.playbackStats?.priming ? 1 : 0,
+      // Playing the raw mic right now because processed audio is late (a worker stall).
+      prm: this.playbackStats?.filling ? 1 : 0,
       q: this.playbackStats ? Math.round(this.playbackStats.queuedMs) : undefined,
+      // Silences (should stay 0) and raw-filled stretches, cumulative.
       ur: this.playbackStats?.underrunCount,
+      fl: this.playbackStats?.fillCount,
       byp: this.bypass ? 1 : 0,
       // Over the telemetry sample interval (2s).
       w: this.levelWindow(2000),
       // Stalls over the same 2s: longest gap between capture chunks reaching the worker (64 = on
-      // time), slowest inference, least audio queued while playing, longest silence an underrun
-      // caused, ms. The last two size the playback cushion (PRIME_MS).
+      // time), slowest inference, least processed audio ahead of playback while playing it, and the
+      // longest stretch played from the raw mic because processed audio was late, ms.
       s: (() => {
         const w = this.stallWindow(2000);
         const r = (v: number) => Math.round(v);
-        return { gap: r(w.gap), inf: r(w.inf), qmin: w.minQ === null ? undefined : r(w.minQ), sil: r(w.silence) || undefined };
+        return { gap: r(w.gap), inf: r(w.inf), qmin: w.minQ === null ? undefined : r(w.minQ), fill: r(w.silence) || undefined };
       })(),
     };
   }

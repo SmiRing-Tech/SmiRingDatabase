@@ -8,6 +8,13 @@ import { sqrtHann } from './window';
 export const GTCRN_SAMPLE_RATE = 16000;
 const N_FFT = 512;
 const HOP = 256;
+/**
+ * How far the output trails the input, samples: output hop t is the overlap-add of the first half
+ * of frame t's window, which covers input [t*HOP - (N_FFT - HOP), t*HOP). So push() output sample
+ * n corresponds to input sample n - GTCRN_STREAM_DELAY_SAMPLES (16ms). The playback worklet uses
+ * it to line processed audio up with the raw mic.
+ */
+export const GTCRN_STREAM_DELAY_SAMPLES = N_FFT - HOP;
 const FREQ_BINS = N_FFT / 2 + 1; // 257, onesided — matches torch.stft's default onesided=True
 
 /**
