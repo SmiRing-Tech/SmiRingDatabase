@@ -13,8 +13,11 @@
  * Ladder, one step at a time:
  *   0. own screen share 1440p -> 1080p (only while sharing a screen taller than 1080p: 1440p is
  *      the bonus for small text, so it goes first)
- *   0b. background segmentation 20/s -> 10/s (seg-half; camera level 0 with the effect on — the
- *      cheapest step there is: same model, same quality setting, half the inferences).
+ *   0b. camera 20fps -> 15fps at 720p (cam-15; with the background effect on). Every frame sent
+ *      is composited with its own frame's matte at every level (backgroundCompositor.worker), so
+ *      the frame rate *is* the segmentation rate: fewer frames is fewer inferences, composites and
+ *      encodes at once. (Until 2026-11-20 this step halved segmentation at 20fps, which left every
+ *      other frame cut out with the previous frame's matte.)
  *   1. background effect 'high' -> 'balanced'. The other way is automatic too, for anyone on
  *      'balanced' however they got there (stored choice, first-run detection, the effect's own
  *      slow-frame fallback): after bgRestoreAfterMs calm with every other step back, 'high' is
@@ -23,11 +26,11 @@
  *      pipeline only, and not when the person picked 'balanced' themselves during this call
  *      (bgUpgradable).
  *   2. receive 1: other people's cameras shown small arrive at 10fps (receiveFpsController.ts)
- *   3. camera 540p / 15fps, segmentation 10/s (no notice: hardly visible)
+ *   3. camera 540p / 10fps (no notice)
  *   4. receive 2: ones shown large capped at 360p (frame rate kept — a large tile at 10fps visibly
  *      stutters, and 720p -> 360p cuts its decode ~70%)
- *   5. camera 360p / 10fps, segmentation 5/s (the floor: segmentation never under half the
- *      camera's frame rate)
+ *   5. camera 360p / 5fps (the same segmentation rates as the earlier 15fps/10fps levels, whose
+ *      frames in between went out with a neighbour's matte)
  *   6. receive 3: small ones at 5fps, large ones at 10fps, and a screen share being received at half
  *      its frame rate (its resolution — the legibility of its text — is never touched)
  *   6b. receive 4: every camera capped at 180p
@@ -67,22 +70,25 @@ export interface VideoProfile {
 }
 
 /**
- * Levels 1-2 relative to whatever the device captures normally (level 0): never *raise* a
- * phone's 360p to 540p just because that's what level 1 means on a laptop.
+ * The camera at a level (and step 0b, `cam15`, which only applies at level 0), relative to
+ * whatever the device captures normally (level 0): never *raise* a phone's 360p to 540p just
+ * because that's what level 1 means on a laptop. Segmentation runs at the frame rate: every frame
+ * sent gets its own matte (see step 0b).
  */
-export function videoProfileFor(level: VideoLevel, base: VideoProfile): VideoProfile {
-  if (level === 0) return base;
+export function videoProfileFor(level: VideoLevel, base: VideoProfile, cam15 = false): VideoProfile {
+  if (level === 0 && !cam15) return base;
   const target =
-    level === 1
-      ? { width: 960, height: 540, frameRate: 15, segmentationFps: 10 }
-      : { width: 640, height: 360, frameRate: 10, segmentationFps: 5 };
+    level === 0
+      ? { width: base.width, height: base.height, frameRate: 15 }
+      : level === 1
+        ? { width: 960, height: 540, frameRate: 10 }
+        : { width: 640, height: 360, frameRate: 5 };
   const frameRate = Math.min(base.frameRate, target.frameRate);
   return {
     width: Math.min(base.width, target.width),
     height: Math.min(base.height, target.height),
     frameRate,
-    // Never under half the camera rate; never above it either.
-    segmentationFps: Math.min(frameRate, Math.max(target.segmentationFps, frameRate / 2)),
+    segmentationFps: frameRate,
     segmentationScheduler: 'exact',
   };
 }
@@ -119,13 +125,20 @@ export interface LoadSample {
   /** Longest gap between camera frames leaving the background effect, ms (worker pipeline only). Telemetry only. */
   bgMaxGapMs?: number;
   /** Background matte timing (backgroundCompositor.worker: matteSync / photo mode). Telemetry only. */
-  bgMatte?: { delayMs?: number; ownPct?: number; forcedOut: number; staleDropped: number };
+  bgMatte?: { delayMs?: number; ownPct?: number; forcedOut: number; unmatched?: number; staleDropped: number };
   /** Segmentation rate and timing (worker pipeline). Telemetry only. */
   bgSegment?: { perSec: number; roundTripMs?: number; workMs?: number };
   bgFps?: number;
   bgExpectedFps?: number;
   /** Background effect cost per frame (all its threads), ms. */
   bgCostMs?: number;
+  /**
+   * Worker pipeline: the busier worker thread's share of the window (0..1). When set, judged
+   * instead of bgCostMs: time per frame on threads beside the page says little by itself, and it
+   * doubled when every frame sent got its own segmentation (see WorkerBackgroundProcessor's
+   * PERF_SLOW_BUSY).
+   */
+  bgBusy?: number;
   audioActive: boolean;
   audioChunks: number;
   /** Chunks at the lightest noise-cancel setting, or sent through unprocessed. */
@@ -246,6 +259,8 @@ export const GOVERNOR_THRESHOLDS = {
   /** Background effect cost per frame (both its threads), ms. */
   bgCostOverloadMs: 25,
   bgCostCalmMs: 12,
+  bgBusyOverload: 0.8,
+  bgBusyCalm: 0.5,
   /** Share of noise-cancel chunks at its lightest setting/passed through. */
   audioStressOverload: 0.5,
   audioStressCalm: 0.1,
@@ -360,7 +375,10 @@ export function classify(sample: LoadSample, T: GovernorThresholds = GOVERNOR_TH
     if (ratio < T.bgFpsRatioOverload) reasons.push('bg-fps');
     if (ratio < T.bgFpsRatioCalm) calm = false;
   }
-  if (visible && sample.bgActive && sample.bgCostMs !== undefined) {
+  if (visible && sample.bgActive && sample.bgBusy !== undefined) {
+    if (sample.bgBusy >= T.bgBusyOverload) reasons.push('bg-cost');
+    if (sample.bgBusy >= T.bgBusyCalm) calm = false;
+  } else if (visible && sample.bgActive && sample.bgCostMs !== undefined) {
     if (sample.bgCostMs >= T.bgCostOverloadMs) reasons.push('bg-cost');
     if (sample.bgCostMs >= T.bgCostCalmMs) calm = false;
   }
@@ -407,8 +425,8 @@ export interface GovernorState {
   lastWasShareSwitch?: boolean;
   /** Photo mode (step 8). */
   photo: boolean;
-  /** Background segmentation at half rate (step 0b). */
-  segHalf: boolean;
+  /** Camera at 15fps, 720p kept (step 0b). */
+  cam15: boolean;
   /** Samples the switch grace held off, with their length, over the last switchGraceWindowMs. */
   graceLog: { t: number; ms: number }[];
   /** When the background was last put back on 'high' (the restore trial), or null. */
@@ -431,7 +449,7 @@ export function initialGovernorState(now: number): GovernorState {
     share720: false,
     share1080: false,
     photo: false,
-    segHalf: false,
+    cam15: false,
     graceLog: [],
     bgRestoredAt: null,
     bgRestoreBlocked: false,
@@ -452,7 +470,7 @@ export type GovernorAction =
   | { kind: 'share-720'; direction: 'down' | 'up' }
   | { kind: 'share-1080'; direction: 'down' | 'up' }
   | { kind: 'photo'; direction: 'down' | 'up' }
-  | { kind: 'seg-half'; direction: 'down' | 'up' };
+  | { kind: 'cam-15'; direction: 'down' | 'up' };
 
 /** What the governor needs to know about the call, beyond the sample. */
 export interface GovernorContext {
@@ -470,9 +488,9 @@ export interface GovernorContext {
   shareCodec?: 'av1' | 'vp8' | 'h264' | null;
   /** Height the own share is captured at right now (for step 0: only worth it above 1080p). */
   shareHeight?: number;
-  /** The background effect is running on the worker pipeline at the camera's rate, so halving
-   *  its segmentation (step 0b) would change something. Unset = no. */
-  segHalfAvailable?: boolean;
+  /** The background effect is on, so step 0b (camera 15fps: fewer frames segmented, composited
+   *  and encoded) is the cheapest relief there is. Unset = no. */
+  cam15Available?: boolean;
 }
 
 export interface GovernorStep {
@@ -605,8 +623,8 @@ function nextStepDown(state: GovernorState, ctx: GovernorContext, reasons: strin
   if (ctx.shareCodec && ctx.shareCodec !== 'av1' && !state.share1080 && !state.share720 && (ctx.shareHeight ?? 0) > 1080 * 1.05) {
     return { kind: 'share-1080', direction: 'down' };
   }
-  if (ctx.segHalfAvailable && ctx.cameraOn && state.video === 0 && !state.segHalf) {
-    return { kind: 'seg-half', direction: 'down' };
+  if (ctx.cam15Available && ctx.cameraOn && state.video === 0 && !state.cam15) {
+    return { kind: 'cam-15', direction: 'down' };
   }
   if (ctx.bgQuality === 'high' && !state.bgDowngraded) return { kind: 'bg-balanced' };
   const relief = ctx.recvRelief ?? { 1: false, 2: false };
@@ -626,7 +644,7 @@ function nextStepDown(state: GovernorState, ctx: GovernorContext, reasons: strin
 
 /**
  * Undo the most recent step still in effect: the ladder in reverse (share 720p, photo, receive 5, 4,
- * 3, camera 2, receive 2, camera 1, receive 1, segmentation 20/s, share 1080p). The share's switch to VP8 isn't undone
+ * 3, camera 2, receive 2, camera 1, receive 1, camera 20fps, share 1080p). The share's switch to VP8 isn't undone
  * mid-share — each undo would be another republish the viewers see. The background's 'high' has
  * its own, slower path (see stepGovernor).
  */
@@ -641,7 +659,7 @@ function nextStepUp(state: GovernorState): GovernorAction | null {
   if (state.recv === 2) return { kind: 'recv', level: 1, direction: 'up' };
   if (cameraSteps && state.video === 1) return { kind: 'video', level: 0, direction: 'up' };
   if (state.recv === 1) return { kind: 'recv', level: 0, direction: 'up' };
-  if (state.segHalf) return { kind: 'seg-half', direction: 'up' };
+  if (state.cam15) return { kind: 'cam-15', direction: 'up' };
   if (state.share1080) return { kind: 'share-1080', direction: 'up' };
   return null;
 }
@@ -654,6 +672,6 @@ function applyToState(state: GovernorState, action: GovernorAction) {
   else if (action.kind === 'share-vp8') state.shareVp8 = true;
   else if (action.kind === 'share-720') state.share720 = action.direction === 'down';
   else if (action.kind === 'share-1080') state.share1080 = action.direction === 'down';
-  else if (action.kind === 'seg-half') state.segHalf = action.direction === 'down';
+  else if (action.kind === 'cam-15') state.cam15 = action.direction === 'down';
   else state.photo = action.direction === 'down';
 }

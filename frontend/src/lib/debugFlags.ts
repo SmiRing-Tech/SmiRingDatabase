@@ -5,7 +5,7 @@
  * reload before joining after changing one.
  */
 const KNOWN_DEBUG_FLAGS: Record<string, string> = {
-  'smiring.debug.segHalf': 'background segmentation at the old half rate (10/s)',
+  'smiring.debug.segHalf': 'OBSOLETE (every frame sent has its own matte now) — remove it',
   'smiring.debug.segExact': 'OBSOLETE (every-frame segmentation is the default now) — remove it',
   'smiring.debug.loadGovernor': "load governor mode ('observe' = judge only, 'off' = nothing)",
   'smiring.debug.loadPanel': 'live load governor readout on screen',

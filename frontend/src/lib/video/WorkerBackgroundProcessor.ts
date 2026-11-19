@@ -77,13 +77,24 @@ const inVisibilitySwitchGrace = () => performance.now() - lastVisibilityChangeAt
 /** Generous: on a slow machine a model load plus first inference took 4-7s on the main thread. */
 const INIT_TIMEOUT_MS = 20_000;
 
-// Same thresholds as MediapipeBackgroundProcessor's per-frame windows, applied to the compositor's
-// once-a-second reports. "Cost per frame" is both workers' time divided by frames, which is what the
-// main-thread version's per-frame duration measures too.
+// "Too slow" for the worker pipeline, judged on the compositor's once-a-second reports by how busy
+// each worker's thread is (its time per second) and whether the frame rate is kept — not by time
+// per frame, MediapipeBackgroundProcessor's measure: there everything runs on the page's thread,
+// here the two workers run beside it. Time per frame also doubled when every frame sent got its own
+// segmentation (2026-11-19/20) without the machine being any busier per segmentation: the old
+// 20ms/frame line would have dropped machines at ~18ms per segmentation that keep 20fps easily.
+// The busy line below falls where the old one did on de0addd (20/s at 35ms per segmentation ~= the
+// old 10/s at ~36ms), so the same machines keep 'high'.
 const PERF_SLOW_WINDOW_S = 5;
-const PERF_SLOW_AVG_MS = 20;
+/** A worker thread busier than this over the window... */
+const PERF_SLOW_BUSY = 0.7;
+/** ...or the frame rate under this share of the expected one while a thread is busier than PERF_BUSY_FOR_FPS. */
+const PERF_SLOW_FPS_RATIO = 0.8;
+const PERF_BUSY_FOR_FPS = 0.5;
 const PERF_SPIKE_WINDOW_S = 2;
-const PERF_SPIKE_AVG_MS = 33;
+/** Spike: a thread saturated and the frame rate far down, for the short window. */
+const PERF_SPIKE_BUSY = 0.9;
+const PERF_SPIKE_FPS_RATIO = 0.6;
 const PERF_FAST_WINDOW_S = 8;
 const PERF_FAST_AVG_MS = 6;
 const PERF_FAST_MIN_FPS_RATIO = 0.85;
@@ -681,18 +692,16 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       costMsTotal: stats.compositeMsTotal + stats.segmenterWorkMsTotal,
       expectedFps: this.expectedFps(),
       maxGapMs: stats.maxGapMs,
-      // matteSync: how long frames were held for their matte; photo mode: how long it waited.
-      matteDelayMs: stats.heldFrames
-        ? stats.heldMsTotal / stats.heldFrames
-        : stats.syncFrames
-          ? stats.syncWaitMsTotal / stats.syncFrames
-          : undefined,
+      // matteSync / photo mode: how long frames were held for their own matte.
+      matteDelayMs: stats.heldFrames ? stats.heldMsTotal / stats.heldFrames : undefined,
       ownMattePct: stats.heldFrames ? (stats.ownMatteFrames / stats.heldFrames) * 100 : undefined,
       forcedOut: stats.forcedOut || undefined,
+      unmatched: stats.unmatched || undefined,
       staleDropped: stats.staleDropped || undefined,
       segmentations: stats.segmentations,
       segmentRoundTripMs: stats.segmentations ? stats.maskLatencyMsTotal / stats.segmentations : undefined,
       segmenterWorkMs: stats.segmentations ? stats.segmenterWorkMsTotal / stats.segmentations : undefined,
+      threadMs: { compositor: stats.compositeMsTotal, segmenter: stats.segmenterWorkMsTotal },
     });
     if (inVisibilitySwitchGrace()) {
       // A window switch: these seconds say nothing about whether the effect keeps up.
@@ -704,31 +713,49 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
     if (this.readyResolved) this.checkFrameCost();
   }
 
-  /** Both workers' time per frame over the last `seconds` reports, or null without enough data. */
+  /**
+   * Over the last `seconds` reports: both workers' time per frame, the frame rate, and the busier
+   * worker thread's share of the time. Null without enough data.
+   */
   private windowCost(seconds: number, minFrames: number) {
     if (this.history.length < seconds) return null;
     const window = this.history.slice(-seconds);
     const frames = window.reduce((sum, s) => sum + s.frames, 0);
     if (frames < minFrames) return null;
-    const ms = window.reduce((sum, s) => sum + s.compositeMsTotal + s.segmenterWorkMsTotal, 0);
-    const elapsed = window.reduce((sum, s) => sum + s.intervalMs, 0) / 1000;
-    return { avgMs: ms / frames, fps: frames / Math.max(0.001, elapsed) };
+    const composite = window.reduce((sum, s) => sum + s.compositeMsTotal, 0);
+    const segmenter = window.reduce((sum, s) => sum + s.segmenterWorkMsTotal, 0);
+    const elapsedMs = Math.max(1, window.reduce((sum, s) => sum + s.intervalMs, 0));
+    return {
+      avgMs: (composite + segmenter) / Math.max(1, frames),
+      fps: (frames * 1000) / elapsedMs,
+      busy: Math.max(composite, segmenter) / elapsedMs,
+    };
   }
 
   private checkFrameCost() {
     const slowCb = this.options.onSustainedSlowFrames;
-    if (slowCb && !this.slowCallbackFired) {
-      const sustained = this.windowCost(PERF_SLOW_WINDOW_S, 30);
-      const spike = this.windowCost(PERF_SPIKE_WINDOW_S, 20);
+    // Photo mode sends a frame a second on purpose; nothing to judge.
+    if (slowCb && !this.slowCallbackFired && !(this.options.photoIntervalMs ?? 0)) {
+      const expected = this.expectedFps();
+      const sustained = this.windowCost(PERF_SLOW_WINDOW_S, 10);
+      const spike = this.windowCost(PERF_SPIKE_WINDOW_S, 4);
       const trigger =
-        sustained && sustained.avgMs > PERF_SLOW_AVG_MS
-          ? ({ trigger: 'sustained', avgMs: sustained.avgMs } as const)
-          : spike && spike.avgMs > PERF_SPIKE_AVG_MS
-            ? ({ trigger: 'spike', avgMs: spike.avgMs } as const)
+        sustained &&
+        (sustained.busy > PERF_SLOW_BUSY ||
+          (sustained.fps < expected * PERF_SLOW_FPS_RATIO && sustained.busy > PERF_BUSY_FOR_FPS))
+          ? ({ trigger: 'sustained', ...sustained } as const)
+          : spike && spike.busy > PERF_SPIKE_BUSY && spike.fps < expected * PERF_SPIKE_FPS_RATIO
+            ? ({ trigger: 'spike', ...spike } as const)
             : null;
       if (trigger) {
         this.slowCallbackFired = true;
-        slowCb({ trigger: trigger.trigger, avgFrameMs: Math.round(trigger.avgMs * 10) / 10 });
+        slowCb({
+          trigger: trigger.trigger,
+          avgFrameMs: Math.round(trigger.avgMs * 10) / 10,
+          fps: Math.round(trigger.fps * 10) / 10,
+          expectedFps: Math.round(expected),
+          busyPct: Math.round(trigger.busy * 100),
+        });
       }
     }
     const fastCb = this.options.onSustainedFastFrames;
@@ -741,12 +768,17 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
     }
   }
 
-  /** The camera's own frame rate — what "keeping up" means. In photo mode, the photo rate. */
+  /**
+   * The frame rate "keeping up" means: the camera's own, or with matteSync the segmentation rate
+   * when that's lower (only frames with their own matte go out — the governor's camera levels and
+   * phones segment slower than the camera). In photo mode, the photo rate.
+   */
   private expectedFps(): number {
     const photo = this.options.photoIntervalMs ?? 0;
     if (photo > 0) return 1000 / photo;
     const rate = this.sourceTrack?.getSettings().frameRate;
-    return Math.min(rate && rate > 0 ? rate : 20, 30);
+    const camera = Math.min(rate && rate > 0 ? rate : 20, 30);
+    return this.options.matteSync ? Math.min(camera, this.options.segmentationFps) : camera;
   }
 
   private startStarvationMonitor() {
@@ -829,9 +861,7 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       ownMatteFrames: d.ownMatteFrames || undefined,
       forcedOut: d.forcedOut || undefined,
       staleDropped: d.staleDropped || undefined,
-      syncFrames: d.syncFrames || undefined,
-      syncWaitMsAvg: avg(d.syncWaitMsTotal, d.syncFrames),
-      syncTimeouts: d.syncTimeouts || undefined,
+      unmatched: d.unmatched || undefined,
       photoSkipped: d.photoSkipped || undefined,
     };
     this.diag = { ...emptyTotals(), seconds: 0 };
@@ -856,9 +886,7 @@ function emptyTotals(): Omit<CompositorStats, 'intervalMs'> {
     ownMatteFrames: 0,
     forcedOut: 0,
     staleDropped: 0,
-    syncFrames: 0,
-    syncWaitMsTotal: 0,
-    syncTimeouts: 0,
+    unmatched: 0,
     photoSkipped: 0,
   };
 }
@@ -879,8 +907,6 @@ function addTotals(into: Omit<CompositorStats, 'intervalMs'>, stats: CompositorS
   into.ownMatteFrames += stats.ownMatteFrames;
   into.forcedOut += stats.forcedOut;
   into.staleDropped += stats.staleDropped;
-  into.syncFrames += stats.syncFrames;
-  into.syncWaitMsTotal += stats.syncWaitMsTotal;
-  into.syncTimeouts += stats.syncTimeouts;
+  into.unmatched += stats.unmatched;
   into.photoSkipped += stats.photoSkipped;
 }

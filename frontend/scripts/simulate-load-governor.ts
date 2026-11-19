@@ -122,8 +122,8 @@ function run(
                   ? `share-1080-${a.direction}`
                   : a.kind === 'photo'
                     ? `photo-${a.direction}`
-                    : a.kind === 'seg-half'
-                      ? `seg-half-${a.direction}`
+                    : a.kind === 'cam-15'
+                      ? `cam15-${a.direction}`
                       : a.kind;
       if (a.kind === 'bg-balanced') ctx.bgQuality = 'balanced';
       if (a.kind === 'bg-high') ctx.bgQuality = 'high';
@@ -133,8 +133,8 @@ function run(
   console.log(`${name}\n  ${log.join('  ') || '(no actions)'}\n  end: video=${state.video} recv=${state.recv} shareVp8=${state.shareVp8} share720=${state.share720} share1080=${state.share1080} photo=${state.photo} bgBlocked=${state.bgRestoreBlocked} backoff=${state.recoverBackoff}`);
 }
 
-const highBg: GovernorContext = { bgQuality: 'high', bgUpgradable: true, segHalfAvailable: true, cameraOn: true };
-const balancedBg: GovernorContext = { bgQuality: 'balanced', bgUpgradable: true, segHalfAvailable: true, cameraOn: true };
+const highBg: GovernorContext = { bgQuality: 'high', bgUpgradable: true, cam15Available: true, cameraOn: true };
+const balancedBg: GovernorContext = { bgQuality: 'balanced', bgUpgradable: true, cam15Available: true, cameraOn: true };
 const noBg: GovernorContext = { bgQuality: null, cameraOn: true };
 
 run('fast machine, always calm (must do nothing)', () => 'calm', 600_000, highBg);

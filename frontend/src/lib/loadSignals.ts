@@ -23,12 +23,14 @@ export type LoadSignal =
       expectedFps: number;
       /** Longest gap between output frames, ms (worker pipeline only). */
       maxGapMs?: number;
-      /** How long frames were held for their own matte (matteSync) or waited for it (photo mode), ms avg. */
+      /** How long frames were held for their own matte (matteSync / photo mode), ms avg. */
       matteDelayMs?: number;
       /** matteSync: share of held frames that went out with the matte made from that very frame, %. */
       ownMattePct?: number;
-      /** matteSync: frames sent with the latest matte because they were held too long. */
+      /** matteSync: frames sent with the latest matte because the segmenter stopped answering. */
       forcedOut?: number;
+      /** matteSync: frames not sent because no matte was asked for them (segmenter busy or not due). */
+      unmatched?: number;
       /** Frames dropped because their matte was too old to send. */
       staleDropped?: number;
       /** Segmentations in this report, their average round trip (asked -> matte ready) and the
@@ -36,6 +38,8 @@ export type LoadSignal =
       segmentations?: number;
       segmentRoundTripMs?: number;
       segmenterWorkMs?: number;
+      /** Worker pipeline: each worker thread's time in this report, ms (compositor; segmenter). */
+      threadMs?: { compositor: number; segmenter: number };
     };
 
 type Listener = (signal: LoadSignal) => void;

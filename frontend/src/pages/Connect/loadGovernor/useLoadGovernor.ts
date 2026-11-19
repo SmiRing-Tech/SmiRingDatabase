@@ -104,7 +104,7 @@ const BASE_PROFILE: VideoProfile = {
   height: idealNumber(VIDEO_CAPTURE_CONSTRAINTS.height, 720),
   frameRate: idealNumber(VIDEO_CAPTURE_CONSTRAINTS.frameRate, 20),
   segmentationFps: 20,
-  segmentationScheduler: 'interval',
+  segmentationScheduler: 'exact',
 };
 
 function constraintsFor(profile: VideoProfile): MediaTrackConstraints {
@@ -128,11 +128,15 @@ function createSignalTotals() {
     bgSeconds: 0,
     bgCostMs: 0,
     bgExpectedFps: 0,
+    bgThreadComposite: 0,
+    bgThreadSegmenter: 0,
+    bgThreadSeconds: 0,
     bgReports: 0,
     bgMaxGapMs: undefined as number | undefined,
     bgMatteDelayMs: undefined as number | undefined,
     bgOwnMattePct: undefined as number | undefined,
     bgForcedOut: 0,
+    bgUnmatched: 0,
     bgStaleDropped: 0,
     bgSegmentations: 0,
     bgSegRoundTripMax: undefined as number | undefined,
@@ -166,7 +170,7 @@ export function useLoadGovernor({
 
   const stateRef = useRef<GovernorState>(initialGovernorState(performance.now()));
   /** Which capture level was last applied to which camera track (LiveKit replaces the track on restart). */
-  const appliedRef = useRef(new WeakMap<MediaStreamTrack, VideoLevel>());
+  const appliedRef = useRef(new WeakMap<MediaStreamTrack, string>());
   const lastApplyAtRef = useRef(0);
   /** The receiving steps' controller, while the sampling loop runs. */
   const recvControllerRef = useRef<ReceiveFpsController | null>(null);
@@ -177,26 +181,30 @@ export function useLoadGovernor({
     [localParticipant],
   );
 
-  /** Makes the camera match the governor's video level (idempotent; called every sample). */
+  /** Makes the camera match the governor's video level and step 0b (idempotent; called every sample). */
   const syncCameraProfile = useCallback(
-    (level: VideoLevel, force = false) => {
+    ({ video: level, cam15 }: { video: VideoLevel; cam15: boolean }, force = false) => {
       const track = cameraTrack();
       const mst = track ? cameraSourceTrack(track) : undefined;
       if (!track || !mst || mst.readyState !== 'live') return;
-      const profile = videoProfileFor(level, BASE_PROFILE);
+      const profile = videoProfileFor(level, BASE_PROFILE, cam15);
+      const key = `${level}${cam15 ? 'g' : ''}`;
       const now = performance.now();
       const applied = appliedRef.current.get(mst);
       // LiveKit puts its own constraints back when the processor changes; catch the camera
       // running bigger than this level asks for.
       const settings = mst.getSettings();
-      const drifted = level > 0 && (settings.height ?? 0) > profile.height * 1.1 && now - lastApplyAtRef.current > REAPPLY_MIN_MS;
-      if (!force && applied === level && !drifted) return;
-      if (applied === undefined && level === 0) {
-        appliedRef.current.set(mst, 0);
+      const drifted =
+        profile !== BASE_PROFILE &&
+        ((settings.height ?? 0) > profile.height * 1.1 || (settings.frameRate ?? 0) > profile.frameRate * 1.1) &&
+        now - lastApplyAtRef.current > REAPPLY_MIN_MS;
+      if (!force && applied === key && !drifted) return;
+      if (applied === undefined && profile === BASE_PROFILE) {
+        appliedRef.current.set(mst, key);
         return;
       }
       lastApplyAtRef.current = now;
-      appliedRef.current.set(mst, level);
+      appliedRef.current.set(mst, key);
       void applyCaptureConstraints(track, constraintsFor(profile)).catch((err) =>
         console.warn('[governor] could not change camera settings:', err),
       );
@@ -258,6 +266,22 @@ export function useLoadGovernor({
     [cameraTrack, setCameraSenderFps, room],
   );
 
+  /**
+   * The camera's capture settings and the background effect's segmentation rate for the current
+   * video level and step 0b (stateRef is updated before the action is applied). Every frame sent
+   * gets its own matte, so the two always move together.
+   */
+  const applyCameraLevel = useCallback(() => {
+    const st = stateRef.current;
+    const profile = videoProfileFor(st.video, BASE_PROFILE, st.cam15);
+    backgroundRef.current.setPerformanceProfile(
+      profile === BASE_PROFILE
+        ? null
+        : { segmentationFps: profile.segmentationFps, segmentationScheduler: profile.segmentationScheduler },
+    );
+    syncCameraProfile(st, true);
+  }, [syncCameraProfile]);
+
   const applyAction = useCallback(
     async (action: GovernorAction) => {
       const bg = backgroundRef.current;
@@ -266,9 +290,9 @@ export function useLoadGovernor({
         await bg.setQuality('high', { auto: true });
         return;
       }
-      if (action.kind === 'seg-half') {
-        // Step 0b; no notice — nothing visible changes but how often the cut-out is redrawn.
-        bg.setSegmentationHalf({ step: action.direction === 'down' });
+      if (action.kind === 'cam-15') {
+        // Step 0b; no notice — 20fps -> 15fps is hardly visible.
+        applyCameraLevel();
         return;
       }
       if (action.kind === 'share-1080') {
@@ -298,15 +322,9 @@ export function useLoadGovernor({
         return;
       }
       if (action.kind === 'video') {
-        const profile = videoProfileFor(action.level, BASE_PROFILE);
-        bg.setPerformanceProfile(
-          action.level === 0
-            ? null
-            : { segmentationFps: profile.segmentationFps, segmentationScheduler: profile.segmentationScheduler },
-        );
-        syncCameraProfile(action.level, true);
-        // Only the second step is worth saying: 540p/15fps (level 1) is hardly visible to anyone,
-        // 360p/10fps (level 2) is.
+        applyCameraLevel();
+        // Only the second step is worth saying: 540p/10fps (level 1) is hardly visible to anyone,
+        // 360p/5fps (level 2) is.
         if (action.direction === 'down' && action.level === 2) {
           onNoticeRef.current('パソコンの負荷が高いため、カメラの画質を下げています（負荷が下がると自動で戻ります）。');
         }
@@ -330,7 +348,7 @@ export function useLoadGovernor({
         }
       }
     },
-    [localParticipant, syncCameraProfile, forcedRecv, applyPhoto],
+    [localParticipant, applyCameraLevel, forcedRecv, applyPhoto],
   );
 
   // Camera track replaced or its processor changed: forget what was applied, so the next sample
@@ -395,6 +413,11 @@ export function useLoadGovernor({
         totals.bgSeconds += signal.seconds;
         totals.bgCostMs += signal.costMsTotal;
         totals.bgExpectedFps = signal.expectedFps;
+        if (signal.threadMs) {
+          totals.bgThreadComposite += signal.threadMs.compositor;
+          totals.bgThreadSegmenter += signal.threadMs.segmenter;
+          totals.bgThreadSeconds += signal.seconds;
+        }
         totals.bgReports += 1;
         if (signal.maxGapMs !== undefined) totals.bgMaxGapMs = Math.max(totals.bgMaxGapMs ?? 0, signal.maxGapMs);
         if (signal.matteDelayMs !== undefined) totals.bgMatteDelayMs = Math.max(totals.bgMatteDelayMs ?? 0, signal.matteDelayMs);
@@ -402,6 +425,7 @@ export function useLoadGovernor({
           totals.bgOwnMattePct = Math.min(totals.bgOwnMattePct ?? 100, signal.ownMattePct);
         }
         totals.bgForcedOut += signal.forcedOut ?? 0;
+        totals.bgUnmatched += signal.unmatched ?? 0;
         totals.bgStaleDropped += signal.staleDropped ?? 0;
         totals.bgSegmentations += signal.segmentations ?? 0;
         if (signal.segmentRoundTripMs !== undefined) {
@@ -813,7 +837,13 @@ export function useLoadGovernor({
           bgMaxGapMs: localParticipant.isCameraEnabled ? t.bgMaxGapMs : undefined,
           bgMatte:
             localParticipant.isCameraEnabled && (t.bgMatteDelayMs !== undefined || t.bgStaleDropped > 0)
-              ? { delayMs: t.bgMatteDelayMs, ownPct: t.bgOwnMattePct, forcedOut: t.bgForcedOut, staleDropped: t.bgStaleDropped }
+              ? {
+                  delayMs: t.bgMatteDelayMs,
+                  ownPct: t.bgOwnMattePct,
+                  forcedOut: t.bgForcedOut,
+                  unmatched: t.bgUnmatched,
+                  staleDropped: t.bgStaleDropped,
+                }
               : undefined,
           bgSegment:
             localParticipant.isCameraEnabled && t.bgSeconds > 0 && t.bgSegmentations > 0
@@ -822,6 +852,10 @@ export function useLoadGovernor({
           bgFps: t.bgSeconds > 0 ? t.bgFrames / t.bgSeconds : undefined,
           bgExpectedFps: t.bgExpectedFps || undefined,
           bgCostMs: t.bgFrames > 0 ? t.bgCostMs / t.bgFrames : undefined,
+          bgBusy:
+            t.bgThreadSeconds > 0
+              ? Math.max(t.bgThreadComposite, t.bgThreadSegmenter) / (t.bgThreadSeconds * 1000)
+              : undefined,
           audioActive: t.audioChunks > 0,
           audioChunks: t.audioChunks,
           audioStressedChunks: t.audioStressed,
@@ -867,7 +901,7 @@ export function useLoadGovernor({
             ? {
                 bgQuality: actualQuality,
                 bgUpgradable: bg.canAutoUpgradeQuality(),
-                segHalfAvailable: actualQuality !== null,
+                cam15Available: actualQuality !== null,
                 cameraOn: sample.cameraOn,
                 recvRelief,
                 shareCodec,
@@ -876,7 +910,7 @@ export function useLoadGovernor({
             : {
                 bgQuality: actualQuality === 'high' && state.bgDowngraded ? ('balanced' as const) : actualQuality,
                 bgUpgradable: bg.canAutoUpgradeQuality(),
-                segHalfAvailable: actualQuality !== null,
+                cam15Available: actualQuality !== null,
                 cameraOn: sample.cameraOn,
                 recvRelief,
                 shareCodec: shareCodec === 'av1' && state.shareVp8 ? ('vp8' as const) : shareCodec,
@@ -899,9 +933,7 @@ export function useLoadGovernor({
           recordTelemetry('bg-high-remembered', {});
         }
         if (mode === 'active') {
-          syncCameraProfile(step.state.video);
-          // Segmentation at half rate for step 0b, and whenever the window is in the background.
-          bg.setSegmentationHalf({ step: step.state.segHalf, hidden: !sample.visible });
+          syncCameraProfile(step.state);
           // Photo mode: one still a second, or one every few while still overloaded. Re-applied
           // when the camera's processor changes (a rebuilt effect starts without it).
           if (step.state.photo && sample.cameraOn) {
@@ -983,7 +1015,7 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
   return {
     p: step.verdict.pressure,
     r: step.verdict.reasons.length ? step.verdict.reasons : undefined,
-    lv: `${st.segHalf ? 'g' : ''}${st.bgDowngraded ? 'b' : ''}${st.video}${st.recv ? `r${st.recv}` : ''}${st.shareVp8 ? 'v' : ''}${st.share1080 ? 'h' : ''}${
+    lv: `${st.cam15 ? 'g' : ''}${st.bgDowngraded ? 'b' : ''}${st.video}${st.recv ? `r${st.recv}` : ''}${st.shareVp8 ? 'v' : ''}${st.share1080 ? 'h' : ''}${
       st.share720 ? 's' : ''
     }${st.photo ? 'p' : ''}`,
     vis: s.visible ? undefined : 0,
@@ -1007,12 +1039,14 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
     rafx: r0(s.frames?.maxGapMs),
     // Longest gap between camera frames leaving the background effect, ms.
     bgg: r0(s.bgMaxGapMs),
-    // Background matte timing (matteSync: frames held for their own matte; photo mode: the wait),
-    // worst second in the window: avg delay ms, % of frames with their own frame's matte (lowest
-    // second), frames sent with the latest matte because they were held too long.
+    // Background matte timing (matteSync / photo mode: frames held for their own matte), worst
+    // second in the window: avg hold ms, % of frames with their own frame's matte (lowest second),
+    // frames sent with the latest matte because the segmenter stopped answering, frames not sent
+    // because no matte was asked for them (segmenter busy, or the frame rate's step not due).
     bgw: r1(s.bgMatte?.delayMs),
     bgo: r0(s.bgMatte?.ownPct),
     bgx: s.bgMatte?.forcedOut || undefined,
+    bgn: s.bgMatte?.unmatched || undefined,
     // Frames dropped (not sent) because their matte was too old.
     bgd: s.bgMatte?.staleDropped || undefined,
     // Segmentation: per second, round trip (asked -> matte ready) and the segmenter's own time per
@@ -1027,6 +1061,8 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
     bgf: r1(s.bgFps),
     bge: s.bgExpectedFps === undefined ? undefined : Math.round(s.bgExpectedFps),
     bgc: r1(s.bgCostMs),
+    // Worker pipeline: the busier worker thread's share of the window, % (what bg-cost judges there).
+    bgb: s.bgBusy === undefined ? undefined : Math.round(s.bgBusy * 100),
     ac: s.audioChunks || undefined,
     as: s.audioStressedChunks || undefined,
     ap: s.audioPassthroughChunks || undefined,

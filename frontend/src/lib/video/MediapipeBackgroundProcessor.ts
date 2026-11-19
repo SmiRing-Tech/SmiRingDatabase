@@ -43,6 +43,8 @@ export interface SlowFrameMeasure {
   avgFrameMs?: number;
   fps?: number;
   expectedFps?: number;
+  /** Worker pipeline: the busier worker thread's share of the time, %. */
+  busyPct?: number;
 }
 
 /** Pinned to the installed @mediapipe/tasks-vision version — keep in sync on upgrade. */

@@ -23,7 +23,6 @@ import {
   writeStoredChoice,
   detectSegmentationQuality,
   detectSegmentationFps,
-  defaultSegmentationScheduler,
   isMobileDevice,
   qualityWithinLoadDeadline,
   HIGH_MODEL_FALLBACK_MESSAGE,
@@ -64,14 +63,9 @@ export function useBackgroundEffect(isGuest = false) {
   const reapplyRef = useRef<(() => Promise<unknown>) | undefined>(undefined);
   // Segmentation rate set by the load governor (null = the device default); see setPerformanceProfile.
   const perfProfileRef = useRef<PerformanceProfile | null>(null);
-  // Matte timing and the governor's photo mode, carried over to any processor built later.
-  // matteSync follows the governor's camera level: on only while segmentation runs at the camera's
-  // own rate (level 0), where it costs latency rather than extra inferences.
-  const frameModeRef = useRef({ matteSync: true, photoIntervalMs: 0 });
-  // Segmentation at half the camera's rate at governor level 0: its step 0b, or the window being in
-  // the background (nobody is looking at the preview, and the 2026-11-19 window-switch stalls
-  // hit the segmenter hardest). Both feed segmentationFor().
-  const segHalfRef = useRef({ step: false, hidden: false });
+  // The governor's photo mode, carried over to any processor built later. (Every frame sent is
+  // composited with its own matte — matteSync — at every level; see backgroundCompositor.worker.)
+  const frameModeRef = useRef({ photoIntervalMs: 0 });
   // The person switched to 'balanced' themselves during this call: the governor leaves it there
   // until they pick 'high' again. Not stored — the next call is fully automatic again.
   const pinnedBalancedRef = useRef(false);
@@ -262,8 +256,8 @@ export function useBackgroundEffect(isGuest = false) {
         edgeFeather: 1.5,
         matteLo: 0.3,
         matteHi: 0.75,
-        ...segmentationFor(perfProfileRef.current, segHalfRef.current),
-        matteSync: frameModeRef.current.matteSync,
+        ...segmentationFor(perfProfileRef.current),
+        matteSync: true,
         photoIntervalMs: frameModeRef.current.photoIntervalMs,
         // Every processor reports when it's too heavy (see handlePerfSlow for what happens
         // next). Read the quality at call time: the worker processor changes it in place.
@@ -411,33 +405,17 @@ export function useBackgroundEffect(isGuest = false) {
   }, [applyEffect, mode, imageId, quality]);
 
   /**
-   * The load governor's segmentation rate for the current camera frame rate (null = back to the
-   * device default). Applied to the running processor in place, and to any processor built later.
+   * The load governor's segmentation rate for the camera's current frame rate (null = back to the
+   * device default) — on the worker pipeline also the rate frames are sent at, since only frames
+   * with their own matte go out. Applied to the running processor in place, and to any processor
+   * built later.
    */
   const setPerformanceProfile = useCallback(
     (profile: PerformanceProfile | null) => {
       perfProfileRef.current = profile;
-      frameModeRef.current = { ...frameModeRef.current, matteSync: profile === null };
       const processor = getCameraTrack()?.getProcessor();
       if (!isBackgroundProcessor(processor)) return;
-      processor.updateOptions(segmentationFor(profile, segHalfRef.current));
-      if (processor instanceof WorkerBackgroundProcessor) processor.setFrameMode({ matteSync: profile === null });
-    },
-    [getCameraTrack],
-  );
-
-  /**
-   * Halves the segmentation rate at governor level 0 (`step`: its step 0b; `hidden`: the window is
-   * in the background). Idempotent; the camera levels' own rates take precedence.
-   */
-  const setSegmentationHalf = useCallback(
-    (half: { step?: boolean; hidden?: boolean }) => {
-      const next = { ...segHalfRef.current, ...half };
-      if (next.step === segHalfRef.current.step && next.hidden === segHalfRef.current.hidden) return;
-      segHalfRef.current = next;
-      const processor = getCameraTrack()?.getProcessor();
-      if (!isBackgroundProcessor(processor)) return;
-      processor.updateOptions(segmentationFor(perfProfileRef.current, next));
+      processor.updateOptions(segmentationFor(profile));
     },
     [getCameraTrack],
   );
@@ -479,7 +457,6 @@ export function useBackgroundEffect(isGuest = false) {
     commit,
     setQuality,
     setPerformanceProfile,
-    setSegmentationHalf,
     setPhotoInterval,
     /**
      * Whether the governor may try 'high' (its step-1 restore trial): a desktop, the worker
@@ -506,16 +483,10 @@ export function useBackgroundEffect(isGuest = false) {
   };
 }
 
-/**
- * Segmentation rate and scheduler: the governor's camera level when it set one, otherwise the
- * device default — halved (10/s, 'exact') for the governor's step 0b or while the window is hidden.
- */
-function segmentationFor(profile: PerformanceProfile | null, half: { step: boolean; hidden: boolean }) {
+/** Segmentation rate and scheduler: the governor's camera level when it set one, otherwise the device default. */
+function segmentationFor(profile: PerformanceProfile | null) {
   if (profile) return { segmentationFps: profile.segmentationFps, segmentationScheduler: profile.segmentationScheduler };
-  if (half.step || half.hidden) {
-    return { segmentationFps: Math.max(1, Math.round(detectSegmentationFps() / 2)), segmentationScheduler: 'exact' as const };
-  }
-  return { segmentationFps: detectSegmentationFps(), segmentationScheduler: defaultSegmentationScheduler() };
+  return { segmentationFps: detectSegmentationFps(), segmentationScheduler: 'exact' as const };
 }
 
 export type BackgroundEffectState = ReturnType<typeof useBackgroundEffect>;

@@ -162,23 +162,6 @@ export function detectSegmentationQuality(): SegmentationQuality {
  * goes out has a freshly computed matte for it — so this is a pure win alongside the
  * capture/encode framerate drop, not a separate quality/battery tradeoff of its own.
  */
-/**
- * How the default segmentation rate is enforced (MediapipeBackgroundOptions.segmentationScheduler).
- * 'exact' since 2026-11-19: 'interval' at a rate equal to the camera's runs at about half of it
- * (see that option's doc), so with matteSync only half the frames got their own matte (bgo ~50%).
- * Measured on a 10-core Mac, 'exact': every frame segmented, bgo ~100%, frames held ~5ms instead of
- * ~35ms, background cost ~3ms/frame instead of ~1ms, 20/20fps kept. The governor's camera levels set
- * their own lower rates. Debug flag back to the old half rate, to compare:
- *   localStorage.setItem('smiring.debug.segHalf', '1')
- */
-export function defaultSegmentationScheduler(): 'interval' | 'exact' {
-  try {
-    return localStorage.getItem('smiring.debug.segHalf') === '1' ? 'interval' : 'exact';
-  } catch {
-    return 'exact';
-  }
-}
-
 export function detectSegmentationFps(): number {
   return isMobileDevice() ? 10 : 20;
 }
