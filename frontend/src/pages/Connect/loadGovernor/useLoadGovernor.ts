@@ -1,3 +1,11 @@
+import {
+  readStartLevel,
+  writeStartLevel,
+  normalize,
+  START_LEVEL_MIN_CALL_MS,
+  type StartLevel,
+} from './startLevel';
+import { isMobileDevice } from '../backgroundLibrary';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocalParticipant, useRoomContext } from '@livekit/components-react';
 import { Track, TrackEvent, type LocalVideoTrack } from 'livekit-client';
@@ -86,6 +94,8 @@ function forcedShareStep(): 0 | 1 | 2 {
   return value === '1' ? 1 : value === '2' ? 2 : 0;
 }
 const FORCED_SHARE_STEP_AFTER_MS = 10_000;
+/** How often the start level is saved during a call (see startLevel). */
+const START_LEVEL_SAVE_EVERY_MS = 30_000;
 
 /**
  * Camera level forced by the debug flag (to see what a step looks like), or null:
@@ -184,6 +194,8 @@ export function useLoadGovernor({
   });
 
   const stateRef = useRef<GovernorState>(initialGovernorState(performance.now()));
+  /** The remembered start level has been applied (once per call). */
+  const startAppliedRef = useRef(false);
   /** Which capture level was last applied to which camera track (LiveKit replaces the track on restart). */
   const appliedRef = useRef(new WeakMap<MediaStreamTrack, string>());
   const lastApplyAtRef = useRef(0);
@@ -390,11 +402,63 @@ export function useLoadGovernor({
     if (mode === 'off') return;
     startTelemetry(roomId, { mode, base: BASE_PROFILE });
     const debugFlags = logActiveDebugFlags();
+
+    // Start where this browser's last call settled, or in the middle (loadGovernor/startLevel).
+    // Once per call: this effect can re-run.
+    let startInfo: { start: StartLevel; remembered: boolean } | undefined;
+    if (mode === 'active' && !startAppliedRef.current) {
+      startAppliedRef.current = true;
+      const { level, remembered } = readStartLevel();
+      const bg = backgroundRef.current;
+      const bgOn = bg.supported && bg.mode !== 'off';
+      const start: StartLevel = {
+        video: level.video,
+        // The frame-rate steps are for the background effect (and phones already segment at 10/s).
+        camFps: bgOn && !isMobileDevice() ? level.camFps : 0,
+        // Only if the effect really did start on 'balanced' (startBackgroundQuality).
+        bgBalanced: level.bgBalanced && bgOn && bg.quality === 'balanced',
+      };
+      if (start.video || start.camFps || start.bgBalanced) {
+        stateRef.current = {
+          ...stateRef.current,
+          video: start.video,
+          camFps: start.camFps,
+          bgDowngraded: start.bgBalanced,
+          bgRemembered: start.bgBalanced,
+          // A brief episode: with headroom, the fast restore lifts it within a minute or so.
+          episode: { overloadedMs: 0 },
+        };
+        applyCameraLevel();
+      }
+      startInfo = { start, remembered };
+    }
     recordTelemetry('governor-start', {
       mode,
+      ...(startInfo ? { startLevel: startInfo.start, startRemembered: startInfo.remembered } : {}),
       ...(forcedRecv !== null ? { forcedRecv } : {}),
       ...(Object.keys(debugFlags).length ? { debugFlags } : {}),
     });
+
+    // Time spent at each sending level with the camera on, to remember the longest (startLevel).
+    const dwell = new Map<string, number>();
+    let cameraOnMs = 0;
+    let lastStartSaveAt = 0;
+    const saveStartLevel = () => {
+      if (mode !== 'active' || cameraOnMs < START_LEVEL_MIN_CALL_MS) return;
+      let best: string | null = null;
+      for (const [key, ms] of dwell) if (best === null || ms > (dwell.get(best) ?? 0)) best = key;
+      if (best !== null) writeStartLevel(JSON.parse(best) as StartLevel);
+    };
+    const noteDwell = (st: GovernorState, ms: number, now: number) => {
+      const key = JSON.stringify(normalize({ video: st.photo ? 2 : st.video, camFps: st.camFps, bgBalanced: st.bgDowngraded }));
+      dwell.set(key, (dwell.get(key) ?? 0) + ms);
+      cameraOnMs += ms;
+      // Saved as it goes too: a closed tab doesn't always run the cleanup.
+      if (now - lastStartSaveAt >= START_LEVEL_SAVE_EVERY_MS) {
+        lastStartSaveAt = now;
+        saveStartLevel();
+      }
+    };
     // Remote participants get a small number in the per-stream telemetry; who that is is recorded
     // once, the first time they're seen (identities are long, and this is every 2s per stream).
     const peers = new Map<string, number>();
@@ -936,6 +1000,7 @@ export function useLoadGovernor({
               };
         const step = stepGovernor(state, sample, ctx);
         stateRef.current = step.state;
+        if (sample.cameraOn) noteDwell(step.state, sample.intervalMs, now);
         // The background's restore trial held (still 'high' a trial window later): remember it for
         // the next call on this device.
         const restoredAt = step.state.bgRestoredAt;
@@ -1016,10 +1081,11 @@ export function useLoadGovernor({
       document.removeEventListener('visibilitychange', onVisibility);
       unsubscribe();
       setLocalCameraPhoto(room, false);
+      saveStartLevel();
       recordTelemetry('governor-stop', {});
       stopTelemetry();
     };
-  }, [mode, roomId, room, localParticipant, applyAction, applyPhoto, syncCameraProfile, showPanel, forcedRecv, cameraTrack]);
+  }, [mode, roomId, room, localParticipant, applyAction, applyPhoto, applyCameraLevel, syncCameraProfile, showPanel, forcedRecv, cameraTrack]);
 
   return { mode, showPanel, lastStep, forcedRecv };
 }

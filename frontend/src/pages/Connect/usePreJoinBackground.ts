@@ -1,3 +1,4 @@
+import { startBackgroundQuality } from './loadGovernor/startLevel';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LocalVideoTrack } from 'livekit-client';
 import { supportsMediapipeBackground, type SegmentationQuality } from '../../lib/video/MediapipeBackgroundProcessor';
@@ -53,7 +54,9 @@ export function usePreJoinBackground(track: LocalVideoTrack | null, isGuest = fa
   const [quality, setQualityState] = useState<SegmentationQuality>(() => {
     const existing = track?.getProcessor();
     if (isBackgroundProcessor(existing)) return existing.quality;
-    return stored.quality ?? detectSegmentationQuality();
+    // The call's remembered start (loadGovernor/startLevel): a machine that ended up on 'balanced'
+    // doesn't load 'high' for the preview either.
+    return startBackgroundQuality(stored.quality ?? detectSegmentationQuality());
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');

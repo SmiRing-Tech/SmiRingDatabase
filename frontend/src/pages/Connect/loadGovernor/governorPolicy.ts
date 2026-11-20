@@ -57,7 +57,9 @@
  * (no cameras, or only senders without temporal layers — iPhones, Safari, H.264).
  * Steps 0 and 2-9 come back automatically after a calm stretch, most recent first, with backoff if
  * they relapse. Steps taken for a brief spike (and 'high', after the effect's own fallback or a
- * spike) come back much sooner, once there's clear headroom (fastRestoreAction). No notice for the receiving steps: they only affect this person's own view.
+ * spike) come back much sooner, once there's clear headroom (fastRestoreAction).
+ * A call doesn't start at the top of the ladder: useLoadGovernor starts it where this browser's
+ * last call settled, or at 0c with nothing remembered (startLevel.ts), as a brief episode. No notice for the receiving steps: they only affect this person's own view.
  * (Moving noise cancellation to the server slots in before 8 once it exists.)
  */
 
@@ -497,6 +499,12 @@ export interface GovernorState {
   fastBlockedUntil: number;
   /** The background's busier worker thread on 'high' in the last calm visible sample this call. */
   highCalmBusy: number | null;
+  /**
+   * The call started on 'balanced' because this browser's last call settled there (startLevel):
+   * 'high' is then not part of the fast restore — the frame rate comes back fast on 'balanced',
+   * the known-good state, and 'high' is tried on the normal calm path.
+   */
+  bgRemembered?: boolean;
   /** The background's model at the previous sample (to notice the effect's own fallback). */
   lastBgQuality?: 'high' | 'balanced' | null;
   overloadedSince: number | null;
@@ -650,7 +658,15 @@ export function stepGovernor(
     // keyframe and ramps up — so it always gets the full settle, even when the audio is urgent.
     const settle = verdict.audioUrgent && !state.lastWasShareSwitch ? T.settleAudioMs : T.settleMs;
     if (now - state.overloadedSince >= escalateAfter && sinceChange >= settle) {
-      const action = nextStepDown(state, ctx, verdict.reasons);
+      // Heavy right after 'high' came back, for a reason it can cause: it's the cause — straight
+      // back to 'balanced' rather than through the frame-rate steps first.
+      const trialRunning =
+        state.bgRestoredAt !== null &&
+        now - state.bgRestoredAt < T.bgRestoreTrialMs &&
+        ctx.bgQuality === 'high' &&
+        !state.bgDowngraded &&
+        verdict.reasons.some((r) => BG_REASONS.includes(r));
+      const action: GovernorAction | null = trialRunning ? { kind: 'bg-balanced' } : nextStepDown(state, ctx, verdict.reasons);
       if (action) {
         if (action.kind === 'bg-balanced') {
           // The restore trial: heavy again soon after going back to 'high', for a reason the
@@ -749,6 +765,9 @@ function fastRestoreAction(state: GovernorState, ctx: GovernorContext, now: numb
   if (state.headroomSince === null || now - state.headroomSince < T.fastRestoreAfterMs) return null;
   if (now - state.lastChangeAt < T.fastRestoreStepGapMs) return null;
   const undo = nextStepUp(state, ctx);
+  if (undo?.kind === 'bg-high' && state.bgRemembered) {
+    return state.camFps ? { kind: 'cam-fps', step: (state.camFps - 1) as CamFpsStep, direction: 'up' } : null;
+  }
   if (undo) return undo;
   if (ctx.bgQuality === 'balanced' && bgFastUpgradable(state, ctx, T)) return { kind: 'bg-high' };
   return null;
@@ -808,7 +827,10 @@ function nextStepUp(state: GovernorState, ctx: GovernorContext): GovernorAction 
 
 function applyToState(state: GovernorState, action: GovernorAction) {
   if (action.kind === 'bg-balanced') state.bgDowngraded = true;
-  else if (action.kind === 'bg-high') state.bgDowngraded = false;
+  else if (action.kind === 'bg-high') {
+    state.bgDowngraded = false;
+    state.bgRemembered = false;
+  }
   else if (action.kind === 'video') state.video = action.level;
   else if (action.kind === 'recv') state.recv = action.level;
   else if (action.kind === 'share-vp8') state.shareVp8 = true;

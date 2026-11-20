@@ -59,9 +59,29 @@ const MODELS: Record<SegmentationQuality, string> = {
     'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite',
   // 15.6 MB. Six classes (background / hair / body-skin / face-skin / clothes /
   // accessories); the dedicated hair class is what makes the difference on
-  // fly-away strands. Cached by the browser after the first download.
+  // fly-away strands. Kept in Cache Storage after the first download (MODEL_CACHE).
   high: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite',
 };
+
+/**
+ * Downloads both models and the worker pipeline's MediaPipe runtime ahead of any call (the Connect
+ * meeting list, 2026-11-20), at low priority, so the pre-join screen and the load governor's
+ * switches to 'high' find them ready instead of falling back to 'balanced' at their 3s deadline.
+ * Models go to Cache Storage (once per device); the runtime is versioned on the CDN and stays in
+ * the HTTP cache. Errors are ignored: the normal load path tries again.
+ */
+export function prefetchSegmentationAssets(): void {
+  for (const quality of ['balanced', 'high'] as const) {
+    if (modelDownloads.has(quality)) continue;
+    startModelDownload(quality, { keep: true, lowPriority: true }).promise.catch(() => {});
+  }
+  const init = { priority: 'low' } as RequestInit;
+  for (const file of ['vision_wasm_module_internal.js', 'vision_wasm_module_internal.wasm']) {
+    fetch(`${MEDIAPIPE_WASM_BASE}/${file}`, init)
+      .then((res) => res.arrayBuffer())
+      .catch(() => {});
+  }
+}
 
 /** Thrown by `loadSegmentationModel` when the download misses the caller's deadline. */
 export class SegmentationModelTimeoutError extends Error {
@@ -71,21 +91,63 @@ export class SegmentationModelTimeoutError extends Error {
   }
 }
 
-type ModelDownload = { promise: Promise<Uint8Array>; controller: AbortController; done: boolean };
+type ModelDownload = {
+  promise: Promise<Uint8Array>;
+  controller: AbortController;
+  done: boolean;
+  /** A prefetch: a caller's deadline stops waiting for it but never aborts it (see loadSegmentationModel). */
+  keep: boolean;
+};
 
 /** One download per model for the whole page, shared by every processor and caller. */
 const modelDownloads = new Map<SegmentationQuality, ModelDownload>();
 
-function startModelDownload(quality: SegmentationQuality): ModelDownload {
+/**
+ * Models are kept in Cache Storage once downloaded: the server's own caching is an hour
+ * (max-age=3600) and the browser may evict its HTTP cache, while the 'high' model is 15.6 MB that
+ * the load governor now expects most desktops to use. Bump the name to drop old copies.
+ */
+const MODEL_CACHE = 'smiring-segmentation-models-v1';
+
+async function readCachedModel(url: string): Promise<Uint8Array | null> {
+  try {
+    if (typeof caches === 'undefined') return null;
+    const hit = await (await caches.open(MODEL_CACHE)).match(url);
+    return hit ? new Uint8Array(await hit.arrayBuffer()) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function storeCachedModel(url: string, buffer: Uint8Array): Promise<void> {
+  try {
+    if (typeof caches === 'undefined') return;
+    const body = buffer.slice().buffer;
+    await (await caches.open(MODEL_CACHE)).put(url, new Response(body, { headers: { 'Content-Type': 'application/octet-stream' } }));
+  } catch {
+    // Storage full or unavailable (private windows): the next load downloads again.
+  }
+}
+
+function startModelDownload(quality: SegmentationQuality, opts: { keep?: boolean; lowPriority?: boolean } = {}): ModelDownload {
   const controller = new AbortController();
-  const entry: ModelDownload = { controller, done: false, promise: Promise.resolve(new Uint8Array()) };
-  entry.promise = fetch(MODELS[quality], { signal: controller.signal })
-    .then(async (res) => {
-      if (!res.ok) throw new Error(`segmentation model '${quality}' download failed (${res.status})`);
-      const buffer = new Uint8Array(await res.arrayBuffer());
+  const entry: ModelDownload = { controller, done: false, keep: !!opts.keep, promise: Promise.resolve(new Uint8Array()) };
+  const url = MODELS[quality];
+  entry.promise = (async () => {
+    const cached = await readCachedModel(url);
+    if (cached) {
       entry.done = true;
-      return buffer;
-    })
+      return cached;
+    }
+    const init: RequestInit & { priority?: 'low' | 'high' | 'auto' } = { signal: controller.signal };
+    if (opts.lowPriority) init.priority = 'low';
+    const res = await fetch(url, init);
+    if (!res.ok) throw new Error(`segmentation model '${quality}' download failed (${res.status})`);
+    const buffer = new Uint8Array(await res.arrayBuffer());
+    entry.done = true;
+    void storeCachedModel(url, buffer);
+    return buffer;
+  })()
     .catch((err) => {
       // Never cache a failure (including an abort) — the next attempt should hit the network again.
       if (modelDownloads.get(quality) === entry) modelDownloads.delete(quality);
@@ -119,7 +181,8 @@ export function loadSegmentationModel(quality: SegmentationQuality, timeoutMs?: 
   if (timeoutMs === undefined || entry.done) return entry.promise;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      entry.controller.abort();
+      // A prefetch keeps going: it's what makes the next attempt instant.
+      if (!entry.keep) entry.controller.abort();
       reject(new SegmentationModelTimeoutError(quality, timeoutMs));
     }, timeoutMs);
     entry.promise.then(

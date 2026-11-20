@@ -101,8 +101,10 @@ function run(
   loadWithBg?: (t: number, bgQuality: GovernorContext['bgQuality']) => Load,
   /** The effect's own slow-frame fallback switches to 'balanced' at this time (not the governor). */
   effectFallbackAt?: number,
+  /** Where the call starts (useLoadGovernor's remembered start level). */
+  start?: Partial<GovernorState>,
 ) {
-  let state = initialGovernorState(0);
+  let state = { ...initialGovernorState(0), ...start };
   const ctx = { ...ctx0 };
   const log: string[] = [];
   for (let t = SAMPLE_MS; t <= durationMs; t += SAMPLE_MS) {
@@ -242,4 +244,31 @@ run(
   (t) => (t >= 10_000 && t < 50_000 ? 'busy' : 'calm'),
   600_000,
   highBg,
+);
+const middleStart: Partial<GovernorState> = { camFps: 2, episode: { overloadedMs: 0 } };
+run(
+  'first call, nothing remembered: starts at 720p 10fps, machine has room (up within a minute)',
+  () => 'calm',
+  120_000,
+  highBg,
+  'mixed',
+  true,
+  null,
+  1080,
+  undefined,
+  undefined,
+  middleStart,
+);
+run(
+  "remembered 'balanced' at 10fps, still needed (20fps on 'balanced' fast; 'high' tried once, calmly)",
+  () => 'calm',
+  300_000,
+  balancedBg,
+  'mixed',
+  true,
+  null,
+  1080,
+  (_t, q) => (q === 'high' ? 'bg-heavy' : 'calm'),
+  undefined,
+  { camFps: 2, bgDowngraded: true, bgRemembered: true, episode: { overloadedMs: 0 } },
 );

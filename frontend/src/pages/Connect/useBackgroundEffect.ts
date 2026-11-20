@@ -1,3 +1,4 @@
+import { startBackgroundQuality } from './loadGovernor/startLevel';
 import { loadGovernorActs } from '../../lib/debugFlags';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocalParticipant } from '@livekit/components-react';
@@ -85,7 +86,8 @@ export function useBackgroundEffect(isGuest = false) {
     const publication = localParticipant.getTrackPublication(Track.Source.Camera);
     const existing = (publication?.track as LocalVideoTrack | undefined)?.getProcessor();
     if (isBackgroundProcessor(existing)) return existing.quality;
-    return stored.quality ?? detectSegmentationQuality();
+    // The load governor's remembered start (loadGovernor/startLevel) can begin it on 'balanced'.
+    return startBackgroundQuality(stored.quality ?? detectSegmentationQuality());
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');

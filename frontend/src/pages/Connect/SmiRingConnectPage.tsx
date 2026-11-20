@@ -16,6 +16,8 @@ import {
   Link2,
   Globe2,
 } from 'lucide-react';
+import { prefetchSegmentationAssets } from '../../lib/video/MediapipeBackgroundProcessor';
+import { isMobileDevice, readStoredChoice } from './backgroundLibrary';
 import { apiClient } from '../../lib/apiClient';
 import { usePermission } from '../../hooks/usePermission';
 import { useAuth } from '../../context/AuthContext';
@@ -110,6 +112,17 @@ export default function SmiRingConnectPage() {
 
   useEffect(() => {
     fetchRooms();
+  }, []);
+
+  // Get the background effect's models and runtime downloaded before any call (each call opens in
+  // a new tab, so they're kept in Cache Storage / the HTTP cache, not this page's memory). Not on
+  // phones — they start on the light model with the effect off — nor for anyone who has the
+  // effect off. Once the page is idle, so the list itself loads first.
+  useEffect(() => {
+    if (isMobileDevice() || readStoredChoice().mode === 'off') return;
+    const idle = (window as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
+    if (idle) idle(() => prefetchSegmentationAssets(), { timeout: 5000 });
+    else setTimeout(prefetchSegmentationAssets, 2000);
   }, []);
 
   // Opens in a single new tab, which now hosts the pre-join lobby *and* the call
