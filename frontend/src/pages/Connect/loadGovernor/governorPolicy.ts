@@ -53,7 +53,8 @@
  * steps while the camera is off, the receiving steps when nothing received could be slowed down
  * (no cameras, or only senders without temporal layers — iPhones, Safari, H.264).
  * Steps 0 and 2-9 come back automatically after a calm stretch, most recent first, with backoff if
- * they relapse. No notice for the receiving steps: they only affect this person's own view.
+ * they relapse. Steps taken for a brief spike (and 'high', after the effect's own fallback or a
+ * spike) come back much sooner, once there's clear headroom (fastRestoreAction). No notice for the receiving steps: they only affect this person's own view.
  * (Moving noise cancellation to the server slots in before 8 once it exists.)
  */
 
@@ -141,7 +142,7 @@ export interface LoadSample {
   bgBusy?: number;
   audioActive: boolean;
   audioChunks: number;
-  /** Chunks at the lightest noise-cancel setting, or sent through unprocessed. */
+  /** Chunks where the noise cancel was really struggling (loadSignals audio-chunk `stressed`). */
   audioStressedChunks: number;
   audioPassthroughChunks: number;
   audioUnderruns: number;
@@ -261,7 +262,7 @@ export const GOVERNOR_THRESHOLDS = {
   bgCostCalmMs: 12,
   bgBusyOverload: 0.8,
   bgBusyCalm: 0.5,
-  /** Share of noise-cancel chunks at its lightest setting/passed through. */
+  /** Share of noise-cancel chunks it was really struggling with (see audioStressedChunks). */
   audioStressOverload: 0.5,
   audioStressCalm: 0.1,
   /** Playback underruns in one window that mean the audio is breaking up (a lone one happens on
@@ -323,6 +324,29 @@ export const GOVERNOR_THRESHOLDS = {
   bgRestoreAfterMs: 300_000,
   /** Overloaded (for a background reason) within this long of that = this machine can't hold 'high'. */
   bgRestoreTrialMs: 60_000,
+  /**
+   * Fast restore (see fastRestoreAction): steps taken for a brief overload — at most this much
+   * overloaded time in all, about one step's worth — come back as soon as the machine shows clear
+   * headroom for fastRestoreAfterMs, one every fastRestoreStepGapMs, instead of after the minute /
+   * five minutes of calm a long or recurring overload needs. Overloaded again within
+   * fastRestoreTrialMs of one = it wasn't just a spike: no fast restores for fastRestoreCooldownMs.
+   * Asked for 2026-11-20: a single spike at the start of a call left the background on 'balanced'
+   * for minutes on a machine then running its effect threads at 3-6%.
+   */
+  fastRestoreBriefOverloadMs: 12_000,
+  fastRestoreAfterMs: 24_000,
+  fastRestoreStepGapMs: 10_000,
+  fastRestoreTrialMs: 60_000,
+  fastRestoreCooldownMs: 600_000,
+  /** Headroom: stricter than calm (see hasHeadroom). */
+  headroomBgBusy: 0.3,
+  headroomBgCostMs: 6,
+  headroomBgFpsRatio: 0.9,
+  headroomMainLagMs: 100,
+  headroomEncoderCpu: 0.02,
+  /** 'high' only comes back fast when, calm on 'high' earlier in the call, its busier worker thread
+   *  ran under this. */
+  headroomHighBusy: 0.3,
 } as const;
 
 /** Reasons the background effect itself can be behind (see the 'high' restore trial). */
@@ -338,6 +362,29 @@ export interface Verdict {
   reasons: string[];
   /** The audio itself is breaking up or about to: step down on the shorter clocks. */
   audioUrgent: boolean;
+}
+
+/**
+ * Clear headroom, not just calm: visible and steady (hidden tabs are throttled — nothing to judge
+ * by), the machine's CPU pressure nominal, the page's timers on time, no encoder CPU limits, the
+ * noise cancel unstressed, and the background effect keeping its frame rate with its threads
+ * mostly idle.
+ */
+export function hasHeadroom(sample: LoadSample, verdict: Verdict, T: GovernorThresholds = GOVERNOR_THRESHOLDS): boolean {
+  if (verdict.pressure !== 'calm' || !sample.visible || sample.visibilityChanged) return false;
+  if ((sample.cpuPressure ?? 0) > 0) return false;
+  if (sample.mainLagMaxMs >= T.headroomMainLagMs) return false;
+  if ((sample.encoderCpuFraction ?? 0) >= T.headroomEncoderCpu) return false;
+  if (sample.audioStressedChunks > 0 || sample.audioUnderruns > 0 || sample.audioPassthroughChunks > 0) return false;
+  if (sample.bgActive) {
+    if (sample.bgBusy !== undefined ? sample.bgBusy >= T.headroomBgBusy : (sample.bgCostMs ?? 0) >= T.headroomBgCostMs) {
+      return false;
+    }
+    if (sample.bgFps !== undefined && sample.bgExpectedFps && sample.bgFps / sample.bgExpectedFps < T.headroomBgFpsRatio) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function classify(sample: LoadSample, T: GovernorThresholds = GOVERNOR_THRESHOLDS): Verdict {
@@ -433,6 +480,20 @@ export interface GovernorState {
   bgRestoredAt: number | null;
   /** The restore trial failed: 'high' is too much for this machine, for the rest of the call. */
   bgRestoreBlocked: boolean;
+  /**
+   * The overload episode the steps in effect were taken for: overloaded time in it (switch grace
+   * excluded). Closed once everything is back. Decides whether they may come back fast.
+   */
+  episode: { overloadedMs: number } | null;
+  /** Since when every sample has shown headroom (hasHeadroom), or null. */
+  headroomSince: number | null;
+  /** The last fast restore, and until when fast restores are off (one didn't hold). */
+  fastRestoredAt: number | null;
+  fastBlockedUntil: number;
+  /** The background's busier worker thread on 'high' in the last calm visible sample this call. */
+  highCalmBusy: number | null;
+  /** The background's model at the previous sample (to notice the effect's own fallback). */
+  lastBgQuality?: 'high' | 'balanced' | null;
   overloadedSince: number | null;
   calmSince: number | null;
   lastChangeAt: number;
@@ -453,6 +514,11 @@ export function initialGovernorState(now: number): GovernorState {
     graceLog: [],
     bgRestoredAt: null,
     bgRestoreBlocked: false,
+    episode: null,
+    headroomSince: null,
+    fastRestoredAt: null,
+    fastBlockedUntil: 0,
+    highCalmBusy: null,
     overloadedSince: null,
     calmSince: null,
     lastChangeAt: now,
@@ -499,6 +565,10 @@ export interface GovernorStep {
   action?: GovernorAction;
   /** Overloaded, but not counted: within visibilitySwitchGraceMs of a window switch. */
   switchGrace?: boolean;
+  /** This sample showed clear headroom (hasHeadroom). */
+  headroom?: boolean;
+  /** The action is a fast restore (see fastRestoreAction). */
+  fast?: boolean;
 }
 
 /** Advances the governor by one sample. Returns at most one action. */
@@ -536,6 +606,23 @@ export function stepGovernor(
   if (switchGrace) state.graceLog = [...state.graceLog, { t: now, ms: sample.intervalMs }];
   const pressure = switchGrace ? 'neutral' : verdict.pressure;
 
+  // Fast-restore bookkeeping: the episode's overloaded time, the headroom streak, what 'high'
+  // costs here when things are calm.
+  const headroom = hasHeadroom(sample, verdict, T);
+  state.headroomSince = headroom ? (state.headroomSince ?? now) : null;
+  if (ctx.bgQuality === 'high' && verdict.pressure === 'calm' && sample.visible && sample.bgActive && sample.bgBusy !== undefined) {
+    state.highCalmBusy = sample.bgBusy;
+  }
+  if (pressure === 'overloaded') {
+    state.episode = { overloadedMs: (state.episode?.overloadedMs ?? 0) + sample.intervalMs };
+  }
+  // The effect dropped to 'balanced' by itself (its own slow-frame fallback reacts to a couple of
+  // seconds): an episode with no overload the governor saw — a spike — so 'high' may come back fast.
+  if (prev.lastBgQuality === 'high' && ctx.bgQuality === 'balanced' && !state.bgDowngraded) {
+    state.episode ??= { overloadedMs: 0 };
+  }
+  state.lastBgQuality = ctx.bgQuality;
+
   if (pressure === 'overloaded') {
     state.overloadedSince ??= now;
     state.calmSince = null;
@@ -571,13 +658,29 @@ export function stepGovernor(
         if (state.lastRecoveryAt !== null && now - state.lastRecoveryAt < T.relapseWindowMs) {
           state.recoverBackoff = Math.min(T.maxRecoverBackoff, state.recoverBackoff * 2);
         }
+        // A fast restore that didn't hold: this is more than a spike. The slow paths take it from
+        // here, and no fast ones for a while.
+        if (state.fastRestoredAt !== null && now - state.fastRestoredAt < T.fastRestoreTrialMs) {
+          state.fastBlockedUntil = now + T.fastRestoreCooldownMs;
+        }
         applyToState(state, action);
         state.lastChangeAt = now;
         state.lastWasShareSwitch = action.kind === 'share-vp8';
         state.overloadedSince = null;
-        return { state, verdict, action };
+        return { state, verdict, action, headroom };
       }
     }
+  }
+
+  const fast = fastRestoreAction(state, ctx, now, T);
+  if (fast) {
+    applyToState(state, fast);
+    if (fast.kind === 'bg-high') state.bgRestoredAt = now;
+    state.lastChangeAt = now;
+    state.lastRecoveryAt = now;
+    state.fastRestoredAt = now;
+    state.calmSince = null;
+    return { state, verdict, action: fast, headroom, fast: true };
   }
 
   const undo = state.calmSince !== null ? nextStepUp(state) : null;
@@ -592,7 +695,7 @@ export function stepGovernor(
     state.lastChangeAt = now;
     state.lastRecoveryAt = now;
     state.calmSince = null;
-    return { state, verdict, action };
+    return { state, verdict, action, headroom };
   }
 
   // Everything else is back: try the background on 'high' after a long calm.
@@ -610,10 +713,36 @@ export function stepGovernor(
     state.bgRestoredAt = now;
     state.lastChangeAt = now;
     state.calmSince = null;
-    return { state, verdict, action };
+    return { state, verdict, action, headroom };
   }
 
-  return { state, verdict, switchGrace: switchGrace || undefined };
+  // Nothing left to undo: the episode is over.
+  if (!undo && !nextStepUp(state) && !(ctx.bgQuality === 'balanced' && bgFastUpgradable(state, ctx, T))) {
+    state.episode = null;
+  }
+
+  return { state, verdict, switchGrace: switchGrace || undefined, headroom };
+}
+
+/** 'high' may come back on the fast path: allowed at all, and known to run light here. */
+function bgFastUpgradable(state: GovernorState, ctx: GovernorContext, T: GovernorThresholds): boolean {
+  return !!ctx.bgUpgradable && !state.bgRestoreBlocked && state.highCalmBusy !== null && state.highCalmBusy < T.headroomHighBusy;
+}
+
+/**
+ * The next fast restore, or null (see GOVERNOR_THRESHOLDS.fastRestoreBriefOverloadMs): the steps
+ * in effect were taken for a brief overload, headroom has held for fastRestoreAfterMs, and the
+ * last change was at least fastRestoreStepGapMs ago. Same order as the slow path, then 'high'.
+ */
+function fastRestoreAction(state: GovernorState, ctx: GovernorContext, now: number, T: GovernorThresholds): GovernorAction | null {
+  if (!state.episode || state.episode.overloadedMs > T.fastRestoreBriefOverloadMs) return null;
+  if (now < state.fastBlockedUntil) return null;
+  if (state.headroomSince === null || now - state.headroomSince < T.fastRestoreAfterMs) return null;
+  if (now - state.lastChangeAt < T.fastRestoreStepGapMs) return null;
+  const undo = nextStepUp(state);
+  if (undo) return undo;
+  if (ctx.bgQuality === 'balanced' && bgFastUpgradable(state, ctx, T)) return { kind: 'bg-high' };
+  return null;
 }
 
 /** The first step of the ladder not taken yet that would change something. */

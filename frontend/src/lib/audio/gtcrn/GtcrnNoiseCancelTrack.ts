@@ -152,6 +152,23 @@ export function warmupGtcrnModel(): Promise<void> {
 
 // ---------------------------------------------------------------- Track wrapper
 
+/**
+ * Whether a chunk shows noise cancellation really struggling (the load governor's audio-stress):
+ * passed through raw; inference taking most of the chunk's own length; the chunk reaching the
+ * worker two chunks late; or, at the lightest level, inference still over half the chunk. A level
+ * that's simply still at its lightest after a stall — it steps back one level per 10s calm — with
+ * inference fine is not stress.
+ */
+function chunkStressed(
+  msg: { passthrough: boolean; inferenceMs: number; captureGapMs: number; level: number },
+  chunkMs: number,
+): boolean {
+  if (msg.passthrough) return true;
+  if (msg.inferenceMs >= chunkMs * 0.75) return true;
+  if (msg.captureGapMs >= chunkMs * 2) return true;
+  return msg.level >= GTCRN_MAX_SKIP_LEVEL && msg.inferenceMs >= chunkMs * 0.5;
+}
+
 export class GtcrnNoiseCancelTrack {
   private readonly ctx: AudioContext;
   private readonly sourceClone: MediaStreamTrack;
@@ -345,7 +362,13 @@ export class GtcrnNoiseCancelTrack {
       }
       this.healthChunks++;
       this.healthInactiveChunks += msg.inactiveChunks;
-      emitLoadSignal({ kind: 'audio-chunk', level: msg.level, maxLevel: GTCRN_MAX_SKIP_LEVEL, passthrough: msg.passthrough });
+      emitLoadSignal({
+        kind: 'audio-chunk',
+        level: msg.level,
+        maxLevel: GTCRN_MAX_SKIP_LEVEL,
+        passthrough: msg.passthrough,
+        stressed: chunkStressed(msg, (CAPTURE_CHUNK / this.ctx.sampleRate) * 1000),
+      });
       this.loadedModels = msg.loadedModels;
       this.diagBacklogMax = Math.max(this.diagBacklogMax, msg.backlog);
       this.diagInactiveChunks += msg.inactiveChunks;

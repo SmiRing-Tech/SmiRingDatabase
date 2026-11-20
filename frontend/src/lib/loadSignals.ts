@@ -9,7 +9,21 @@
 
 export type LoadSignal =
   /** One noise-cancel chunk (64ms of audio) was produced. */
-  | { kind: 'audio-chunk'; level: number; maxLevel: number; passthrough: boolean }
+  | {
+      kind: 'audio-chunk';
+      level: number;
+      maxLevel: number;
+      passthrough: boolean;
+      /**
+       * Noise cancellation is actually struggling with this chunk (GtcrnNoiseCancelTrack's
+       * chunkStressed): passed through raw, inference near the chunk's own length, the chunk
+       * reaching the worker late, or still heavy at the lightest level. Not just "at the lightest
+       * level" — the level only steps back down after 10s calm per level, so that stayed true for
+       * tens of seconds after a stall was over (2026-11-20: the background dropped to 'balanced'
+       * for it with inference back at 9-21ms per 64ms chunk).
+       */
+      stressed: boolean;
+    }
   /** Noise-cancel playback stats, cumulative since the stream started. */
   | { kind: 'audio-playback'; underrunCount: number }
   /** Noise cancellation gave up for this call (it falls back to the raw mic by itself). */

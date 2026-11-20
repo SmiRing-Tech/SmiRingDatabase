@@ -34,6 +34,7 @@ function sampleFor(t: number, load: Load, state: GovernorState): LoadSample {
     bgFps: 20,
     bgExpectedFps: 20,
     bgCostMs: 3,
+    bgBusy: 0.1,
     audioActive: true,
     audioChunks: 31,
     audioStressedChunks: 0,
@@ -43,7 +44,10 @@ function sampleFor(t: number, load: Load, state: GovernorState): LoadSample {
   };
   if (load === 'encoder') base.encoderCpuFraction = relief >= 2 ? 0.05 : 0.9;
   // The background on 'high' is too much for this machine: its frames fall behind.
-  if (load === 'bg-heavy') base.bgFps = 8;
+  if (load === 'bg-heavy') {
+    base.bgFps = 8;
+    base.bgBusy = 0.6;
+  }
   // A window switch every 30s; the 10s after each are loaded (the browser and OS redrawing).
   // Switching every 5s and the background effect falling behind the whole time.
   if (load === 'switch-often') {
@@ -95,6 +99,8 @@ function run(
   shareHeight = 1080,
   /** Load as a function of time and of the background quality currently in effect. */
   loadWithBg?: (t: number, bgQuality: GovernorContext['bgQuality']) => Load,
+  /** The effect's own slow-frame fallback switches to 'balanced' at this time (not the governor). */
+  effectFallbackAt?: number,
 ) {
   let state = initialGovernorState(0);
   const ctx = { ...ctx0 };
@@ -104,6 +110,7 @@ function run(
     ctx.shareHeight = state.share1080 || state.share720 ? Math.min(shareHeight, 1080) : shareHeight;
     ctx.recvRelief = recvReliefFor(receiving, state, share === 'receiving');
     ctx.shareCodec = share === 'av1' ? (state.shareVp8 ? 'vp8' : 'av1') : share === 'vp8' ? 'vp8' : null;
+    if (effectFallbackAt !== undefined && t === effectFallbackAt) ctx.bgQuality = 'balanced';
     const load = loadWithBg ? loadWithBg(t, ctx.bgQuality) : schedule(t);
     const step = stepGovernor(state, sampleFor(t, load, state), ctx);
     state = step.state;
@@ -127,7 +134,7 @@ function run(
                       : a.kind;
       if (a.kind === 'bg-balanced') ctx.bgQuality = 'balanced';
       if (a.kind === 'bg-high') ctx.bgQuality = 'high';
-      log.push(`${(t / 1000).toFixed(0)}s:${what}(${step.verdict.reasons.join('+') || 'calm'})`);
+      log.push(`${(t / 1000).toFixed(0)}s:${step.fast ? 'FAST ' : ''}${what}(${step.verdict.reasons.join('+') || 'calm'})`);
     }
   }
   console.log(`${name}\n  ${log.join('  ') || '(no actions)'}\n  end: video=${state.video} recv=${state.recv} shareVp8=${state.shareVp8} share720=${state.share720} share1080=${state.share1080} photo=${state.photo} bgBlocked=${state.bgRestoreBlocked} backoff=${state.recoverBackoff}`);
@@ -206,3 +213,33 @@ run(
 run('window switched every 30s, each followed by 10s of load (must do nothing)', () => 'switch', 300_000, highBg);
 run('window switched every 30s and the audio really breaks each time (steps down)', () => 'switch-broken', 120_000, highBg);
 run('window switched every 5s, background effect behind throughout (grace runs out, steps down)', () => 'switch-often', 120_000, highBg);
+run(
+  'a 10s spike, then lots of headroom (fast restore: back in about half a minute)',
+  (t) => (t >= 10_000 && t < 20_000 ? 'busy' : 'calm'),
+  180_000,
+  highBg,
+);
+run(
+  'spikes every 50s: the fast restore does not hold (cooldown, then the slow paths)',
+  (t) => (t % 50_000 >= 10_000 && t % 50_000 < 20_000 ? 'busy' : 'calm'),
+  900_000,
+  highBg,
+);
+run(
+  'the effect drops itself to balanced on a spike at 8s (high back fast)',
+  () => 'calm',
+  120_000,
+  highBg,
+  'mixed',
+  true,
+  null,
+  1080,
+  undefined,
+  8_000,
+);
+run(
+  'a 40s overload, then calm (not a spike: the slow paths)',
+  (t) => (t >= 10_000 && t < 50_000 ? 'busy' : 'calm'),
+  600_000,
+  highBg,
+);

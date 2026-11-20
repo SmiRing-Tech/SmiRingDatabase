@@ -400,7 +400,7 @@ export function useLoadGovernor({
       if (signal.kind === 'audio-chunk') {
         totals.audioChunks += 1;
         if (signal.passthrough) totals.audioPassthrough += 1;
-        if (signal.passthrough || signal.level >= signal.maxLevel) totals.audioStressed += 1;
+        if (signal.stressed) totals.audioStressed += 1;
       } else if (signal.kind === 'audio-playback') {
         // Cumulative per noise-cancel instance; a smaller number means a new instance started.
         const previous = lastUnderrunCount ?? 0;
@@ -954,8 +954,9 @@ export function useLoadGovernor({
         });
         if (step.action) {
           const applied = mode === 'active';
-          recordTelemetry('action', { action: step.action, applied, reasons: step.verdict.reasons });
-          diagEvent('load-governor', { action: step.action, applied, reasons: step.verdict.reasons });
+          const fast = step.fast || undefined;
+          recordTelemetry('action', { action: step.action, applied, reasons: step.verdict.reasons, fast });
+          diagEvent('load-governor', { action: step.action, applied, reasons: step.verdict.reasons, fast });
           if (applied) await applyAction(step.action);
         }
         // Debug: walk the share's fallback steps on a timer, whatever the load (see the header).
@@ -1023,6 +1024,8 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
     // stepping down because of a recent switch (governorPolicy switch grace).
     vch: s.visibilityChanged ? 1 : undefined,
     sg: step.switchGrace ? 1 : undefined,
+    // Clear headroom this sample (governorPolicy hasHeadroom: what fast restores wait for).
+    hr: step.headroom ? 1 : undefined,
     cam: s.cameraOn ? 1 : 0,
     sh: s.sharing ? 1 : undefined,
     enc: s.encoderCpuFraction === undefined ? undefined : Math.round(s.encoderCpuFraction * 100) / 100,
