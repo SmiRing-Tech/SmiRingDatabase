@@ -153,6 +153,13 @@ export interface LoadSample {
   audioStressedChunks: number;
   audioPassthroughChunks: number;
   audioUnderruns: number;
+  /**
+   * Noise cancel: ms of this window played from the raw mic because processed audio was late
+   * (gtcrnPlayback's raw fill). Counted directly because while the inference worker is stalled no
+   * chunks finish, so the per-chunk stress share sees least exactly when it's worst (2026-11-20: up
+   * to 10s at a time filled raw while the governor read 'neutral'). Unset = not measured.
+   */
+  audioFilledMs?: number;
   audioOverloaded: boolean;
   /**
    * Receiving side: decoding and showing everyone else's video. Recorded for telemetry only —
@@ -272,6 +279,9 @@ export const GOVERNOR_THRESHOLDS = {
   /** Share of noise-cancel chunks it was really struggling with (see audioStressedChunks). */
   audioStressOverload: 0.5,
   audioStressCalm: 0.1,
+  /** Share of a window played raw because the noise cancel was late: audio-stress / not calm. */
+  audioFillOverload: 0.2,
+  audioFillCalm: 0.02,
   /** Playback underruns in one window that mean the audio is breaking up (a lone one happens on
    *  a healthy machine now and then). Any passthrough chunk counts regardless. */
   audioUnderrunOverload: 2,
@@ -383,6 +393,7 @@ export function hasHeadroom(sample: LoadSample, verdict: Verdict, T: GovernorThr
   if (sample.mainLagMaxMs >= T.headroomMainLagMs) return false;
   if ((sample.encoderCpuFraction ?? 0) >= T.headroomEncoderCpu) return false;
   if (sample.audioStressedChunks > 0 || sample.audioUnderruns > 0 || sample.audioPassthroughChunks > 0) return false;
+  if ((sample.audioFilledMs ?? 0) > 0) return false;
   if (sample.bgActive) {
     if (sample.bgBusy !== undefined ? sample.bgBusy >= T.headroomBgBusy : (sample.bgCostMs ?? 0) >= T.headroomBgCostMs) {
       return false;
@@ -452,6 +463,11 @@ export function classify(sample: LoadSample, T: GovernorThresholds = GOVERNOR_TH
     const stress = sample.audioStressedChunks / sample.audioChunks;
     if (stress >= T.audioStressOverload) reasons.push('audio-stress');
     if (stress >= T.audioStressCalm) calm = false;
+  }
+  if (sample.audioFilledMs && sample.intervalMs > 0) {
+    const filled = sample.audioFilledMs / sample.intervalMs;
+    if (filled >= T.audioFillOverload && !reasons.includes('audio-stress')) reasons.push('audio-stress');
+    if (filled >= T.audioFillCalm) calm = false;
   }
   if (sample.audioPassthroughChunks > 0 || sample.audioUnderruns >= T.audioUnderrunOverload) {
     reasons.push(sample.audioPassthroughChunks > 0 ? 'audio-passthrough' : 'audio-underrun');

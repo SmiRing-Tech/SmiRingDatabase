@@ -310,7 +310,11 @@ export class GtcrnNoiseCancelTrack {
     this.playback.port.onmessage = (event: MessageEvent<GtcrnPlaybackStats>) => {
       this.playbackStats = event.data;
       this.recordPlayback(event.data);
-      emitLoadSignal({ kind: 'audio-playback', underrunCount: event.data.underrunCount });
+      emitLoadSignal({
+        kind: 'audio-playback',
+        underrunCount: event.data.underrunCount,
+        filledMs: (event.data.filledSamples / this.ctx.sampleRate) * 1000,
+      });
     };
     this.destination = this.ctx.createMediaStreamDestination();
     this.playback.connect(this.destination);

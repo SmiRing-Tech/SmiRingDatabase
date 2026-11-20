@@ -148,6 +148,7 @@ function createSignalTotals() {
     audioStressed: 0,
     audioPassthrough: 0,
     audioUnderruns: 0,
+    audioFilledMs: 0,
     audioOverloaded: false,
     bgFrames: 0,
     bgSeconds: 0,
@@ -478,6 +479,7 @@ export function useLoadGovernor({
 
     let totals = createSignalTotals();
     let lastUnderrunCount: number | null = null;
+    let lastFilledMs: number | null = null;
     const unsubscribe = subscribeLoadSignals((signal) => {
       if (signal.kind === 'audio-chunk') {
         totals.audioChunks += 1;
@@ -488,6 +490,9 @@ export function useLoadGovernor({
         const previous = lastUnderrunCount ?? 0;
         totals.audioUnderruns += signal.underrunCount >= previous ? signal.underrunCount - previous : signal.underrunCount;
         lastUnderrunCount = signal.underrunCount;
+        const filledBefore = lastFilledMs ?? 0;
+        totals.audioFilledMs += signal.filledMs >= filledBefore ? signal.filledMs - filledBefore : signal.filledMs;
+        lastFilledMs = signal.filledMs;
       } else if (signal.kind === 'audio-overload') {
         totals.audioOverloaded = true;
       } else if (signal.kind === 'background') {
@@ -943,6 +948,7 @@ export function useLoadGovernor({
           audioStressedChunks: t.audioStressed,
           audioPassthroughChunks: t.audioPassthrough,
           audioUnderruns: audioFlowing ? t.audioUnderruns : 0,
+          audioFilledMs: t.audioFilledMs,
           audioOverloaded: t.audioOverloaded,
           recv,
           recvControl: recvController.stats(),
@@ -1154,6 +1160,8 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
     as: s.audioStressedChunks || undefined,
     ap: s.audioPassthroughChunks || undefined,
     au: s.audioUnderruns || undefined,
+    // Noise cancel late: ms of this window played from the raw mic instead (counts as audio-stress at audioFillOverload).
+    afm: s.audioFilledMs ? Math.round(s.audioFilledMs) : undefined,
     // Receiving side (not judged yet): streams, decoded fps, decode ms/frame, dropped/s, freezes, tallest.
     rv: s.recv?.streams || undefined,
     rfps: s.recv?.streams ? r1(s.recv.decodedFps) : undefined,

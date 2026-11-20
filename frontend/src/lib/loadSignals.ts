@@ -25,7 +25,12 @@ export type LoadSignal =
       stressed: boolean;
     }
   /** Noise-cancel playback stats, cumulative since the stream started. */
-  | { kind: 'audio-playback'; underrunCount: number }
+  | {
+      kind: 'audio-playback';
+      underrunCount: number;
+      /** Time played from the raw mic because processed audio was late, ms (cumulative). */
+      filledMs: number;
+    }
   /** Noise cancellation gave up for this call (it falls back to the raw mic by itself). */
   | { kind: 'audio-overload' }
   /** Background effect totals over the last `seconds` (roughly 1s). */

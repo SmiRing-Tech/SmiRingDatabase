@@ -15,7 +15,7 @@ import {
 
 const SAMPLE_MS = 2000;
 
-type Load = 'calm' | 'busy' | 'encoder' | 'audio' | 'bg-heavy' | 'switch' | 'switch-broken' | 'switch-often';
+type Load = 'nc-stalled' | 'calm' | 'busy' | 'encoder' | 'audio' | 'bg-heavy' | 'switch' | 'switch-broken' | 'switch-often';
 
 function sampleFor(t: number, load: Load, state: GovernorState): LoadSample {
   // Each step down relieves some pressure: two camera or receiving steps clear an "encoder"
@@ -67,6 +67,11 @@ function sampleFor(t: number, load: Load, state: GovernorState): LoadSample {
     base.mainLagMaxMs = 500;
   }
   if (load === 'audio') base.audioStressedChunks = 25;
+  // The noise-cancel worker stalled: few chunks finish (none of them slow), half the window plays raw.
+  if (load === 'nc-stalled') {
+    base.audioChunks = 8;
+    base.audioFilledMs = 1000;
+  }
   return base;
 }
 
@@ -271,4 +276,10 @@ run(
   (_t, q) => (q === 'high' ? 'bg-heavy' : 'calm'),
   undefined,
   { camFps: 2, bgDowngraded: true, bgRemembered: true, episode: { overloadedMs: 0 } },
+);
+run(
+  'noise-cancel worker stalled for 40s (few chunks, half of each window raw): steps on the fill time',
+  (t) => (t >= 10_000 && t < 50_000 ? 'nc-stalled' : 'calm'),
+  200_000,
+  highBg,
 );
