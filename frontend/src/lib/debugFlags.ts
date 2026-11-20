@@ -10,12 +10,23 @@ const KNOWN_DEBUG_FLAGS: Record<string, string> = {
   'smiring.debug.loadGovernor': "load governor mode ('observe' = judge only, 'off' = nothing)",
   'smiring.debug.loadPanel': 'live load governor readout on screen',
   'smiring.debug.recvLevel': 'force a receive level (1-5)',
+  'smiring.debug.camLevel': "force the camera step ('15' / '10' = 720p at 15 / 10fps, '540', '360')",
   'smiring.debug.forceShareStep': 'walk the screen-share fallback steps on a timer',
   'smiring.debug.bgPipeline': "background effect pipeline ('main' = main thread)",
   'smiring.debug.videoCodec': 'camera codec',
   'smiring.debug.shareCodec': 'screen-share codec',
   'smiring.debug.shareStats': 'screen-share stats logging',
 };
+
+/** Whether the load governor acts (its debug flag can make it only observe, or turn it off). */
+export function loadGovernorActs(): boolean {
+  try {
+    const value = localStorage.getItem('smiring.debug.loadGovernor');
+    return value !== 'observe' && value !== 'off';
+  } catch {
+    return true;
+  }
+}
 
 /** Every known flag currently set, as { key: value }. */
 export function activeDebugFlags(): Record<string, string> {

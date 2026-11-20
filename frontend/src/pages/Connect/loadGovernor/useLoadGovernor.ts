@@ -24,6 +24,7 @@ import {
   type SendStats,
   type ReceiveStats,
   type VideoLevel,
+  type CamFpsStep,
   type VideoProfile,
 } from './governorPolicy';
 import { ReceiveFpsController, type CameraFps } from './receiveFpsController';
@@ -85,6 +86,20 @@ function forcedShareStep(): 0 | 1 | 2 {
   return value === '1' ? 1 : value === '2' ? 2 : 0;
 }
 const FORCED_SHARE_STEP_AFTER_MS = 10_000;
+
+/**
+ * Camera level forced by the debug flag (to see what a step looks like), or null:
+ * '15' / '10' = 720p at 15 / 10fps (steps 0b / 0c), '540' = 540p 10fps, '360' = 360p 5fps.
+ * The governor still judges and steps everything else.
+ */
+function forcedCameraLevel(): { video: VideoLevel; camFps: CamFpsStep } | null {
+  const value = readFlag('smiring.debug.camLevel');
+  if (value === '15') return { video: 0, camFps: 1 };
+  if (value === '10') return { video: 0, camFps: 2 };
+  if (value === '540') return { video: 1, camFps: 0 };
+  if (value === '360') return { video: 2, camFps: 0 };
+  return null;
+}
 
 /** Receive level forced by the debug flag, or null. */
 function forcedReceiveLevel(): ReceiveLevel | null {
@@ -175,6 +190,7 @@ export function useLoadGovernor({
   /** The receiving steps' controller, while the sampling loop runs. */
   const recvControllerRef = useRef<ReceiveFpsController | null>(null);
   const [forcedRecv] = useState(forcedReceiveLevel);
+  const [forcedCamera] = useState(forcedCameraLevel);
 
   const cameraTrack = useCallback(
     () => localParticipant.getTrackPublication(Track.Source.Camera)?.track as LocalVideoTrack | undefined,
@@ -183,12 +199,13 @@ export function useLoadGovernor({
 
   /** Makes the camera match the governor's video level and step 0b (idempotent; called every sample). */
   const syncCameraProfile = useCallback(
-    ({ video: level, cam15 }: { video: VideoLevel; cam15: boolean }, force = false) => {
+    (st: { video: VideoLevel; camFps: CamFpsStep }, force = false) => {
+      const { video: level, camFps } = forcedCamera ?? st;
       const track = cameraTrack();
       const mst = track ? cameraSourceTrack(track) : undefined;
       if (!track || !mst || mst.readyState !== 'live') return;
-      const profile = videoProfileFor(level, BASE_PROFILE, cam15);
-      const key = `${level}${cam15 ? 'g' : ''}`;
+      const profile = videoProfileFor(level, BASE_PROFILE, camFps);
+      const key = `${level}g${camFps}`;
       const now = performance.now();
       const applied = appliedRef.current.get(mst);
       // LiveKit puts its own constraints back when the processor changes; catch the camera
@@ -209,7 +226,7 @@ export function useLoadGovernor({
         console.warn('[governor] could not change camera settings:', err),
       );
     },
-    [cameraTrack],
+    [cameraTrack, forcedCamera],
   );
 
   /**
@@ -273,14 +290,15 @@ export function useLoadGovernor({
    */
   const applyCameraLevel = useCallback(() => {
     const st = stateRef.current;
-    const profile = videoProfileFor(st.video, BASE_PROFILE, st.cam15);
+    const cam = forcedCamera ?? st;
+    const profile = videoProfileFor(cam.video, BASE_PROFILE, cam.camFps);
     backgroundRef.current.setPerformanceProfile(
       profile === BASE_PROFILE
         ? null
         : { segmentationFps: profile.segmentationFps, segmentationScheduler: profile.segmentationScheduler },
     );
     syncCameraProfile(st, true);
-  }, [syncCameraProfile]);
+  }, [syncCameraProfile, forcedCamera]);
 
   const applyAction = useCallback(
     async (action: GovernorAction) => {
@@ -290,8 +308,8 @@ export function useLoadGovernor({
         await bg.setQuality('high', { auto: true });
         return;
       }
-      if (action.kind === 'cam-15') {
-        // Step 0b; no notice — 20fps -> 15fps is hardly visible.
+      if (action.kind === 'cam-fps') {
+        // Steps 0b/0c; no notice — the picture stays sharp, only the frame rate drops.
         applyCameraLevel();
         return;
       }
@@ -901,7 +919,7 @@ export function useLoadGovernor({
             ? {
                 bgQuality: actualQuality,
                 bgUpgradable: bg.canAutoUpgradeQuality(),
-                cam15Available: actualQuality !== null,
+                camFpsAvailable: actualQuality !== null,
                 cameraOn: sample.cameraOn,
                 recvRelief,
                 shareCodec,
@@ -910,7 +928,7 @@ export function useLoadGovernor({
             : {
                 bgQuality: actualQuality === 'high' && state.bgDowngraded ? ('balanced' as const) : actualQuality,
                 bgUpgradable: bg.canAutoUpgradeQuality(),
-                cam15Available: actualQuality !== null,
+                camFpsAvailable: actualQuality !== null,
                 cameraOn: sample.cameraOn,
                 recvRelief,
                 shareCodec: shareCodec === 'av1' && state.shareVp8 ? ('vp8' as const) : shareCodec,
@@ -1016,7 +1034,7 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
   return {
     p: step.verdict.pressure,
     r: step.verdict.reasons.length ? step.verdict.reasons : undefined,
-    lv: `${st.cam15 ? 'g' : ''}${st.bgDowngraded ? 'b' : ''}${st.video}${st.recv ? `r${st.recv}` : ''}${st.shareVp8 ? 'v' : ''}${st.share1080 ? 'h' : ''}${
+    lv: `${'g'.repeat(st.camFps)}${st.bgDowngraded ? 'b' : ''}${st.video}${st.recv ? `r${st.recv}` : ''}${st.shareVp8 ? 'v' : ''}${st.share1080 ? 'h' : ''}${
       st.share720 ? 's' : ''
     }${st.photo ? 'p' : ''}`,
     vis: s.visible ? undefined : 0,

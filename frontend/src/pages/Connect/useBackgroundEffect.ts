@@ -1,3 +1,4 @@
+import { loadGovernorActs } from '../../lib/debugFlags';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocalParticipant } from '@livekit/components-react';
 import { ParticipantEvent, Track, type LocalVideoTrack } from 'livekit-client';
@@ -118,7 +119,10 @@ export function useBackgroundEffect(isGuest = false) {
    */
   const handlePerfSlow = useCallback((processorQuality: SegmentationQuality, measure: SlowFrameMeasure) => {
     console.warn('[Connect] background effect running slow', processorQuality, measure);
-    if (processorQuality === 'high') {
+    // In a call the load governor decides (2026-11-20): it lowers the camera to 15 and then 10fps
+    // first, keeping 'high' — this fallback used to switch to 'balanced' within seconds of any
+    // spike, ahead of all that. It stays for the governor switched off by its debug flag.
+    if (processorQuality === 'high' && !loadGovernorActs()) {
       if (autoDowngradedRef.current) return;
       autoDowngradedRef.current = true;
       diagEvent('background-auto-downgrade', { ...measure });

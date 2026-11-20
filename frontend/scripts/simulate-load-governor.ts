@@ -129,8 +129,8 @@ function run(
                   ? `share-1080-${a.direction}`
                   : a.kind === 'photo'
                     ? `photo-${a.direction}`
-                    : a.kind === 'cam-15'
-                      ? `cam15-${a.direction}`
+                    : a.kind === 'cam-fps'
+                      ? `cam->${[20, 15, 10][a.step]}fps`
                       : a.kind;
       if (a.kind === 'bg-balanced') ctx.bgQuality = 'balanced';
       if (a.kind === 'bg-high') ctx.bgQuality = 'high';
@@ -140,8 +140,8 @@ function run(
   console.log(`${name}\n  ${log.join('  ') || '(no actions)'}\n  end: video=${state.video} recv=${state.recv} shareVp8=${state.shareVp8} share720=${state.share720} share1080=${state.share1080} photo=${state.photo} bgBlocked=${state.bgRestoreBlocked} backoff=${state.recoverBackoff}`);
 }
 
-const highBg: GovernorContext = { bgQuality: 'high', bgUpgradable: true, cam15Available: true, cameraOn: true };
-const balancedBg: GovernorContext = { bgQuality: 'balanced', bgUpgradable: true, cam15Available: true, cameraOn: true };
+const highBg: GovernorContext = { bgQuality: 'high', bgUpgradable: true, camFpsAvailable: true, cameraOn: true };
+const balancedBg: GovernorContext = { bgQuality: 'balanced', bgUpgradable: true, camFpsAvailable: true, cameraOn: true };
 const noBg: GovernorContext = { bgQuality: null, cameraOn: true };
 
 run('fast machine, always calm (must do nothing)', () => 'calm', 600_000, highBg);
@@ -162,7 +162,7 @@ run('busy while receiving a share, camera off', () => 'busy', 300_000, noBg, 'mi
 run('encoder overloaded 2 min while sharing in AV1, then calm', (t) => (t < 120_000 ? 'busy' : 'calm'), 600_000, noBg, 'none', true, 'av1');
 run('busy while sharing a 1440p screen in VP8 (1440p -> 1080p first)', () => 'busy', 300_000, noBg, 'none', true, 'vp8', 1440);
 run(
-  'background restore holds: overloaded early, calm after (high comes back after 5 calm minutes)',
+  'background restore holds: overloaded early, calm after (high back first, at 10fps, then the frame rate)',
   (t) => (t < 60_000 ? 'encoder' : 'calm'),
   900_000,
   highBg,
