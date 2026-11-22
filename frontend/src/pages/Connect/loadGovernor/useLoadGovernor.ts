@@ -37,6 +37,7 @@ import {
 } from './governorPolicy';
 import { ReceiveFpsController, type CameraFps } from './receiveFpsController';
 import { keepTemporalLayers } from './temporalLayers';
+import { initialNetworkWarningState, isBadNetworkSample, stepNetworkWarning } from './networkWarning';
 import { currentShareCodec, currentShareHeight, setShareCap, switchShareToVp8 } from '../../../lib/video/screenShare';
 import { setLocalCameraPhoto } from '../../../lib/cameraPhotoSignal';
 import { logActiveDebugFlags } from '../../../lib/debugFlags';
@@ -167,6 +168,10 @@ function createSignalTotals() {
     bgSegmentations: 0,
     bgSegRoundTripMax: undefined as number | undefined,
     bgSegWorkMax: undefined as number | undefined,
+    bgFramesIn: 0,
+    bgInputSeconds: 0,
+    bgInputMaxGapMs: undefined as number | undefined,
+    bgOutputWaitMs: 0,
   };
 }
 
@@ -185,6 +190,8 @@ export function useLoadGovernor({
   const [mode] = useState(governorMode);
   const [showPanel] = useState(() => readFlag('smiring.debug.loadPanel') === '1');
   const [lastStep, setLastStep] = useState<(GovernorStep & { sample: LoadSample }) | null>(null);
+  /** "Your internet connection is unstable" is up (networkWarning.ts). */
+  const [networkUnstable, setNetworkUnstable] = useState(false);
 
   // Latest values for the sampling loop, which runs outside React's render cycle.
   const backgroundRef = useRef(background);
@@ -519,6 +526,12 @@ export function useLoadGovernor({
           totals.bgSegRoundTripMax = Math.max(totals.bgSegRoundTripMax ?? 0, signal.segmentRoundTripMs);
         }
         if (signal.segmenterWorkMs !== undefined) totals.bgSegWorkMax = Math.max(totals.bgSegWorkMax ?? 0, signal.segmenterWorkMs);
+        if (signal.input) {
+          totals.bgFramesIn += signal.input.frames;
+          totals.bgInputSeconds += signal.seconds;
+          totals.bgOutputWaitMs += signal.input.outputWaitMs;
+          if (signal.input.frames > 0) totals.bgInputMaxGapMs = Math.max(totals.bgInputMaxGapMs ?? 0, signal.input.maxGapMs);
+        }
       }
     });
 
@@ -702,6 +715,12 @@ export function useLoadGovernor({
           if (cpu !== undefined) worstCpu = Math.max(worstCpu ?? 0, cpu);
           if (bandwidth !== undefined) worstBandwidth = Math.max(worstBandwidth ?? 0, bandwidth);
         }
+        // What the sender is fed, before the encoder (and before any frames the encoder skips).
+        for (const stat of stats) {
+          if (stat.type === 'media-source' && stat.kind === 'video' && typeof stat.framesPerSecond === 'number') {
+            send.sourceFps = stat.framesPerSecond;
+          }
+        }
         send.cpuLimited = worstCpu;
         send.bandwidthLimited = worstBandwidth;
         if (worstCpu !== undefined) encoderCpu = Math.max(encoderCpu ?? 0, worstCpu);
@@ -878,6 +897,7 @@ export function useLoadGovernor({
     };
 
     let lastSampleAt = performance.now();
+    let netWarning = initialNetworkWarningState();
     let running = false;
     let rememberedRestoreAt: number | null = null;
     const forceShare = forcedShareStep();
@@ -894,6 +914,18 @@ export function useLoadGovernor({
         const cameras: CameraFps[] = [];
         const recv = await receiveStats(seconds, cameras).catch(() => undefined);
         const audio = await audioStats().catch(() => undefined);
+        const micLossPct = typeof audio?.mic?.[0] === 'number' ? audio.mic[0] : undefined;
+        const netBad = isBadNetworkSample(micLossPct, sent?.net.rttMs);
+        const warned = stepNetworkWarning(netWarning, now, netBad);
+        netWarning = warned.state;
+        if (warned.change) {
+          const shown = warned.change === 'show';
+          setNetworkUnstable(shown);
+          recordTelemetry('network-warning', { shown, micLossPct, rttMs: sent?.net.rttMs, bweKbps: sent?.net.bweKbps });
+          diagEvent('network-warning', { shown, micLossPct, rttMs: sent?.net.rttMs });
+        }
+        const cameraMst = cameraTrack();
+        const cameraRaw = cameraMst ? cameraSourceTrack(cameraMst) : undefined;
         recvController.update(cameras);
         await keepTemporalLayers(cameraTrack()).catch(() => {});
         const t = totals;
@@ -955,6 +987,15 @@ export function useLoadGovernor({
           net: { ...sent?.net, downKbps },
           cameraSend: sent?.camera,
           shareSend: sent?.share,
+          cameraIn: localParticipant.isCameraEnabled
+            ? {
+                captureFps: cameraRaw?.getSettings().frameRate,
+                fps: t.bgInputSeconds > 0 ? t.bgFramesIn / t.bgInputSeconds : undefined,
+                maxGapMs: t.bgInputMaxGapMs,
+                outputWaitMsPerSec: t.bgInputSeconds > 0 ? t.bgOutputWaitMs / t.bgInputSeconds : undefined,
+              }
+            : undefined,
+          netWarning: { bad: netBad, shown: netWarning.shown },
           leveler: activeVoiceFinish()?.levelerWindow(SAMPLE_MS) ?? undefined,
           render: {
             perSec: rendered.renders / seconds,
@@ -1090,10 +1131,11 @@ export function useLoadGovernor({
       saveStartLevel();
       recordTelemetry('governor-stop', {});
       stopTelemetry();
+      setNetworkUnstable(false);
     };
   }, [mode, roomId, room, localParticipant, applyAction, applyPhoto, applyCameraLevel, syncCameraProfile, showPanel, forcedRecv, cameraTrack]);
 
-  return { mode, showPanel, lastStep, forcedRecv };
+  return { mode, showPanel, lastStep, forcedRecv, networkUnstable };
 }
 
 /** One telemetry line per sample: short keys, rounded numbers (it's every 2s for the whole call). */
@@ -1110,6 +1152,9 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
       st.share720 ? 's' : ''
     }${st.photo ? 'p' : ''}`,
     vis: s.visible ? undefined : 0,
+    // This sample's connection was bad / the "unstable" notice is up (networkWarning.ts).
+    nb: s.netWarning?.bad ? 1 : undefined,
+    nw: s.netWarning?.shown ? 1 : undefined,
     // The window went to or from the background during this sample / the governor held off
     // stepping down because of a recent switch (governorPolicy switch grace).
     vch: s.visibilityChanged ? 1 : undefined,
@@ -1177,10 +1222,20 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
     // Camera / screen share sent: kbps, tallest layer px, its fps, uplink- and CPU-limited share.
     ck: r0(s.cameraSend?.kbps),
     ch: s.cameraSend?.height || undefined,
+    // Camera frame rates along the way: set on the track / read from it (background worker) /
+    // longest gap between capture timestamps ms / reading waited on the output ms/s / fed to the
+    // sender (media-source) / sent (tallest layer).
+    ccf: r1(s.cameraIn?.captureFps),
+    cin: r1(s.cameraIn?.fps),
+    cig: r0(s.cameraIn?.maxGapMs),
+    cow: r0(s.cameraIn?.outputWaitMsPerSec),
+    csf: r1(s.cameraSend?.sourceFps),
+    cf: r1(s.cameraSend?.fps),
     cbw: frac(s.cameraSend?.bandwidthLimited),
     sk: r0(s.shareSend?.kbps),
     shh: s.shareSend?.height || undefined,
     sfps: r1(s.shareSend?.fps),
+    ssf: r1(s.shareSend?.sourceFps),
     sbw: frac(s.shareSend?.bandwidthLimited),
     sem: r1(s.shareSend?.encodeMs),
     scpu: frac(s.shareSend?.cpuLimited),

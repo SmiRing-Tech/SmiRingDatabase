@@ -171,6 +171,15 @@ export interface LoadSample {
   net?: NetStats;
   cameraSend?: SendStats;
   shareSend?: SendStats;
+  /**
+   * What the camera delivers, before anything is done to it. Telemetry only. `captureFps`: the
+   * frame rate the camera track is set to (getSettings). `fps` / `maxGapMs`: frames read from it
+   * per second and the longest gap between their capture timestamps (background effect's worker
+   * pipeline only); `outputWaitMsPerSec`: how long reading waited on the output.
+   */
+  cameraIn?: { captureFps?: number; fps?: number; maxGapMs?: number; outputWaitMsPerSec?: number };
+  /** The load-free "your connection is unstable" judgement (networkWarning.ts). Telemetry only. */
+  netWarning?: { bad: boolean; shown: boolean };
   /** The voice leveler on the outgoing mic (lib/audio/voiceFinish). Telemetry only. */
   leveler?: { gainAvgDb: number; gainMaxDb: number; speakingFraction: number; speechDb: number | null; floorDb: number };
   /** React re-rendering the call screen (lib/renderMeter). Telemetry only — not judged. */
@@ -228,6 +237,9 @@ export interface SendStats {
   /** Tallest layer actually sent, px, and its frame rate. */
   height: number;
   fps: number;
+  /** Frames per second the sender is fed (RTCStats media-source): the camera's own rate without
+   *  a background effect, the effect's output with one. */
+  sourceFps?: number;
   /** Encode time per frame of that layer, ms. */
   encodeMs?: number;
   /** Share of the window the encoder was held back by the uplink / by CPU, 0..1. */

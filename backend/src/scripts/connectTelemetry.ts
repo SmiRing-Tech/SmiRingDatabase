@@ -16,6 +16,9 @@ import { r2, BUCKET_NAME } from '../lib/r2';
  * summary の見方: 段階(lv)は「g=カメラを15コマにした / gg=10コマにした(HDのまま、標準に落とす前。2026-11-20 朝より前の g は「背景の切り抜きを10回/秒にした」) / b=背景を標準に落とした / 数字=カメラの段階0-2 / r1,r2=受信の段階
  * (他の人のカメラを軽くしている。r1=小さく表示の人を10fps / r2=大きく表示の人を360p / r3=小さく5fps・大きく10fps・受け取る画面共有も半分のコマ数 / r4=全員180p / r5=大きく表示の人も5fps) / v=自分の画面共有をVP8に切り替えた /
  * h=自分の画面共有を1440pから1080pに下げた / s=自分の画面共有を720pに下げた / p=写真モード（カメラを1〜数秒ごとの静止画に）。2026-11-19より前の記録の x=カメラOFF」。背景の「同じコマのマスク」(2026-11-20から全段階で、自分のマスクのコマだけ送る): bgw=コマを手元に置いた時間(ms) / bgo=自分のコマのマスクで送れた割合(%) / bgx=切り抜きが3秒以上返らず最新のマスクで送ったコマ数(それより前は「置きすぎて最新のマスクで送った」) / bgn=マスクを頼めず送らなかったコマ数 / bgd=マスクが古すぎて送らずに捨てたコマ数 / bgb=背景ワーカーの忙しい方のスレッドの使用率(%、bg-costの判定)。切り抜き: bgs=回数/秒 / bgrt=頼んでからマスクが届くまで(ms) / bgsw=切り抜きワーカー自体の時間(ms)。vch=この計測中にウィンドウの表示⇔裏が切り替わった / sg=切り替え直後のため段階を下げなかった。hr=はっきり余裕がある(すぐ戻す仕組みの判定)。governor-start の startLevel=この通話の開始段階(video/camFps/bgBalanced)、startRemembered=前回の通話から覚えていた段階か(false=記録なしで真ん中から)。action の fast=true=一瞬の重さの後にすぐ戻した。ノイキャンの停止(ah.nc.s): gap=録音チャンクがワーカーに届く間隔の最大(64ms=遅れなし) / inf=推論の最大 / qmin=再生中、処理済みの音が先にどれだけあったかの最小 / fill=処理が遅れて生のマイクの音で埋めた最長(ms)。afm=この計測中に生のマイクで埋めた時間(ms、計測の20%以上で audio-stress) / ah.nc.fl=生の音で埋めた回数(累計) / ur=無音になった回数(累計、0のはず) / prm=今生の音で埋めている。
+ * カメラのコマ数(2026-11-21から): 設定=トラックに設定したコマ数 / 入力=カメラから読めたコマ数(背景ONのときだけ) / 送信側へ=送信に渡ったコマ数(media-source) / 送信=送った一番大きい層のコマ数。
+ * 入力の間隔=カメラのタイムスタンプの最大の空き。出力待ち=読み込みが出力の詰まりで止まっていた時間(長いと、カメラではなくこちらがコマを取りこぼした可能性)。
+ * 回線の不安定表示(2026-11-21から、networkWarning.ts): nb=そのサンプルの回線が悪い(マイクの損失10%以上か往復1秒以上) / nw=「インターネット接続が不安定です」を表示中。
  * 「重い」理由(reasons)は governorPolicy.ts の classify() が付けたもの。
  * React再描画は通話画面の再描画にかかった画面スレッドの時間(lib/renderMeter.ts)。
  * PC全体のCPUは Compute Pressure API(Chromeのみ)の判定。画面スレッドの数値と違い、デコード・圧縮・
@@ -112,6 +115,9 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
   let probeLateMax = 0;
   const raf = { n: 0, fps: 0, stalls100: 0, maxGap: 0 };
   const bgg = { n: 0, over200: 0, max: 0 };
+  // Camera frame rates along the way (camera on): set / read from the camera / fed to the sender / sent.
+  const camFps = { n: 0, ccf: 0, ccfN: 0, cin: 0, cinN: 0, csf: 0, csfN: 0, cf: 0, cfN: 0, gapMax: 0, waitMax: 0 };
+  const netWarn = { bad: 0, shown: 0 };
   // Per received video, by sender: [peer#, c|s, fps, freezes, frozen ms, height].
   const peerNames = new Map<number, string>();
   for (const e of s.entries) if (e.type === 'peer') peerNames.set(e.i, e.name || String(e.identity).slice(0, 8));
@@ -167,6 +173,19 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
     if (typeof e.cpu === 'number' && cpu[e.cpu] !== undefined) cpu[e.cpu] += 1;
     if (typeof e.cpa === 'number') probe.push(e.cpa);
     probeLateMax = Math.max(probeLateMax, e.cpl ?? 0);
+    if (e.nb) netWarn.bad += 1;
+    if (e.nw) netWarn.shown += 1;
+    if (e.cam === 1) {
+      camFps.n += 1;
+      for (const k of ['ccf', 'cin', 'csf', 'cf'] as const) {
+        if (typeof e[k] === 'number') {
+          camFps[k] += e[k];
+          camFps[`${k}N` as 'ccfN' | 'cinN' | 'csfN' | 'cfN'] += 1;
+        }
+      }
+      camFps.gapMax = Math.max(camFps.gapMax, e.cig ?? 0);
+      camFps.waitMax = Math.max(camFps.waitMax, e.cow ?? 0);
+    }
     if (typeof e.bgg === 'number') {
       bgg.n += 1;
       if (e.bgg >= 200) bgg.over200 += 1;
@@ -295,6 +314,18 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
   if (bgg.n) {
     console.log(`  送ったカメラのコマ間隔(背景処理の後): 200ms以上空いた区間 ${pct(bgg.over200, bgg.n)} | 最長 ${bgg.max}ms`);
   }
+  if (camFps.ccfN + camFps.cinN + camFps.csfN) {
+    const avg = (sum: number, n: number) => (n ? (sum / n).toFixed(1) : '-');
+    console.log(
+      `  カメラのコマ数(カメラON中の平均): 設定 ${avg(camFps.ccf, camFps.ccfN)} → 入力 ${avg(camFps.cin, camFps.cinN)} → 送信側へ ${avg(camFps.csf, camFps.csfN)} → 送信 ${avg(
+        camFps.cf,
+        camFps.cfN,
+      )}fps | 入力の間隔 最長${Math.round(camFps.gapMax)}ms | 出力待ち 最大${Math.round(camFps.waitMax)}ms/秒`,
+    );
+  }
+  if (netWarn.bad || netWarn.shown) {
+    console.log(`  回線: 悪いサンプル ${netWarn.bad}回 | 「接続が不安定」を表示 ${((netWarn.shown * 2) / 60).toFixed(1)}分`);
+  }
   if (streams.size) {
     const rows = [...streams.entries()]
       .sort((a, b) => b[1].freezes / b[1].n - a[1].freezes / a[1].n)
@@ -362,7 +393,9 @@ function summarize(s: Awaited<ReturnType<typeof loadSession>>) {
   // The governor's actions and the call's own state changes/events, in time order.
   for (const e of s.entries) {
     const at = s.startedAt ? `${((e.t - s.startedAt) / 60_000).toFixed(1)}分` : '?';
-    if (e.type === 'action') {
+    if (e.type === 'network-warning') {
+      console.log(`  ⚠ ${at} 接続が不安定の表示 ${e.shown ? 'ON' : 'OFF'} (マイク損失 ${e.micLossPct ?? '-'}% 往復 ${e.rttMs !== undefined ? Math.round(e.rttMs) : '-'}ms)`);
+    } else if (e.type === 'action') {
       console.log(`  → ${at} ${JSON.stringify(e.action)} ${e.applied ? '実行' : '(判断のみ)'} 理由: ${(e.reasons ?? []).join('+')}`);
     } else if (e.type === 'state' && !['participants', 'pageVisible', 'cpuPressure', 'connectionQuality'].includes(e.key)) {
       console.log(`    ${at} ${e.key}: ${JSON.stringify(e.from)} → ${JSON.stringify(e.to)}`);

@@ -71,6 +71,7 @@ import {
   Smile,
   Clock,
   ClipboardList,
+  WifiOff,
 } from 'lucide-react';
 import { apiClient, setGuestAuthToken } from '../../lib/apiClient';
 import { markDeviceExplicitlyChosen } from '../../lib/continuityDevices';
@@ -324,6 +325,14 @@ function resolveUpstreamTrack(track: LocalAudioTrack | LocalVideoTrack): MediaSt
   return track.getProcessor()?.processedTrack ?? track.mediaStreamTrack;
 }
 
+// When GTCRN fails to start, the call goes on with the raw mic and keeps retrying in the
+// background, swapping it in without a gap once it starts. Telemetry (2026-11-20, iPhone +
+// AirPods): it failed once on a mic restart ("Importing a module script failed", the audio
+// session briefly 'interrupted') and nothing ever retried, so the last 33 minutes of a call
+// went out without noise cancellation. Delays per attempt; the last one repeats.
+const NOISE_CANCEL_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000];
+const NOISE_CANCEL_MAX_RETRIES = 10;
+
 function vadLog(msg: string, data?: Record<string, unknown>) {
   // Dev-only: this fires at up to ~2x/sec (every VAD frame's health check, the self-heal
   // interval, hijack detection, ...) for the entire duration of every call, which is wasted
@@ -474,6 +483,7 @@ function useVadAutoGate(
     let unusableSender: RTCRtpSender | null = null;
     let detachTrackListeners: (() => void) | null = null;
     let noiseCancelTrack: GtcrnNoiseCancelTrack | null = null;
+    let noiseCancelRetryTimer: ReturnType<typeof setTimeout> | null = null;
     let selfHealInterval: ReturnType<typeof setInterval> | null = null;
     let detachGateResumeRetry: (() => void) | null = null;
     // Health readout (lib/audio/audioPipelineHealth) — telemetry only, no effect on audio.
@@ -737,6 +747,44 @@ function useVadAutoGate(
       });
     };
 
+    // GTCRN failed to start: the gate is already sending the raw mic. Try again in the
+    // background and, once it starts, feed the gate from its output instead (reattachUpstream
+    // only swaps the gate's input, so nobody hears a gap). A capture track that isn't live is
+    // skipped: its restart rebuilds the whole pipeline anyway (onRestarted).
+    const retryNoiseCancel = (track: LocalAudioTrack, attempt: number) => {
+      if (attempt > NOISE_CANCEL_MAX_RETRIES) return;
+      const delay = NOISE_CANCEL_RETRY_DELAYS_MS[Math.min(attempt, NOISE_CANCEL_RETRY_DELAYS_MS.length) - 1];
+      noiseCancelRetryTimer = setTimeout(async () => {
+        noiseCancelRetryTimer = null;
+        if (cancelled || noiseCancelTrack) return;
+        if (track.mediaStreamTrack.readyState !== 'live') {
+          retryNoiseCancel(track, attempt + 1);
+          return;
+        }
+        let created: GtcrnNoiseCancelTrack;
+        try {
+          created = await GtcrnNoiseCancelTrack.create(
+            track.mediaStreamTrack,
+            () => isMicrophoneEnabledRef.current,
+            () => onNoiseCancelOverloadRef.current?.(),
+          );
+        } catch (e) {
+          diagEvent('noise-cancel-retry', { attempt, ok: false, error: String(e) });
+          if (!cancelled) retryNoiseCancel(track, attempt + 1);
+          return;
+        }
+        if (cancelled || noiseCancelTrack) {
+          created.stop();
+          return;
+        }
+        noiseCancelTrack = created;
+        // Built for the raw mic (no synthesized high band); GTCRN's 16kHz output wants it back.
+        voiceFinish?.apply(DEFAULT_VOICE_FINISH);
+        reattachUpstream(track);
+        diagEvent('noise-cancel-retry', { attempt, ok: true, nc: created.health() });
+      }, delay);
+    };
+
     const start = async () => {
       const pub = localParticipant.getTrackPublication(Track.Source.Microphone);
       const track = pub?.track as LocalAudioTrack | undefined;
@@ -763,8 +811,9 @@ function useVadAutoGate(
       // creation, and reattachUpstream can't see that (GTCRN's output track id doesn't change).
       // Telemetry showed exactly this: GTCRN's source clone 'ended', input at digital silence,
       // for 3 minutes (fixed by toggling noise cancel) and for a whole 65-minute call. Rebuild.
+      // Also when noise cancel is wanted but failed to start: the rebuild retries it.
       const onRestarted = () => {
-        if (noiseCancelTrack || vadTrack) {
+        if (noiseCancelTrack || vadTrack || noiseCancelEnabled) {
           vadLog('track restarted: rebuilding pipeline onto the new capture track');
           diagEvent('mic-pipeline-rebuild', { reason: 'track-restarted' });
           setTrackEpoch((n) => n + 1);
@@ -811,6 +860,7 @@ function useVadAutoGate(
       setStage('gate-building');
       await buildGateGraph(track);
       if (cancelled) return;
+      if (noiseCancelEnabled && !noiseCancelTrack) retryNoiseCancel(track, 1);
 
       if (!enabled) {
         // Noise-cancel-only: the gate graph above is already a permanently-open, zero-delay
@@ -959,6 +1009,7 @@ function useVadAutoGate(
       setLoading(false);
       clearMisfireHoldTimer();
       if (selfHealInterval !== null) clearInterval(selfHealInterval);
+      if (noiseCancelRetryTimer !== null) clearTimeout(noiseCancelRetryTimer);
       setGateRef.current = null;
       vadRef.current = null;
       unregisterVadProbe?.();
@@ -1389,6 +1440,30 @@ function NoiseCancelNotice({ message, onDismiss }: { message: string; onDismiss:
         <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-px" />
         <span className="flex-1">{message}</span>
         <button onClick={onDismiss} className="text-amber-200 hover:text-white shrink-0">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "Your internet connection is unstable": stays up while the load governor's network judgement
+ * says so (loadGovernor/networkWarning.ts — only really bad connections, taken down after 30s
+ * fine). Closing it hides it until the next time it comes up.
+ */
+function NetworkUnstableBanner({ belowNotice }: { belowNotice: boolean }) {
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed) return null;
+  return (
+    <div
+      className={`absolute ${belowNotice ? 'top-28' : 'top-16'} left-1/2 -translate-x-1/2 z-50 w-[min(92vw,32rem)] animate-in fade-in slide-in-from-top-2 duration-300`}
+      role="status"
+    >
+      <div className="flex items-start gap-2 px-4 py-2.5 bg-amber-950/90 border border-amber-500/50 rounded-xl text-xs font-semibold text-white shadow-2xl">
+        <WifiOff className="w-4 h-4 text-amber-400 shrink-0 mt-px" />
+        <span className="flex-1">インターネット接続が不安定です。声や映像が途切れることがあります。</span>
+        <button onClick={() => setDismissed(true)} className="text-amber-200 hover:text-white shrink-0" aria-label="閉じる">
           <X className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -2916,6 +2991,11 @@ function CustomVideoConference({
         />
       ) : (
         governorNotice && <NoiseCancelNotice message={governorNotice} onDismiss={dismissGovernorNotice} />
+      )}
+      {governor.networkUnstable && (
+        <NetworkUnstableBanner
+          belowNotice={!!(mediaEnhancements.micNotice || mediaEnhancements.noiseCancelNotice || governorNotice)}
+        />
       )}
       {governor.showPanel && <LoadGovernorPanel mode={governor.mode} step={governor.lastStep} forcedRecv={governor.forcedRecv} />}
 

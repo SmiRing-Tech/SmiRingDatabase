@@ -59,6 +59,9 @@ export type LoadSignal =
       segmenterWorkMs?: number;
       /** Worker pipeline: each worker thread's time in this report, ms (compositor; segmenter). */
       threadMs?: { compositor: number; segmenter: number };
+      /** Worker pipeline: frames read from the camera, the longest gap between their capture
+       *  timestamps (ms), and the time reading waited on the output (ms). See CompositorStats. */
+      input?: { frames: number; maxGapMs: number; outputWaitMs: number };
     };
 
 type Listener = (signal: LoadSignal) => void;

@@ -121,6 +121,16 @@ export interface CompositorStats {
   photoSkipped: number;
   /** Frames dropped because their matte was too old (see the header). */
   staleDropped: number;
+  /**
+   * What the camera itself delivered (telemetry, 2026-11-21: a Windows camera fell to ~9fps
+   * during a screen share with this pipeline idle). Frames read from the camera; the longest gap
+   * between two of their capture timestamps, ms; and the time reading was paused waiting for the
+   * output (backpressure). Gaps with no such wait are the camera's; with it, frames may also have
+   * been dropped unread in the track processor's buffer.
+   */
+  framesIn: number;
+  inputMaxGapMs: number;
+  outputWaitMs: number;
 }
 
 export type CompositorResponse =
@@ -183,6 +193,9 @@ const emptyStats = (): CompositorStats => ({
   unmatched: 0,
   photoSkipped: 0,
   staleDropped: 0,
+  framesIn: 0,
+  inputMaxGapMs: 0,
+  outputWaitMs: 0,
 });
 /** Camera timestamp (µs) of the frame the current matte was made from, and when it arrived. */
 let matteFrameTimestamp: number | null = null;
@@ -197,6 +210,8 @@ let outputChain: Promise<void> = Promise.resolve();
 let stats = emptyStats();
 /** When the last output frame was written; reset with each new source so a camera switch isn't a "gap". */
 let lastOutputAt: number | null = null;
+/** Capture timestamp (µs) of the last frame read from the camera; reset with each new source. */
+let lastInputTimestamp: number | null = null;
 let statsSince = 0;
 let statsTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -435,6 +450,11 @@ async function pump(source: ReadableStreamDefaultReader<VideoFrame>) {
       frame.close();
       continue;
     }
+    stats.framesIn += 1;
+    if (lastInputTimestamp !== null && frame.timestamp > lastInputTimestamp) {
+      stats.inputMaxGapMs = Math.max(stats.inputMaxGapMs, (frame.timestamp - lastInputTimestamp) / 1000);
+    }
+    lastInputTimestamp = frame.timestamp;
     // Photo mode: drop everything between the frames that go out (and while one waits for its
     // matte), before any work is done on it.
     const photo = settings.photoIntervalMs > 0;
@@ -456,7 +476,9 @@ async function pump(source: ReadableStreamDefaultReader<VideoFrame>) {
         stats.unmatched += 1;
       }
       // Backpressure: don't read further ahead than the output can take.
+      const waitFrom = performance.now();
       await outputChain;
+      stats.outputWaitMs += performance.now() - waitFrom;
       continue;
     }
 
@@ -466,7 +488,11 @@ async function pump(source: ReadableStreamDefaultReader<VideoFrame>) {
     if (settings.matteSync && compositor.hasMatteHistory) stats.forcedOut += 1;
     if (dropIfStale(frame)) continue;
     const out = renderSafely(frame, false);
-    if (out) await emit(out);
+    if (out) {
+      const waitFrom = performance.now();
+      await emit(out);
+      stats.outputWaitMs += performance.now() - waitFrom;
+    }
   }
 }
 
@@ -487,6 +513,7 @@ function switchSource(source: CompositorSource) {
   dropHeld();
   matteFrameTimestamp = null;
   lastOutputAt = null;
+  lastInputTimestamp = null;
   void pump(reader);
 }
 
