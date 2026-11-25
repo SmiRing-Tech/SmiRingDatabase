@@ -61,7 +61,7 @@ export type LoadSignal =
       threadMs?: { compositor: number; segmenter: number };
       /** Worker pipeline: frames read from the camera, the longest gap between their capture
        *  timestamps (ms), and the time reading waited on the output (ms). See CompositorStats. */
-      input?: { frames: number; maxGapMs: number; outputWaitMs: number };
+      input?: { frames: number; maxGapMs: number; outputWaitMs: number; inputWaitMs: number; writeMs: number };
     };
 
 type Listener = (signal: LoadSignal) => void;

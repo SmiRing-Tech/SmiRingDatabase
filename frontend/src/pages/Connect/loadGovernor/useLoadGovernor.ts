@@ -172,6 +172,8 @@ function createSignalTotals() {
     bgInputSeconds: 0,
     bgInputMaxGapMs: undefined as number | undefined,
     bgOutputWaitMs: 0,
+    bgInputWaitMs: 0,
+    bgWriteMs: 0,
   };
 }
 
@@ -530,6 +532,8 @@ export function useLoadGovernor({
           totals.bgFramesIn += signal.input.frames;
           totals.bgInputSeconds += signal.seconds;
           totals.bgOutputWaitMs += signal.input.outputWaitMs;
+          totals.bgInputWaitMs += signal.input.inputWaitMs;
+          totals.bgWriteMs += signal.input.writeMs;
           if (signal.input.frames > 0) totals.bgInputMaxGapMs = Math.max(totals.bgInputMaxGapMs ?? 0, signal.input.maxGapMs);
         }
       }
@@ -634,6 +638,7 @@ export function useLoadGovernor({
     >();
     let lastPubPair: { bytes: number; at: number } | null = null;
     const sendCodecs = new Map<string, string>();
+    const sendEncoders = new Map<string, string>();
     const sendStats = async (seconds: number) => {
       let encoderCpu: number | undefined;
       let net: Pick<NetStats, 'upKbps' | 'bweKbps' | 'rttMs'> = {};
@@ -689,6 +694,17 @@ export function useLoadGovernor({
           lastOutbound.set(stat.id, now);
           if (stat.active === false) continue;
           if (prev && now.bytes >= prev.bytes) send.kbps += ((now.bytes - prev.bytes) * 8) / 1000 / seconds;
+          if (prev && now.encodeTime >= prev.encodeTime && seconds > 0) {
+            send.encodeMsPerSec = (send.encodeMsPerSec ?? 0) + ((now.encodeTime - prev.encodeTime) * 1000) / seconds;
+          }
+          // Which encoder runs (software libvpx vs hardware), once per source; only changes matter.
+          const impl = typeof stat.encoderImplementation === 'string' ? stat.encoderImplementation : undefined;
+          const hw = typeof stat.powerEfficientEncoder === 'boolean' ? stat.powerEfficientEncoder : undefined;
+          const implKey = `${impl ?? ''}|${hw ?? ''}`;
+          if (impl !== undefined && sendEncoders.get(key) !== implKey) {
+            sendEncoders.set(key, implKey);
+            recordTelemetry('send-encoder', { source: key, implementation: impl, powerEfficient: hw });
+          }
           if ((stat.frameHeight ?? 0) > send.height) {
             send.height = stat.frameHeight ?? 0;
             send.fps = stat.framesPerSecond ?? 0;
@@ -993,6 +1009,8 @@ export function useLoadGovernor({
                 fps: t.bgInputSeconds > 0 ? t.bgFramesIn / t.bgInputSeconds : undefined,
                 maxGapMs: t.bgInputMaxGapMs,
                 outputWaitMsPerSec: t.bgInputSeconds > 0 ? t.bgOutputWaitMs / t.bgInputSeconds : undefined,
+                inputWaitMsPerSec: t.bgInputSeconds > 0 ? t.bgInputWaitMs / t.bgInputSeconds : undefined,
+                writeMsPerSec: t.bgInputSeconds > 0 ? t.bgWriteMs / t.bgInputSeconds : undefined,
               }
             : undefined,
           netWarning: { bad: netBad, shown: netWarning.shown },
@@ -1229,6 +1247,9 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
     cin: r1(s.cameraIn?.fps),
     cig: r0(s.cameraIn?.maxGapMs),
     cow: r0(s.cameraIn?.outputWaitMsPerSec),
+    // ...of which: waited for the next camera frame (camera-limited) / inside writing to the output track (sender-limited), ms/s.
+    ciw: r0(s.cameraIn?.inputWaitMsPerSec),
+    cwr: r0(s.cameraIn?.writeMsPerSec),
     csf: r1(s.cameraSend?.sourceFps),
     cf: r1(s.cameraSend?.fps),
     cbw: frac(s.cameraSend?.bandwidthLimited),
@@ -1238,6 +1259,10 @@ function compactSample(s: LoadSample, step: GovernorStep, peerIndex: (identity: 
     ssf: r1(s.shareSend?.sourceFps),
     sbw: frac(s.shareSend?.bandwidthLimited),
     sem: r1(s.shareSend?.encodeMs),
+    // Camera encoder: ms per frame (tallest layer), all layers' encode time per second, held back by CPU.
+    cem: r1(s.cameraSend?.encodeMs),
+    cel: r0(s.cameraSend?.encodeMsPerSec),
+    ccpu: frac(s.cameraSend?.cpuLimited),
     scpu: frac(s.shareSend?.cpuLimited),
     // Voice leveler: gain avg/max dB, speaking share, input speech level and noise floor dBFS.
     lg: r1(s.leveler?.gainAvgDb),

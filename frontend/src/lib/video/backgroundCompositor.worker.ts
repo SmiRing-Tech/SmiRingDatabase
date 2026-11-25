@@ -131,6 +131,15 @@ export interface CompositorStats {
   framesIn: number;
   inputMaxGapMs: number;
   outputWaitMs: number;
+  /**
+   * Where the time went (2026-11-24: a Windows PC read only ~12fps of a 20fps camera with this
+   * pipeline 8% busy and reading 95% blocked on the output). `inputWaitMs`: time reading waited for
+   * the next camera frame - large means the camera is the limit; ~0 means frames were already
+   * waiting. `writeMs`: time inside writing a finished frame to the output track (the sender's
+   * backpressure) - large means the encoder/sender is the limit.
+   */
+  inputWaitMs: number;
+  writeMs: number;
 }
 
 export type CompositorResponse =
@@ -196,6 +205,8 @@ const emptyStats = (): CompositorStats => ({
   framesIn: 0,
   inputMaxGapMs: 0,
   outputWaitMs: 0,
+  inputWaitMs: 0,
+  writeMs: 0,
 });
 /** Camera timestamp (µs) of the frame the current matte was made from, and when it arrived. */
 let matteFrameTimestamp: number | null = null;
@@ -384,8 +395,10 @@ function emit(out: VideoFrame): Promise<void> {
       return;
     }
     try {
+      const writeFrom = performance.now();
       await writer!.write(out);
       const at = performance.now();
+      stats.writeMs += at - writeFrom;
       if (lastOutputAt !== null) stats.maxGapMs = Math.max(stats.maxGapMs, at - lastOutputAt);
       lastOutputAt = at;
     } catch (err) {
@@ -440,7 +453,9 @@ async function pump(source: ReadableStreamDefaultReader<VideoFrame>) {
   while (!stopped && reader === source) {
     let result: ReadableStreamReadResult<VideoFrame>;
     try {
+      const readFrom = performance.now();
       result = await source.read();
+      stats.inputWaitMs += performance.now() - readFrom;
     } catch {
       return; // cancelled by replaceSource/stop
     }

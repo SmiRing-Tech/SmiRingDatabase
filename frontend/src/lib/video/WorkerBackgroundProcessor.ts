@@ -703,7 +703,13 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       segmenterWorkMs: stats.segmentations ? stats.segmenterWorkMsTotal / stats.segmentations : undefined,
       threadMs: { compositor: stats.compositeMsTotal, segmenter: stats.segmenterWorkMsTotal },
       // `?? 0`: a worker script cached from before these existed reports without them.
-      input: { frames: stats.framesIn ?? 0, maxGapMs: stats.inputMaxGapMs ?? 0, outputWaitMs: stats.outputWaitMs ?? 0 },
+      input: {
+        frames: stats.framesIn ?? 0,
+        maxGapMs: stats.inputMaxGapMs ?? 0,
+        outputWaitMs: stats.outputWaitMs ?? 0,
+        inputWaitMs: stats.inputWaitMs ?? 0,
+        writeMs: stats.writeMs ?? 0,
+      },
     });
     if (inVisibilitySwitchGrace()) {
       // A window switch: these seconds say nothing about whether the effect keeps up.
@@ -893,6 +899,8 @@ function emptyTotals(): Omit<CompositorStats, 'intervalMs'> {
     framesIn: 0,
     inputMaxGapMs: 0,
     outputWaitMs: 0,
+    inputWaitMs: 0,
+    writeMs: 0,
   };
 }
 
@@ -917,4 +925,6 @@ function addTotals(into: Omit<CompositorStats, 'intervalMs'>, stats: CompositorS
   into.framesIn += stats.framesIn ?? 0;
   into.inputMaxGapMs = Math.max(into.inputMaxGapMs, stats.inputMaxGapMs ?? 0);
   into.outputWaitMs += stats.outputWaitMs ?? 0;
+  into.inputWaitMs += stats.inputWaitMs ?? 0;
+  into.writeMs += stats.writeMs ?? 0;
 }

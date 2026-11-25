@@ -177,7 +177,15 @@ export interface LoadSample {
    * per second and the longest gap between their capture timestamps (background effect's worker
    * pipeline only); `outputWaitMsPerSec`: how long reading waited on the output.
    */
-  cameraIn?: { captureFps?: number; fps?: number; maxGapMs?: number; outputWaitMsPerSec?: number };
+  cameraIn?: {
+    captureFps?: number;
+    fps?: number;
+    maxGapMs?: number;
+    outputWaitMsPerSec?: number;
+    /** Time per second reading waited for a camera frame / writing a frame to the output waited. */
+    inputWaitMsPerSec?: number;
+    writeMsPerSec?: number;
+  };
   /** The load-free "your connection is unstable" judgement (networkWarning.ts). Telemetry only. */
   netWarning?: { bad: boolean; shown: boolean };
   /** The voice leveler on the outgoing mic (lib/audio/voiceFinish). Telemetry only. */
@@ -242,6 +250,8 @@ export interface SendStats {
   sourceFps?: number;
   /** Encode time per frame of that layer, ms. */
   encodeMs?: number;
+  /** Encoding time summed over all layers, per second of wall time (1000 = one core fully busy), ms/s. */
+  encodeMsPerSec?: number;
   /** Share of the window the encoder was held back by the uplink / by CPU, 0..1. */
   bandwidthLimited?: number;
   cpuLimited?: number;
