@@ -6,6 +6,7 @@ import {
   supportsMediapipeBackground,
 } from '../../lib/video/MediapipeBackgroundProcessor';
 import { supportsWorkerBackground, WorkerBackgroundProcessor } from '../../lib/video/WorkerBackgroundProcessor';
+import type { SegmentationModel } from '../../lib/video/matteStyle';
 
 /**
  * Bench for the background effect processors.
@@ -33,24 +34,61 @@ import { supportsWorkerBackground, WorkerBackgroundProcessor } from '../../lib/v
  * (below that the matte visibly lags behind motion), so every configuration here respects it.
  */
 
-type ModelChoice = 'balanced' | 'high' | 'square';
+/** 'balanced' and 'high' pick their model as the app does (modelFor); the other two force one file. */
+type ModelChoice = 'balanced' | 'high' | 'square' | 'landscape';
 
 const MODEL_LABELS: Record<ModelChoice, string> = {
-  balanced: '標準 / selfie_segmenter_landscape（244KB・本番）',
+  balanced: '標準（本番: 横向き=landscape 256x144 / 縦向き=正方形 256x256）',
   high: '高精細 / selfie_multiclass_256x256（15.6MB・本番のHD）',
-  square: '正方形 / selfie_segmenter 256x256（実験）',
+  square: '正方形 / selfie_segmenter 256x256 を強制',
+  landscape: '横長 / selfie_segmenter_landscape を強制（縦向きなら修正前の状態）',
 };
 
-/** The square model isn't one the app ships, so it's handed to the processor by URL. */
-const SQUARE_MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite';
+const FORCED_MODEL: Partial<Record<ModelChoice, SegmentationModel>> = { square: 'square', landscape: 'landscape' };
+
+/** Lab background choice; 'solid' is the processor's image mode with a flat colour, for judging the cut-out edge. */
+type LabBackground = 'blur' | 'image' | 'solid';
+
+/** A flat, saturated colour as an image URL: the cut-out edge shows against it, unlike against a blur of a pale room. */
+function solidBackgroundUrl(): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = 16;
+  canvas.height = 16;
+  const context = canvas.getContext('2d')!;
+  context.fillStyle = '#1d4ed8';
+  context.fillRect(0, 0, 16, 16);
+  return canvas.toDataURL('image/png');
+}
 
 const RESOLUTIONS = {
   720: { width: 1280, height: 720 },
   540: { width: 960, height: 540 },
   360: { width: 640, height: 360 },
+  // What a phone held upright sends. A desktop webcam has no such mode, so Chrome cuts it out of
+  // the landscape image (resizeMode 'crop-and-scale'), at whatever height the camera can give.
+  '720v': { width: 720, height: 1280 },
 } as const;
 type ResolutionKey = keyof typeof RESOLUTIONS;
+const RESOLUTION_ORDER: ResolutionKey[] = [720, 540, 360, '720v'];
+const RESOLUTION_LABELS: Record<ResolutionKey, string> = {
+  720: '720p（本番）',
+  540: '540p',
+  360: '360p',
+  '720v': '縦 9:16（スマホ相当）',
+};
+
+function cameraConstraints(key: ResolutionKey, fps: number): MediaTrackConstraints {
+  const size = RESOLUTIONS[key];
+  const frameRate = { ideal: fps, max: fps };
+  if (size.height <= size.width) return { width: size.width, height: size.height, frameRate };
+  return {
+    width: { ideal: size.width },
+    height: { ideal: size.height },
+    aspectRatio: { exact: size.width / size.height },
+    resizeMode: 'crop-and-scale',
+    frameRate,
+  } as MediaTrackConstraints;
+}
 
 const CAMERA_FPS = [20, 15, 10] as const;
 /** Segmentation rates allowed for a camera rate: never below half of it. */
@@ -116,7 +154,8 @@ for (const c of [...SUITE, ...PATH_SUITE]) {
 const WARMUP_MS = 3000;
 
 /** Both models' bytes in memory before a swap test, so no swap includes a download. */
-const loadModelsForSwapTest = () => Promise.all([loadSegmentationModel('balanced'), loadSegmentationModel('high')]);
+const loadModelsForSwapTest = () =>
+  Promise.all([loadSegmentationModel('landscape'), loadSegmentationModel('square'), loadSegmentationModel('multiclass')]);
 
 /** Rough suite duration at the default 8s measurement, for the buttons. */
 const suiteMinutes = (count: number) => Math.ceil((count * (8 + WARMUP_MS / 1000 + 4)) / 60);
@@ -295,8 +334,10 @@ export default function BackgroundBlurLabPage() {
   const [cameraFps, setCameraFps] = useState(20);
   const [segFps, setSegFps] = useState(20);
   const [scheduler, setScheduler] = useState<'interval' | 'exact'>('interval');
-  const [mode, setMode] = useState<'blur' | 'image'>('blur');
+  const [background, setBackground] = useState<LabBackground>('blur');
   const [path, setPath] = useState<RunPath>('main');
+  /** The open camera is taller than wide: show the videos upright instead of cropped to 16:9. */
+  const [portrait, setPortrait] = useState(false);
 
   // Automatic suite.
   const [gpuSync, setGpuSync] = useState(false);
@@ -332,6 +373,10 @@ export default function BackgroundBlurLabPage() {
   const startProcessor = useCallback(
     async (config: LabConfig, cameraTrack: MediaStreamTrack, measureGpuSync: boolean): Promise<LabProcessor> => {
       const quality = config.model === 'high' ? 'high' : 'balanced';
+      const backgroundOptions =
+        background === 'solid'
+          ? { mode: 'image' as const, imageUrl: solidBackgroundUrl() }
+          : { mode: background === 'image' ? ('image' as const) : ('blur' as const) };
       const common = {
         delegate: config.delegate,
         segmentationFps: config.segFps,
@@ -346,8 +391,8 @@ export default function BackgroundBlurLabPage() {
         const main = new MediapipeBackgroundProcessor({
           ...common,
           quality,
-          assetPaths: config.model === 'square' ? { modelAssetPath: SQUARE_MODEL_URL } : undefined,
-          mode,
+          forceModel: FORCED_MODEL[config.model],
+          ...backgroundOptions,
         });
         processorRef.current = main;
         await main.init({ kind: Track.Kind.Video, track: cameraTrack });
@@ -356,8 +401,8 @@ export default function BackgroundBlurLabPage() {
         const worker = new WorkerBackgroundProcessor({
           ...common,
           quality,
-          assetPaths: config.model === 'square' ? { modelAssetPath: SQUARE_MODEL_URL } : undefined,
-          mode,
+          forceModel: FORCED_MODEL[config.model],
+          ...backgroundOptions,
         });
         processorRef.current = worker;
         await worker.init({ kind: Track.Kind.Video, track: cameraTrack });
@@ -373,20 +418,21 @@ export default function BackgroundBlurLabPage() {
       await processor.waitUntilReady(10_000);
       return processor;
     },
-    [mode],
+    [background],
   );
 
   /** Camera + processor for one configuration. Resolves once the processor's output is stable. */
   const launch = useCallback(
     async (config: LabConfig, measureGpuSync: boolean) => {
       await teardown();
-      const size = RESOLUTIONS[config.resolution];
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: size.width, height: size.height, frameRate: { ideal: config.cameraFps, max: config.cameraFps } },
+        video: cameraConstraints(config.resolution, config.cameraFps),
         audio: false,
       });
       cameraStreamRef.current = stream;
       const cameraTrack = stream.getVideoTracks()[0];
+      const settings = cameraTrack.getSettings();
+      setPortrait((settings.height ?? 0) > (settings.width ?? 0));
       if (rawVideoRef.current) {
         rawVideoRef.current.srcObject = new MediaStream([cameraTrack]);
         await rawVideoRef.current.play().catch(() => {});
@@ -517,7 +563,7 @@ export default function BackgroundBlurLabPage() {
     try {
       // Warm caches (model downloads, WASM) so the first rows' load times aren't download times.
       setStatus('準備: モデルを事前に読み込み中…');
-      await fetch(SQUARE_MODEL_URL).catch(() => {});
+      await loadModelsForSwapTest().catch(() => {});
       const warmups: LabConfig[] = [APP_DEFAULT, { ...APP_DEFAULT, model: 'high' }];
       if (suite.some((c) => c.path === 'worker')) warmups.push({ ...APP_DEFAULT, path: 'worker' });
       for (const warm of warmups) {
@@ -709,6 +755,9 @@ export default function BackgroundBlurLabPage() {
   }
 
   const selectClass = 'bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 disabled:opacity-50';
+  const videoClass = portrait
+    ? 'h-[75vh] max-w-full mx-auto rounded-xl bg-black object-contain'
+    : 'w-full rounded-xl bg-black aspect-video object-cover';
   const locked = busy || suiteRunning;
   const base = results[0]?.busyMsPerSec;
 
@@ -729,11 +778,11 @@ export default function BackgroundBlurLabPage() {
       <div className="grid gap-4 md:grid-cols-2">
         <figure className="space-y-1">
           <figcaption className="text-xs text-gray-400">元映像</figcaption>
-          <video ref={rawVideoRef} muted playsInline className="w-full rounded-xl bg-black aspect-video object-cover" />
+          <video ref={rawVideoRef} muted playsInline className={videoClass} />
         </figure>
         <figure className="space-y-1">
           <figcaption className="text-xs text-gray-400">プロセッサ適用後</figcaption>
-          <video ref={processedVideoRef} muted playsInline className="w-full rounded-xl bg-black aspect-video object-cover" />
+          <video ref={processedVideoRef} muted playsInline className={videoClass} />
         </figure>
       </div>
 
@@ -904,10 +953,18 @@ export default function BackgroundBlurLabPage() {
           </label>
           <label className="space-y-1">
             <span className="block text-gray-400">解像度</span>
-            <select value={resolution} onChange={(e) => setResolution(Number(e.target.value) as ResolutionKey)} disabled={locked || running} className={selectClass}>
-              {([720, 540, 360] as const).map((r) => (
+            <select
+              value={resolution}
+              onChange={(e) => {
+                const key = RESOLUTION_ORDER.find((k) => String(k) === e.target.value);
+                if (key !== undefined) setResolution(key);
+              }}
+              disabled={locked || running}
+              className={selectClass}
+            >
+              {RESOLUTION_ORDER.map((r) => (
                 <option key={r} value={r}>
-                  {r}p{r === 720 ? '（本番）' : ''}
+                  {RESOLUTION_LABELS[r]}
                 </option>
               ))}
             </select>
@@ -951,9 +1008,10 @@ export default function BackgroundBlurLabPage() {
           </label>
           <label className="space-y-1">
             <span className="block text-gray-400">背景</span>
-            <select value={mode} onChange={(e) => setMode(e.target.value as 'blur' | 'image')} disabled={locked || running} className={selectClass}>
+            <select value={background} onChange={(e) => setBackground(e.target.value as LabBackground)} disabled={locked || running} className={selectClass}>
               <option value="blur">ぼかし</option>
               <option value="image">画像</option>
+              <option value="solid">単色（縁の確認用）</option>
             </select>
           </label>
           <button

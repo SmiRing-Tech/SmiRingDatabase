@@ -8,8 +8,11 @@
  * MediapipeBackgroundProcessor.init()). A worker is its own WASM instance, so changing models is
  * "load and warm a new one of these, then point the compositor at it": the video never pauses.
  *
- * The mask never leaves the GPU: it is drawn onto this worker's canvas at roughly the model's own
- * resolution and handed over with transferToImageBitmap(). Reading it back to the CPU instead
+ * The mask never leaves the GPU: it is drawn onto this worker's canvas and handed over with
+ * transferToImageBitmap(). MediaPipe resizes that canvas to the input frame on every inference, so
+ * the bitmap is the camera frame's size, not the model's (measured 2026-11-25: 1280x720 and
+ * 720x1280) — which is why each reply names the model's grid (maskGrid) for the compositor's
+ * blur-and-upsample to be measured in. Reading it back to the CPU instead
  * (getAsFloat32Array) measured 13ms per mask on an M4, against ~2ms for the whole inference.
  */
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
@@ -27,9 +30,8 @@ export type SegmenterRequest =
       quality: SegmentationQuality;
       /** 1 when this model's mask scores background (see MODEL_INVERT). */
       invert: number;
-      /** Size of the mask handed to the compositor; the width follows the camera's aspect. */
-      maskHeight: number;
-      aspect: number;
+      /** The model's own mask grid (MODEL_MASK_GRID); echoed in every reply. */
+      maskGrid: { width: number; height: number };
     }
   | { type: 'stop' };
 
@@ -50,6 +52,8 @@ export type SegmentReply =
       mask: ImageBitmap;
       quality: SegmentationQuality;
       invert: number;
+      /** The model's own mask grid: the bitmap is the frame's size, its detail is this coarse. */
+      maskGrid: { width: number; height: number };
       /** This worker's whole time for the request: inference + drawing the mask + handing it over. */
       workMs: number;
       /** segmentForVideo up to its callback, i.e. the inference alone. */
@@ -84,6 +88,7 @@ let vao: WebGLVertexArrayObject;
 let maskIndex = 0;
 let lastMaskCount = 0;
 let invert = 0;
+let maskGrid = { width: 256, height: 144 };
 let quality: SegmentationQuality = 'balanced';
 let lastTimestampMs = 0;
 let consecutiveFailures = 0;
@@ -139,7 +144,7 @@ function onFrame({ frame, sentAt }: SegmentRequest) {
     const segmentMs = segmentToCanvas(frame);
     if (segmentMs !== null) {
       const mask = canvas.transferToImageBitmap();
-      reply = { ok: true, mask, quality, invert, workMs: performance.now() - t0, segmentMs, sentAt };
+      reply = { ok: true, mask, quality, invert, maskGrid, workMs: performance.now() - t0, segmentMs, sentAt };
     }
   } catch (err) {
     console.error('[bg-segmenter] frame failed:', err);
@@ -162,8 +167,10 @@ function onFrame({ frame, sentAt }: SegmentRequest) {
 async function init(request: Extract<SegmenterRequest, { type: 'init' }>) {
   invert = request.invert;
   quality = request.quality;
-  const maskWidth = Math.round(request.maskHeight * request.aspect);
-  canvas = new OffscreenCanvas(maskWidth, request.maskHeight);
+  maskGrid = request.maskGrid;
+  // The starting size only matters for the warm-up below; MediaPipe resizes the canvas to each input.
+  const { width: maskWidth, height: maskHeight } = maskGrid;
+  canvas = new OffscreenCanvas(maskWidth, maskHeight);
   canvas.addEventListener('webglcontextlost', (event) => {
     event.preventDefault();
     post({ type: 'error', message: 'segmenter WebGL context lost', fatal: true });
@@ -199,7 +206,7 @@ async function init(request: Extract<SegmenterRequest, { type: 'init' }>) {
 
   // Warm up on a blank image, so the first-inference shader compile — the multi-second stall
   // on slow GPUs — happens before the compositor depends on this worker, not on its first frame.
-  segmentToCanvas(new ImageData(maskWidth, request.maskHeight));
+  segmentToCanvas(new ImageData(maskWidth, maskHeight));
   canvas.transferToImageBitmap().close();
   const t3 = performance.now();
   // Same mask choice as the main-thread processor: the label named "background" when there is

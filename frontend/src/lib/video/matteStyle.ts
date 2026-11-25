@@ -5,7 +5,7 @@ import type { SegmentationQuality } from './MediapipeBackgroundProcessor';
  * the compositor worker and the segmenter worker, so it imports nothing at runtime (workers must
  * not pull in MediapipeBackgroundProcessor).
  *
- *  - 'contour' (both models): the 256x144 balanced mask is nearly binary, so turning it into alpha with a
+ *  - 'contour' (every model): the 256x144 balanced mask is nearly binary, so turning it into alpha with a
  *    linear ramp leaves its pixel grid visible as stair-steps. Instead the matte keeps the smooth
  *    confidence FIELD (upsampled with a blur-and-upsample kernel, temporally smoothed), and the
  *    composite cuts it at its iso-line with an anti-aliased step. The edge is a smooth curve and
@@ -27,7 +27,7 @@ export interface MatteStyle {
    * field as the composite reads it back bilinearly, so the field has to be stored finer than the
    * model's mask grid — on a coarser one its pixels show up as notches along the edge. Matters
    * when the load governor drops the camera to 360p, where a quarter would be 90 rows against the
-   * 144-row balanced mask. 180 is what the lab validated (a quarter of 720p).
+   * 144-row landscape mask. 180 is what the lab validated (a quarter of 720p).
    */
   minMatteHeight: number;
   /** contour: gaussian-equivalent spread folded into the mask read, in mask pixels (see fusedKernel). */
@@ -43,8 +43,34 @@ export const MATTE_STYLE: Record<SegmentationQuality, MatteStyle> = {
   high: { edge: 'contour', matteScale: 0.25, minMatteHeight: 180, maskBlur: 0.5, threshold: 0.5, softness: 2 },
 };
 
-/** Height of each model's own mask, in pixels; the width follows the camera's aspect. */
-export const MODEL_MASK_HEIGHT: Record<SegmentationQuality, number> = { balanced: 144, high: 256 };
+/**
+ * The model files. A quality names how good the cut-out should be; the model is the file that
+ * delivers it for a given frame shape (modelFor).
+ *  - landscape: selfie_segmenter_landscape, 256x144 — 'balanced' on a landscape camera.
+ *  - square:    selfie_segmenter, 256x256, same family and size — 'balanced' on an upright
+ *               (portrait) camera, i.e. a phone held normally. The landscape model would get that
+ *               frame squeezed into 256x144: 144 rows down the long side, the person squashed
+ *               about 3x, and its cells (~9 camera px at 720x1280) show as stair-steps along the
+ *               shoulders. The square one gives 256 rows there (~5 px, what a 720p webcam gets).
+ *  - multiclass: selfie_multiclass_256x256 — 'high', any shape.
+ */
+export type SegmentationModel = 'landscape' | 'square' | 'multiclass';
+
+export function modelFor(quality: SegmentationQuality, frameAspect: number): SegmentationModel {
+  if (quality === 'high') return 'multiclass';
+  return frameAspect < 1 ? 'square' : 'landscape';
+}
+
+/**
+ * Each model's input size, which is also its mask's cell grid over the frame: MediaPipe fits the
+ * whole frame into the input tensor and scales the mask back up to the frame's size, so the mask
+ * holds no finer detail than this, whatever the camera's resolution or shape.
+ */
+export const MODEL_MASK_GRID: Record<SegmentationModel, { width: number; height: number }> = {
+  landscape: { width: 256, height: 144 },
+  square: { width: 256, height: 256 },
+  multiclass: { width: 256, height: 256 },
+};
 
 /** Standard deviation, in taps, of the 9-tap gaussian in mediapipeShaders (what a blur step spreads). */
 const GAUSSIAN_TAP_SIGMA = 1.6894;

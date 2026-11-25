@@ -44,11 +44,12 @@ export interface MatteOptions {
   edgeFeather: number;
   temporalSmoothing: number;
   /**
-   * The model's own mask height. Needed only when the mask texture is NOT already that size — the
-   * main-thread path hands over MediaPipe's texture, which is the camera frame's size; the worker
-   * path's mask is drawn at the model's size, so it leaves this out.
+   * The model's own mask grid (MODEL_MASK_GRID), which the contour blur is measured in. Needed
+   * whenever the mask texture is not already that size — and in the app it never is: both paths
+   * hand over a mask at the camera frame's size (MediaPipe's own texture on the main thread; the
+   * segmenter worker's canvas, which MediaPipe resizes to its input, on the worker path).
    */
-  maskGridHeight?: number;
+  maskGrid?: { width: number; height: number };
 }
 
 export interface CompositeOptions {
@@ -299,12 +300,8 @@ export class BackgroundCompositor {
     } else {
       gl.uniform2f(alpha.uniforms.u_fused, 0, 0);
     }
-    if (options.maskGridHeight) {
-      gl.uniform2f(
-        alpha.uniforms.u_mask_grid,
-        Math.round((options.maskGridHeight * this.width) / Math.max(1, this.height)),
-        options.maskGridHeight,
-      );
+    if (options.maskGrid) {
+      gl.uniform2f(alpha.uniforms.u_mask_grid, options.maskGrid.width, options.maskGrid.height);
     } else {
       gl.uniform2f(alpha.uniforms.u_mask_grid, 0, 0);
     }

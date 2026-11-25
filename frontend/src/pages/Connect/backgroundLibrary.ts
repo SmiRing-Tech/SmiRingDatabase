@@ -190,7 +190,8 @@ export const HIGH_MODEL_LOAD_TIMEOUT_MS = 3000;
 export async function qualityWithinLoadDeadline(quality: SegmentationQuality): Promise<SegmentationQuality> {
   if (quality !== 'high') return quality;
   try {
-    await loadSegmentationModel('high', HIGH_MODEL_LOAD_TIMEOUT_MS);
+    // 'high' is the multiclass model whatever the camera's shape (modelFor).
+    await loadSegmentationModel('multiclass', HIGH_MODEL_LOAD_TIMEOUT_MS);
     return 'high';
   } catch (e) {
     console.warn('[Background] high-quality model not available in time, using balanced:', e);

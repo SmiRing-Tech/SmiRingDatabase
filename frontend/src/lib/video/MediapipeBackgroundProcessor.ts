@@ -6,7 +6,7 @@ import {
   type EffectTarget,
   type MatteOptions,
 } from './backgroundCompositor';
-import { MATTE_STYLE, MODEL_MASK_HEIGHT } from './matteStyle';
+import { MATTE_STYLE, MODEL_MASK_GRID, modelFor, type SegmentationModel } from './matteStyle';
 import { registerDiagProbe } from '../connectDiagnostics';
 import { emitLoadSignal } from '../loadSignals';
 
@@ -52,15 +52,21 @@ const TASKS_VISION_VERSION = '1.0.1';
 /** Where the tasks-vision WASM fileset is loaded from (also by the worker spike). */
 export const MEDIAPIPE_WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`;
 
-const MODELS: Record<SegmentationQuality, string> = {
+/** Which file each model is; which model a processor runs is modelFor() in matteStyle.ts. */
+const MODELS: Record<SegmentationModel, string> = {
   // 244 KB. Binary person/background, trained on 256x144 landscape input, which
   // matches a 16:9 webcam without the aspect squash the square model suffers.
-  balanced:
+  landscape:
     'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite',
+  // 249 KB. The same binary model at 256x256: 'balanced' for an upright (portrait) camera, which
+  // the landscape one would squash to 144 rows down its long side.
+  square:
+    'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite',
   // 15.6 MB. Six classes (background / hair / body-skin / face-skin / clothes /
   // accessories); the dedicated hair class is what makes the difference on
   // fly-away strands. Kept in Cache Storage after the first download (MODEL_CACHE).
-  high: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite',
+  multiclass:
+    'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite',
 };
 
 /**
@@ -71,9 +77,9 @@ const MODELS: Record<SegmentationQuality, string> = {
  * the HTTP cache. Errors are ignored: the normal load path tries again.
  */
 export function prefetchSegmentationAssets(): void {
-  for (const quality of ['balanced', 'high'] as const) {
-    if (modelDownloads.has(quality)) continue;
-    startModelDownload(quality, { keep: true, lowPriority: true }).promise.catch(() => {});
+  for (const model of ['landscape', 'square', 'multiclass'] as const) {
+    if (modelDownloads.has(model)) continue;
+    startModelDownload(model, { keep: true, lowPriority: true }).promise.catch(() => {});
   }
   const init = { priority: 'low' } as RequestInit;
   for (const file of ['vision_wasm_module_internal.js', 'vision_wasm_module_internal.wasm']) {
@@ -85,8 +91,8 @@ export function prefetchSegmentationAssets(): void {
 
 /** Thrown by `loadSegmentationModel` when the download misses the caller's deadline. */
 export class SegmentationModelTimeoutError extends Error {
-  constructor(quality: SegmentationQuality, timeoutMs: number) {
-    super(`segmentation model '${quality}' did not finish downloading within ${timeoutMs}ms`);
+  constructor(model: SegmentationModel, timeoutMs: number) {
+    super(`segmentation model '${model}' did not finish downloading within ${timeoutMs}ms`);
     this.name = 'SegmentationModelTimeoutError';
   }
 }
@@ -100,7 +106,7 @@ type ModelDownload = {
 };
 
 /** One download per model for the whole page, shared by every processor and caller. */
-const modelDownloads = new Map<SegmentationQuality, ModelDownload>();
+const modelDownloads = new Map<SegmentationModel, ModelDownload>();
 
 /**
  * Models are kept in Cache Storage once downloaded: the server's own caching is an hour
@@ -129,10 +135,10 @@ async function storeCachedModel(url: string, buffer: Uint8Array): Promise<void> 
   }
 }
 
-function startModelDownload(quality: SegmentationQuality, opts: { keep?: boolean; lowPriority?: boolean } = {}): ModelDownload {
+function startModelDownload(model: SegmentationModel, opts: { keep?: boolean; lowPriority?: boolean } = {}): ModelDownload {
   const controller = new AbortController();
   const entry: ModelDownload = { controller, done: false, keep: !!opts.keep, promise: Promise.resolve(new Uint8Array()) };
-  const url = MODELS[quality];
+  const url = MODELS[model];
   entry.promise = (async () => {
     const cached = await readCachedModel(url);
     if (cached) {
@@ -142,7 +148,7 @@ function startModelDownload(quality: SegmentationQuality, opts: { keep?: boolean
     const init: RequestInit & { priority?: 'low' | 'high' | 'auto' } = { signal: controller.signal };
     if (opts.lowPriority) init.priority = 'low';
     const res = await fetch(url, init);
-    if (!res.ok) throw new Error(`segmentation model '${quality}' download failed (${res.status})`);
+    if (!res.ok) throw new Error(`segmentation model '${model}' download failed (${res.status})`);
     const buffer = new Uint8Array(await res.arrayBuffer());
     entry.done = true;
     void storeCachedModel(url, buffer);
@@ -150,10 +156,10 @@ function startModelDownload(quality: SegmentationQuality, opts: { keep?: boolean
   })()
     .catch((err) => {
       // Never cache a failure (including an abort) — the next attempt should hit the network again.
-      if (modelDownloads.get(quality) === entry) modelDownloads.delete(quality);
+      if (modelDownloads.get(model) === entry) modelDownloads.delete(model);
       throw err;
     });
-  modelDownloads.set(quality, entry);
+  modelDownloads.set(model, entry);
   return entry;
 }
 
@@ -176,14 +182,14 @@ function startModelDownload(quality: SegmentationQuality, opts: { keep?: boolean
  * Kept in memory once loaded, so rebuilding a processor later in the page (a quality toggle,
  * a re-publish) never downloads again.
  */
-export function loadSegmentationModel(quality: SegmentationQuality, timeoutMs?: number): Promise<Uint8Array> {
-  const entry = modelDownloads.get(quality) ?? startModelDownload(quality);
+export function loadSegmentationModel(model: SegmentationModel, timeoutMs?: number): Promise<Uint8Array> {
+  const entry = modelDownloads.get(model) ?? startModelDownload(model);
   if (timeoutMs === undefined || entry.done) return entry.promise;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       // A prefetch keeps going: it's what makes the next attempt instant.
       if (!entry.keep) entry.controller.abort();
-      reject(new SegmentationModelTimeoutError(quality, timeoutMs));
+      reject(new SegmentationModelTimeoutError(model, timeoutMs));
     }, timeoutMs);
     entry.promise.then(
       (buffer) => {
@@ -218,12 +224,16 @@ export function loadSegmentationModel(quality: SegmentationQuality, timeoutMs?: 
  * confidence (see the label-matched mask selection in createSegmenter/
  * updateMatte) rather than an arbitrary binary convention.
  *
- * Re-verify (or re-measure and update this table) if either model file is
+ * `square` is the landscape model's 256x256 sibling and reads the same way (checked in
+ * /dev/blur-lab on a portrait camera, 2026-11-25).
+ *
+ * Re-verify (or re-measure and update this table) if any model file is
  * ever swapped for a different version/architecture.
  */
-export const MODEL_INVERT: Record<SegmentationQuality, number> = {
-  balanced: 0,
-  high: 1,
+export const MODEL_INVERT: Record<SegmentationModel, number> = {
+  landscape: 0,
+  square: 0,
+  multiclass: 1,
 };
 
 export type { BackgroundMode, EffectTarget };
@@ -246,8 +256,13 @@ export type MediapipeBackgroundOptions = {
   imageUrl?: string | null;
   /** Background blur strength in output pixels. Only used in `blur` mode. */
   blurRadius?: number;
-  /** Which segmentation model to load. Changing this requires a new processor. */
+  /**
+   * How good a cut-out to aim for; the model file follows from it and the camera's shape (modelFor
+   * in matteStyle.ts). Changing this requires a new processor.
+   */
   quality?: SegmentationQuality;
+  /** Labs only: run this model file whatever `quality` and the camera's shape would pick. */
+  forceModel?: SegmentationModel;
   /** How much of the previous frame's matte to keep, 0..0.95. Higher = steadier edge, more lag. */
   temporalSmoothing?: number;
   /**
@@ -281,7 +296,7 @@ export type MediapipeBackgroundOptions = {
   /**
    * Forces how the confidence mask is read: `true` = it scores background,
    * `false` = it scores the subject. Leave undefined to use the known-correct
-   * value for `quality` (see `MODEL_INVERT`). This is a debugging escape
+   * value for the model (see `MODEL_INVERT`). This is a debugging escape
    * hatch, not the way to swap the effect around — that is what `target` is
    * for.
    */
@@ -395,12 +410,12 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   private options: Required<
     Omit<
       MediapipeBackgroundOptions,
-      'assetPaths' | 'invertMask' | 'onSustainedSlowFrames' | 'onSustainedFastFrames'
+      'assetPaths' | 'forceModel' | 'invertMask' | 'onSustainedSlowFrames' | 'onSustainedFastFrames'
     >
   > &
     Pick<
       MediapipeBackgroundOptions,
-      'assetPaths' | 'invertMask' | 'onSustainedSlowFrames' | 'onSustainedFastFrames'
+      'assetPaths' | 'forceModel' | 'invertMask' | 'onSustainedSlowFrames' | 'onSustainedFastFrames'
     >;
 
   private segmenter?: ImageSegmenter;
@@ -438,6 +453,9 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   private width = 0;
 
   private height = 0;
+
+  /** The model file, picked in init() once the camera's shape is known. */
+  private model: SegmentationModel = 'landscape';
 
   private maskIndex = 0;
 
@@ -725,7 +743,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
    */
   private get resolvedInvert(): number {
     if (this.options.invertMask !== undefined) return this.options.invertMask ? 1 : 0;
-    return MODEL_INVERT[this.options.quality];
+    return MODEL_INVERT[this.model];
   }
 
   /** What the processor believes about mask polarity — for debug UIs. */
@@ -761,6 +779,9 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     const settings = opts.track.getSettings();
     this.width = settings.width ?? 640;
     this.height = settings.height ?? 360;
+    // Fixed for this processor's life: a later restart() or resize to another shape keeps it (the
+    // edge is then coarser, but the cut-out still lines up).
+    this.model = this.options.forceModel ?? modelFor(this.options.quality, this.width / Math.max(1, this.height));
 
     this.canvas = document.createElement('canvas');
     this.canvas.width = this.width;
@@ -832,7 +853,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
   // ---------------------------------------------------------------- MediaPipe
 
   private async createSegmenter() {
-    this.log('createSegmenter() start', { quality: this.options.quality, delegate: this.options.delegate });
+    this.log('createSegmenter() start', { quality: this.options.quality, model: this.model, delegate: this.options.delegate });
     const t0 = performance.now();
     const fileset = await FilesetResolver.forVisionTasks(
       this.options.assetPaths?.wasmFileSet ?? MEDIAPIPE_WASM_BASE,
@@ -842,7 +863,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
     // Normally already in memory: callers that care about load time fetch it first, with a
     // deadline, before building this processor at all — see loadSegmentationModel.
     const modelAssetPath = this.options.assetPaths?.modelAssetPath;
-    const modelAssetBuffer = modelAssetPath ? undefined : await loadSegmentationModel(this.options.quality);
+    const modelAssetBuffer = modelAssetPath ? undefined : await loadSegmentationModel(this.model);
     const t2 = performance.now();
     this.segmenter = await ImageSegmenter.createFromOptions(fileset, {
       baseOptions: {
@@ -1382,7 +1403,7 @@ export class MediapipeBackgroundProcessor implements TrackProcessor<Track.Kind.V
       invert: this.resolvedInvert,
       style: MATTE_STYLE[this.options.quality],
       // MediaPipe's texture is the camera frame's size, not the model's own mask grid.
-      maskGridHeight: MODEL_MASK_HEIGHT[this.options.quality],
+      maskGrid: MODEL_MASK_GRID[this.model],
       matteLo: this.options.matteLo ?? 0.3,
       matteHi: this.options.matteHi ?? 0.75,
       temporalSmoothing: this.options.temporalSmoothing,

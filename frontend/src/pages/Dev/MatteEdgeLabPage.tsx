@@ -5,6 +5,7 @@ import {
   MEDIAPIPE_WASM_BASE,
   MODEL_INVERT,
 } from '../../lib/video/MediapipeBackgroundProcessor';
+import type { SegmentationModel } from '../../lib/video/matteStyle';
 import {
   MatteLab,
   type BackgroundKind,
@@ -36,14 +37,17 @@ const MODEL_LABELS: Record<ModelChoice, string> = {
   high: '高精細 / selfie_multiclass_256x256',
 };
 
+/** This lab only opens landscape cameras, where these are the models the app runs. */
+const LAB_MODEL: Record<ModelChoice, SegmentationModel> = { balanced: 'landscape', high: 'multiclass' };
+
 const RESOLUTIONS = { 720: [1280, 720], 540: [960, 540], 360: [640, 360] } as const;
 type ResolutionKey = keyof typeof RESOLUTIONS;
 
 const SEG_FPS = [5, 10, 15, 20, 30] as const;
 
 /**
- * Same mask size the app's worker pipeline hands the compositor (SEGMENTER_MASK_HEIGHT in
- * WorkerBackgroundProcessor; width follows the camera's aspect). MediaPipe itself returns the mask
+ * Same mask size the app's worker pipeline hands the compositor on a 16:9 camera (MODEL_MASK_GRID
+ * in matteStyle.ts; width follows the camera's aspect here). MediaPipe itself returns the mask
  * already resized to the INPUT frame (e.g. 1280x720), so it is brought back to this grid first —
  * otherwise "blur in mask pixels" here would mean full-resolution pixels and change nothing.
  */
@@ -437,7 +441,7 @@ export default function MatteEdgeLabPage() {
     segmenterRef.current = null;
     (async () => {
       try {
-        const bytes = await loadSegmentationModel(model);
+        const bytes = await loadSegmentationModel(LAB_MODEL[model]);
         const fileset = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_BASE);
         const create = (delegate: 'GPU' | 'CPU') =>
           ImageSegmenter.createFromOptions(fileset, {
@@ -498,7 +502,7 @@ export default function MatteEdgeLabPage() {
           const maskWidth = Math.round((maskHeight * video.videoWidth) / video.videoHeight);
           if (quantized.length !== maskWidth * maskHeight) quantized = new Uint8Array(maskWidth * maskHeight);
           resampleMask(floats, mask.width, mask.height, quantized, maskWidth, maskHeight);
-          engine.uploadMask(quantized, maskWidth, maskHeight, MODEL_INVERT[liveModelRef.current]);
+          engine.uploadMask(quantized, maskWidth, maskHeight, MODEL_INVERT[LAB_MODEL[liveModelRef.current]]);
           const { params } = live.current;
           engine.computeMatte('a', params.a);
           engine.computeMatte('b', params.b);

@@ -9,7 +9,7 @@ import {
   type MediapipeBackgroundOptions,
   type SegmentationQuality,
 } from './MediapipeBackgroundProcessor';
-import { MODEL_MASK_HEIGHT } from './matteStyle';
+import { MODEL_MASK_GRID, modelFor } from './matteStyle';
 import type { CompositorRequest, CompositorResponse, CompositorSettings, CompositorStats } from './backgroundCompositor.worker';
 import type { SegmenterLoadTimings, SegmenterRequest, SegmenterResponse } from './backgroundSegmenter.worker';
 import { diagEvent, registerDiagProbe } from '../connectDiagnostics';
@@ -164,7 +164,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
 type SegmenterHandle = { worker: Worker; quality: SegmentationQuality };
 
 type ResolvedOptions = Required<
-  Omit<MediapipeBackgroundOptions, 'assetPaths' | 'invertMask' | 'onSustainedSlowFrames' | 'onSustainedFastFrames'>
+  Omit<MediapipeBackgroundOptions, 'assetPaths' | 'forceModel' | 'invertMask' | 'onSustainedSlowFrames' | 'onSustainedFastFrames'>
 > &
   WorkerBackgroundOptions;
 
@@ -378,11 +378,13 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
    * keeps using the previous matte source the whole time.
    */
   private async startSegmenter(quality: SegmentationQuality) {
+    // The camera's shape as of init: a phone held upright gets the square model (see modelFor).
+    const segmentationModel = this.options.forceModel ?? modelFor(quality, this.aspect);
     const modelPath = this.options.assetPaths?.modelAssetPath;
     const model: { url: string } | { buffer: ArrayBuffer } = modelPath
       ? { url: modelPath }
       : // A copy: the page-wide download stays cached for later swaps and the main-thread path.
-        { buffer: (await loadSegmentationModel(quality)).slice().buffer };
+        { buffer: (await loadSegmentationModel(segmentationModel)).slice().buffer };
     const worker = new Worker(new URL('./backgroundSegmenter.worker.ts', import.meta.url), { type: 'module' });
     const channel = new MessageChannel();
     let readyHandled = false;
@@ -410,9 +412,8 @@ export class WorkerBackgroundProcessor implements TrackProcessor<Track.Kind.Vide
       model,
       delegate: this.options.delegate,
       quality,
-      invert: MODEL_INVERT[quality],
-      maskHeight: MODEL_MASK_HEIGHT[quality],
-      aspect: this.aspect,
+      invert: MODEL_INVERT[segmentationModel],
+      maskGrid: MODEL_MASK_GRID[segmentationModel],
     };
     const transfer: Transferable[] = [channel.port2];
     if ('buffer' in model) transfer.push(model.buffer);

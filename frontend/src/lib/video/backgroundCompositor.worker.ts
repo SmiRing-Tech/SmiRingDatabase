@@ -232,13 +232,14 @@ function fatal(message: string) {
   post({ type: 'fatal', message });
 }
 
-function matteOptions(invert: number, quality: SegmentationQuality) {
+function matteOptions(invert: number, quality: SegmentationQuality, maskGrid: { width: number; height: number }) {
   return {
     // Photo mode's frames are a second or more apart: blending in the previous one's matte would
     // leave a ghost of where the person was.
     invert: settings.invertOverride ?? invert,
-    // The segmenter's mask is already drawn at the model's own size, so no maskGridHeight here.
     style: MATTE_STYLE[quality],
+    // The mask bitmap is the camera frame's size (see backgroundSegmenter.worker), not the model's grid.
+    maskGrid,
     matteLo: settings.matteLo,
     matteHi: settings.matteHi,
     temporalSmoothing: settings.photoIntervalMs > 0 ? 0 : settings.temporalSmoothing,
@@ -316,7 +317,7 @@ function handleSegmentReply(reply: SegmentReply) {
   }
   const t0 = performance.now();
   try {
-    compositor.composeMatteFromImage(reply.mask, matteOptions(reply.invert, reply.quality));
+    compositor.composeMatteFromImage(reply.mask, matteOptions(reply.invert, reply.quality, reply.maskGrid));
   } finally {
     reply.mask.close();
   }
